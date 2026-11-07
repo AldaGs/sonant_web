@@ -265,11 +265,13 @@ export async function exportVideo(
         // Same order as the preview: video, layers, caption (and the person over both with "text behind").
         const color = piece.fx?.color;
         const raw = lifted ? null : still ?? frame?.canvas ?? null;
+        const bgB = piece.fx?.bg === 'image' && piece.fx.bgImage ? await stillFor(piece.fx.bgImage) : null;
+        const bgImg = bgB ? { src: bgB, w: bgB.width, h: bgB.height } : null;
         const img = raw && color ? grader.apply(raw, sw, sh, color, lutOf(color.lut)) : raw;
         drawFrame(ctx, img, sw, sh, zoomPlace(coverPlace(width, height, sw, sh, piece.fx?.focus), width, height, piece.fx, t - segStart), piece.fx, !!cap, () => {
           paintLayers(i);
           if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
-        }, hasBehind ? () => paintLayers(i, true) : undefined);
+        }, hasBehind ? () => paintLayers(i, true) : undefined, bgImg);
         trans.apply(ctx, segs[si]?.fx?.trans, si, i / opts.fps - segOut, segs[si]?.fx?.transDur ?? TRANS_DUR);
         await vOut.add(i / opts.fps, 1 / opts.fps);
         onProgress(++i / total);

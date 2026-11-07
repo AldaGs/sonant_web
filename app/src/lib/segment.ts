@@ -93,6 +93,7 @@ function paintSubject(ctx: CanvasRenderingContext2D, src: CanvasImageSource, [dx
 export function drawFrame(
   ctx: CanvasRenderingContext2D, src: CanvasImageSource | null, sw: number, sh: number, place: number[],
   fx: Fx | undefined, hasCaption: boolean, caption: () => void, under?: () => boolean,
+  bgImg?: { src: CanvasImageSource; w: number; h: number } | null,
 ) {
   const [dx, dy, dw, dh] = place;
   const wantsUnder = !!under;
@@ -100,7 +101,14 @@ export function drawFrame(
   if (src && ready && fx?.bg) {
     const W = ctx.canvas.width, H = ctx.canvas.height;
     if (fx.bg === 'color') ((ctx.fillStyle = fx.bgColor ?? '#00b140'), ctx.fillRect(0, 0, W, H));
-    else {
+    else if (fx.bg === 'image') {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W, H);
+      if (bgImg) { // cover-fit, centred
+        const k = Math.max(W / bgImg.w, H / bgImg.h), iw = bgImg.w * k, ih = bgImg.h * k;
+        ctx.drawImage(bgImg.src, (W - iw) / 2, (H - ih) / 2, iw, ih);
+      }
+    } else {
       ctx.filter = `blur(${Math.round(Math.max(W, H) / 50)}px)`;
       ctx.drawImage(src, dx - dw * 0.05, dy - dh * 0.05, dw * 1.1, dh * 1.1); // oversize so the blur has no dark rim
       ctx.filter = 'none';
