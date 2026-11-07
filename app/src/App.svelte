@@ -663,7 +663,7 @@
       }
       const sel = placed.find((p) => p.id === selectedOverlay);
       const selO = sel && overlays.find((o) => o.id === sel.id);
-      if (hasPath(selO?.motion)) drawSPath(ctx, selO, cv.width / (cv.getBoundingClientRect().width || cv.width));
+      if (selO && hasPath(selO.motion)) drawSPath(ctx, selO, cv.width / (cv.getBoundingClientRect().width || cv.width));
       if (sel) drawLayerBox(ctx, sel, cv.width / (cv.getBoundingClientRect().width || cv.width));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
       // Platform UI zones (preview only): captions under the app's buttons/description get a warning.

@@ -131,8 +131,6 @@
   let vw = $state(0); // scroller width in px
   let swipeT = $state<number | null>(null);
   let coast = 0;
-  const view = $derived(swipeT ?? playhead ?? 0);
-  const shift = $derived(vw / 2 - (view / total) * width);
   let inner = $state<HTMLDivElement>();
   let wave = $state<HTMLCanvasElement>();
   let width = $state(0); // inner width in px
@@ -142,6 +140,8 @@
   const live = $derived(outDuration(segments) || 1);
   const total = $derived(held === null ? live : Math.max(held, live));
   const playhead = $derived(out ?? toOutput(segments, time));
+  const view = $derived(swipeT ?? playhead ?? 0);
+  const shift = $derived(vw / 2 - (view / total) * width);
   const pct = (s: number) => `${(s / total) * 100}%`;
 
   // Segment positions in output time.

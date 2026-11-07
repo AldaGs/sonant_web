@@ -3,6 +3,7 @@
   import Icon from './Icon.svelte';
   import { t } from './i18n.svelte';
   import { COLOR_PRESETS, type Color, type Lut } from './grade';
+  import type { IconName } from './icons';
 
   let { color, luts, onset, ondone }: {
     color: Color;
@@ -18,7 +19,7 @@
     { k: 's', label: 'saturation', icon: 'water_drop', min: -1, max: 1, def: 0 },
     { k: 'temp', label: 'temperature', icon: 'thermostat', min: -1, max: 1, def: 0 },
     ...(color.lut ? [{ k: 'lutMix', label: 'lutMix', icon: 'filter_vintage', min: 0, max: 1, def: 1 }] : []),
-  ] as { k: Key; label: string; icon: string; min: number; max: number; def: number }[]);
+  ] as { k: Key; label: string; icon: IconName; min: number; max: number; def: number }[]);
   let active = $state<Key>('b');
   const p = $derived(params.find((x) => x.k === active) ?? params[0]);
   const val = (k: Key, def: number) => (color[k] as number | undefined) ?? def;
