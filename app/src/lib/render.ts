@@ -609,7 +609,7 @@ function drawHighlight(ctx: CanvasRenderingContext2D, x0: number, w: number, px:
 
 // Outline + fill, with optional glow and drop shadow layered underneath (they stack: canvas
 // has one shadow per draw, so each effect gets its own pass).
-function drawText(ctx: CanvasRenderingContext2D, s: Style, px: number, text: string, x: number, color: string, animGlow: number) {
+export function drawText(ctx: CanvasRenderingContext2D, s: Style, px: number, text: string, x: number, color: string, animGlow: number) {
   const paint = () => {
     if (s.outline > 0) {
       ctx.lineWidth = px * s.outline;
