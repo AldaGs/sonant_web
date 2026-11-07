@@ -56,6 +56,7 @@ export type ExportSource = {
   luts?: Lut[];
   speech?: [number, number][]; // output time ranges where someone talks (music ducks under these)
   clipVolume: number;
+  clean?: Map<string, Blob>; // assetId → noise-reduced sound of a video clip (used instead of the file's)
   zooms?: ZoomMoment[]; // smart auto-zoom moments, sequence time
   zoomScale?: number;
 };
@@ -71,7 +72,8 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
   const decoded = new Map<string, AudioBuffer>();
   try {
     for (const id of needed) {
-      const f = src.files.get(id);
+      // Main clips use their noise-reduced copy when there is one.
+      const f = (src.clips.some((c) => c.assetId === id) && src.clean?.get(id)) || src.files.get(id);
       if (!f) continue;
       try {
         decoded.set(id, await decoder.decodeAudioData(await f.arrayBuffer()));

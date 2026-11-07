@@ -25,6 +25,7 @@
   import { BLENDS, DEFAULT_MASK, DEFAULT_KEY, keyBypass, type Blend, type ChromaKey } from './lib/layerfx';
   import KeyControls from './lib/KeyControls.svelte';
   import PerfDialog from './lib/PerfDialog.svelte';
+  import { cleanAudio, cleanKey, DENOISE_LEVELS } from './lib/denoise';
   import { zoomMoments, autoZoomAt, scalePlace, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
@@ -48,6 +49,7 @@
   let clips = $state<Clip[]>([]); // video track, in play order
   let audios = $state<AudioItem[]>([]); // music / voiceover, output time
   let clipVolume = $state(1); // volume of the clips' own sound
+  let denoise = $state(0); // AI noise reduction on the clips' sound: wet mix, 0 = off
   let overlays = $state<Overlay[]>([]); // picture-in-picture video, images, text layers; output time, bottom first
   let selectedOverlay = $state('');
   const images = new Map<string, HTMLImageElement>(); // assetId → decoded image
@@ -201,6 +203,44 @@
   let ready = false; // no autosave until the saved project has been restored
   let savedFonts: SavedFont[] = [];
 
+  // ---- AI noise reduction: a cleaned copy of each video clip's sound, made once per level and cached ----
+  let cleanBlobs = new Map<string, Blob>(); // assetId → cleaned WAV at the current level
+  const cleanLevel = new Map<string, number>(); // assetId → level of the copy in player.clean
+  let cleanPct = $state<number | null>(null); // progress while cleaning
+  let cleanRun = 0;
+  $effect(() => {
+    const level = denoise, ids = [...new Set(clips.map((c) => c.assetId))].filter((id) => assets.find((a) => a.id === id)?.kind === 'video');
+    const run = ++cleanRun;
+    const drop = (id: string) => {
+      const el = player.clean.get(id);
+      if (el) (el.pause(), URL.revokeObjectURL(el.src), player.clean.delete(id));
+      cleanBlobs.delete(id);
+      cleanLevel.delete(id);
+    };
+    for (const id of [...player.clean.keys()]) if (!level || !ids.includes(id) || cleanLevel.get(id) !== level) drop(id);
+    if (!level) return void (cleanPct = null);
+    (async () => {
+      const todo = ids.filter((id) => files.get(id) && !player.clean.has(id)); // already cleaned at this level: keep
+      for (const [k, id] of todo.entries()) {
+        if (run !== cleanRun) return;
+        let blob = await store.get<Blob>(cleanKey(id, level));
+        if (!blob) {
+          cleanPct = (k / todo.length) * 100;
+          blob = (await cleanAudio(files.get(id)!, level, (p) => run === cleanRun && (cleanPct = ((k + p / 100) / todo.length) * 100)).catch(() => null)) ?? undefined;
+          if (blob) store.set(cleanKey(id, level), blob).catch(() => {}); // over quota: still used this session
+        }
+        if (run !== cleanRun || !blob) continue;
+        drop(id);
+        cleanBlobs.set(id, blob);
+        cleanLevel.set(id, level);
+        const el = new Audio(URL.createObjectURL(blob));
+        el.preload = 'auto';
+        player.clean.set(id, el);
+      }
+      if (run === cleanRun) cleanPct = null;
+    })();
+  });
+
   // ---- Proxies: small fast-seeking copies for the preview (export uses the originals) ----
   let proxyUrls = $state<Record<string, string>>({});
   let proxyPct = $state<Record<string, number>>({}); // assetId → progress while building
@@ -282,6 +322,7 @@
     language = doc.language ?? null;
     showTr = doc.showTr ?? false;
     autoZoom = doc.autoZoom ?? null;
+    denoise = doc.denoise ?? 0;
     canvasAspect = doc.aspect ?? 'source';
     Promise.all((doc.luts ?? []).map((l) => store.get<Lut>('lut:' + l.id))).then((r) => (luts = r.filter((x): x is Lut => !!x)));
     // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
@@ -299,7 +340,7 @@
 
 
   async function saveNow() {
-    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr, autoZoom }), luts: luts.map((l) => ({ id: l.id, name: l.name })), aspect: canvasAspect, words: wordCache };
+    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr, autoZoom, denoise }), luts: luts.map((l) => ({ id: l.id, name: l.name })), aspect: canvasAspect, words: wordCache };
     const meta: Partial<ProjectMeta> = { duration: outDuration(segments), clips: clips.length };
     if (Date.now() - lastThumb > 10000) {
       const th = thumbnail();
@@ -309,7 +350,7 @@
     addVersion(projectId, doc).catch(() => {}); // a snapshot every ~2 minutes of editing
   }
   $effect(() => {
-    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr, autoZoom });
+    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr, autoZoom, denoise });
     void luts.length, canvasAspect;
     void (clips.length && thumbs[clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
     if (!ready) return;
@@ -327,7 +368,7 @@
   }
   async function restoreVersion(v: Version) {
     // Keep the current state as a version first, so restoring can itself be undone from here.
-    await addVersion(projectId, { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr, autoZoom }), aspect: canvasAspect } as Doc, { force: true, label: t('beforeRestore') });
+    await addVersion(projectId, { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr, autoZoom, denoise }), aspect: canvasAspect } as Doc, { force: true, label: t('beforeRestore') });
     commit();
     const d = v.doc;
     const have = new Set(assets.map((a) => a.id)); // media deleted since then can't come back
@@ -1427,6 +1468,12 @@
         <label class="vol">{t('clipAudio')} <span class="mono small">{Math.round(clipVolume * 100)}%</span>
           <input type="range" min="0" max="1" step="0.05" bind:value={clipVolume} />
         </label>
+        <label class="vol" title={t('dnTip')}>{t('denoise')}
+          <select bind:value={denoise}>
+            {#each DENOISE_LEVELS as l (l)}<option value={l}>{t('dn.' + l)}</option>{/each}
+          </select>
+        </label>
+        {#if cleanPct !== null}<p class="muted small" role="status">{t('dnBusy')} {Math.round(cleanPct)}%</p>{/if}
       {/if}
     </aside>
   {/if}
@@ -2012,7 +2059,7 @@
     </div>
   {/if}
   <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} {style} {srcW} {srcH} {canvasAspect}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
 {/if}
 
 <style>

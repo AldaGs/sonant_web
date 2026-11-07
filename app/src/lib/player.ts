@@ -19,6 +19,7 @@ export class Player {
   videos = new Map<string, HTMLVideoElement>(); // assetId → element
   audios = new Map<string, HTMLAudioElement>(); // audio item id → element
   overlays = new Map<string, HTMLVideoElement>(); // video overlay id → element
+  clean = new Map<string, HTMLAudioElement>(); // assetId → noise-reduced copy of its sound, played instead of the video's
   t = 0; // sequence (source) time: what's on screen
   o = 0; // output time: the master clock while a freeze frame holds (t stands still then)
   playing = false;
@@ -130,7 +131,10 @@ export class Player {
         continue;
       }
       const lifted = s.segments.some((g) => g.fx?.lift && this.t >= g.start && this.t < g.end); // a gap plays silent
-      el.volume = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume));
+      const vol = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume));
+      const clean = this.clean.get(id);
+      el.volume = vol;
+      el.muted = !!clean; // the cleaned copy plays the sound instead
       const seg = segAt(s.segments, this.t);
       const rate = seg?.fx?.speed ?? 1;
       if (el.playbackRate !== rate) el.playbackRate = rate; // pitch is preserved by the browser
@@ -140,7 +144,18 @@ export class Player {
       if (drift > (this.playing && !exact ? 0.3 : 0.01)) this.seekTo(el, at!.local);
       if (this.playing && !frozen && el.paused) el.play().catch(() => {});
       if ((!this.playing || frozen) && !el.paused) el.pause();
+      if (clean) {
+        // Follow the video (the clock): same rate, re-sync when it drifts more than ~2 frames.
+        clean.volume = vol;
+        if (clean.playbackRate !== rate) clean.playbackRate = rate;
+        const run = this.playing && !frozen && !el.paused && !el.seeking;
+        if (Math.abs(clean.currentTime - el.currentTime) > (run ? 0.08 : 0.01)) clean.currentTime = el.currentTime;
+        if (run && clean.paused) clean.play().catch(() => {});
+        if (!run && !clean.paused) clean.pause();
+      }
     }
+    for (const [id, c] of this.clean) if (id !== activeId && !c.paused) c.pause();
+    for (const [id, el] of this.videos) if (id !== activeId && !this.clean.has(id)) el.muted = false;
 
     const out: number | null = toOutput(s.segments, this.t) === null ? null : this.o;
     // Video overlays run in output time, like audio items. Shown one frame early so they're ready.

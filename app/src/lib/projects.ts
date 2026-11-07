@@ -9,7 +9,7 @@ import type { Overlay } from './overlay';
 
 export type ProjectDoc = {
   name: string; captions: Caption[]; segments: Segment[]; style: Style; language: 'english' | 'spanish' | null;
-  speakers?: string[]; assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; overlays?: Overlay[]; showTr?: boolean; autoZoom?: import('./autozoom').AutoZoom | null; luts?: { id: string; name: string }[]; aspect?: import('./export').Aspect; words?: Record<string, Word[]>;
+  speakers?: string[]; assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; overlays?: Overlay[]; showTr?: boolean; denoise?: number; /* AI noise reduction mix for the clips' sound, 0 = off */ autoZoom?: import('./autozoom').AutoZoom | null; luts?: { id: string; name: string }[]; aspect?: import('./export').Aspect; words?: Record<string, Word[]>;
 };
 export type ProjectMeta = { id: string; name: string; created: number; updated: number; duration: number; clips: number; thumb?: string };
 
@@ -86,7 +86,10 @@ export async function addVersion(id: string, doc: ProjectDoc, { gap = 120_000, m
 export async function deleteProject(id: string) {
   const doc = await loadDoc(id);
   const keep = await assetsInUse(id);
-  await Promise.all((doc?.assets ?? []).filter((a) => !keep.has(a.id)).map((a) => Promise.all([store.del('asset:' + a.id), store.del('proxy:' + a.id)])));
+  const gone = new Set((doc?.assets ?? []).filter((a) => !keep.has(a.id)).map((a) => a.id));
+  await Promise.all([...gone].map((id) => Promise.all([store.del('asset:' + id), store.del('proxy:' + id)])));
+  // Cleaned (noise-reduced) audio: clean:<assetId>:<level>
+  await Promise.all((await store.keys()).filter((k) => typeof k === 'string' && k.startsWith('clean:') && gone.has(k.split(':')[1])).map((k) => store.del(k as string)));
   await store.del('doc:' + id);
   await store.del(HIST(id));
   await putList((await listProjects()).filter((p) => p.id !== id));

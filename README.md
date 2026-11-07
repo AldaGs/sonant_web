@@ -110,7 +110,7 @@ The logic modules have small assert-based tests that run directly in Node (TypeS
 
 ```bash
 cd app
-for t in audio beats captions autozoom cuts export grade keywords layerfx perf overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
+for t in audio beats captions autozoom cuts denoise export grade keywords layerfx perf overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
 ```
 
 ## Stack
@@ -122,6 +122,7 @@ for t in audio beats captions autozoom cuts export grade keywords layerfx perf o
 | Preview and caption rendering | Canvas 2D, shared by preview and export |
 | Playback | One clock driving a hidden `<video>` per clip and an `<audio>` per music/VO item |
 | Export | WebCodecs + [Mediabunny](https://github.com/Vanilagy/mediabunny); audio mixed with `OfflineAudioContext` |
+| Noise reduction | [RNNoise](https://github.com/xiph/rnnoise) via [@shiguredo/rnnoise-wasm](https://github.com/shiguredo/rnnoise-wasm) in a Web Worker |
 | Color picker | [vanilla-colorful](https://github.com/web-padawan/vanilla-colorful) |
 | Storage | IndexedDB; `.sonant` files for backup and sharing |
 
@@ -153,6 +154,7 @@ app/src/
     autozoom.ts           smart auto-zoom on emphasized words
     layerfx.ts            chroma key (CPU + WebGL2), masks and blend modes
     perf.ts               device performance settings (GPU / CPU)
+    denoise.ts            AI noise reduction (RNNoise worker, cache, WAV)
     render.ts             caption drawing, presets, animations, easing, drag box
     export.ts             MP4 export (video + captions + mixed audio)
     transcribe.ts         audio decode + worker bridge

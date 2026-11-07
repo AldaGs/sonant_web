@@ -42,9 +42,14 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - ✅ **Chroma key on main-video strips**: the keyed area shows the strip's Background (colour, image or blur; black when it's set to Original). "Text behind" puts captions and layers under the keyed person with no segmentation model.
 - ✅ Tests: `node src/lib/perf.test.ts`.
 
-## Phase 3: AI noise reduction / voice isolation ⬜
-- RNNoise (WASM) in an AudioWorklet for the preview, and offline in export (`audio.ts`). Include a strength mix.
-- Replace or extend the current "Voice cleanup" (rumble filter plus compressor), which only applies on export.
+## Phase 3: AI noise reduction ✅
+- ✅ **RNNoise** via `@shiguredo/rnnoise-wasm` (Apache-2.0; RNNoise itself is BSD). It runs in a worker (`lib/denoise.worker.ts`), and the ~5 MB WASM only downloads the first time it's used.
+- ✅ **AI noise reduction** in the Sequence panel: Off, Light (50%), Medium (80%) or Strong (100% cleaned). It's saved with the project.
+- ✅ Each video clip's sound is cleaned once per level at 48 kHz, with the model's 960-sample delay removed (measured in Chromium). The result is cached in IndexedDB (`clean:<asset>:<level>`) and removed when the project's media is deleted.
+- ✅ The preview plays the cleaned copy in sync with the muted video: same rate, and it re-syncs if it drifts more than 80 ms. Export mixes the cleaned copy instead of the file's sound, so it can be combined with Voice cleanup and loudness.
+- ✅ Tests: `node src/lib/denoise.test.ts` (framing, delay compensation, mix, WAV). In a browser test, a noisy clip on Medium went from −36 to −50 dB in a noise-only stretch.
+- Note: RNNoise is trained on speech, so it also lowers music and pure tones. Use it on talking clips, not music.
+- Later: apply it to video layers and voiceover items. Optionally a stronger model (DeepFilterNet) as a "High quality" choice when the GPU setting allows.
 
 ## Phase 4: Effects pack ⬜
 - Vignette, film grain, glow/bloom, RGB split and camera shake on punch-ins, in the `grade.ts` shader. Motion blur on zoom and whip transitions (`transitions.ts`).
