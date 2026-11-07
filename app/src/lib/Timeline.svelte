@@ -93,21 +93,48 @@
     onseek(Math.max(0, Math.min(total, ((e.clientX - r.left) / r.width) * total)));
   }
 
+  // Swallow the click that follows a drag, so finishing a scrub doesn't also select the strip under the finger.
+  function eatNextClick() {
+    const eat = (c: Event) => (c.stopPropagation(), c.preventDefault());
+    addEventListener('click', eat, { capture: true, once: true });
+    setTimeout(() => removeEventListener('click', eat, { capture: true }), 0);
+  }
+
   // Press and drag on the tracks (not on a draggable or button) to scrub the playhead.
   // Listens on window and only scrubs past 3px, so a plain click still selects strips and seeks.
+  // On touch, a zoomed timeline pans natively from the tracks; the ruler and playhead knob still scrub.
   function scrub(e: PointerEvent) {
     if (e.button !== 0 || (e.target as Element).closest('button')) return;
+    if (e.pointerType === 'touch' && zoom !== 1 && !(e.target as Element).closest('.ruler')) return;
     getSelection()?.removeAllRanges(); // and don't extend a selection made elsewhere on the page
     const x0 = e.clientX;
     let on = false;
     const move = (m: PointerEvent) => {
-      if (!on && Math.abs(m.clientX - x0) < 3) return;
+      if (m.pointerId !== e.pointerId || (!on && Math.abs(m.clientX - x0) < 3)) return;
       on = true;
       seekAt(m);
     };
-    const up = () => (removeEventListener('pointermove', move), removeEventListener('pointerup', up));
+    const end = (u: PointerEvent) => {
+      if (u.pointerId !== e.pointerId) return;
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', end);
+      removeEventListener('pointercancel', end);
+      if (on && u.type === 'pointerup') eatNextClick();
+    };
     addEventListener('pointermove', move);
-    addEventListener('pointerup', up);
+    addEventListener('pointerup', end);
+    addEventListener('pointercancel', end);
+  }
+
+  // Drag the playhead's knob directly (a big touch target above the ruler).
+  function grabPlayhead(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    el.onpointermove = (m) => seekAt(m);
+    el.onpointerup = el.onpointercancel = () => (el.onpointermove = el.onpointerup = el.onpointercancel = null);
   }
 
   // Generic horizontal drag: calls move(deltaSeconds) live; a press without movement runs onclick.
@@ -122,9 +149,9 @@
       if (!moved) ((moved = true), oncommit());
       move((m.clientX - x0) * perPx);
     };
-    el.onpointerup = () => {
-      el.onpointermove = el.onpointerup = null;
-      if (!moved) onclick?.();
+    el.onpointerup = el.onpointercancel = (u) => {
+      el.onpointermove = el.onpointerup = el.onpointercancel = null;
+      if (u.type === 'pointerup' && !moved) onclick?.();
     };
   }
 
@@ -198,7 +225,7 @@
 
   <div class="scroller" bind:this={scroller}>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="inner" style:--music="{laneCount * 28 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%"
+    <div class="inner" style:--music="{laneCount * 28 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1}
       role="slider" tabindex="0" aria-label={t('timeline')} aria-valuemin={0} aria-valuemax={total} aria-valuenow={playhead ?? 0}
       onclick={seekAt} onpointerdown={scrub}
       onkeydown={(e) => {
@@ -215,7 +242,7 @@
           <div class="seg" class:sel={i === selected} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
             onclick={() => (selected = i)} title={clipName(s)}>
             <div class="thumbs">
-              {#each segThumbs(s) as th}<img src={th.url} alt="" />{/each}
+              {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>
             <span class="cname">{clipName(s)}</span>
             {#if i === selected}
@@ -263,22 +290,30 @@
         {/each}
       </div>
 
-      {#if playhead !== null}<div class="playhead" style:left={pct(playhead)}></div>{/if}
+      {#if playhead !== null}
+        <div class="playhead" style:left={pct(playhead)}>
+          <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events (the timeline itself is the keyboard slider) -->
+          <div class="knob" aria-hidden="true" onpointerdown={grabPlayhead} onclick={(e) => e.stopPropagation()}></div>
+        </div>
+      {/if}
     </div>
   </div>
 </div>
 
 <style>
-  .tl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; user-select: none; -webkit-user-select: none; }
+  .tl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
   .labels, .inner { display: grid; grid-template-rows: 20px 48px 30px 22px 22px var(--music, 24px); row-gap: 6px; }
   /* Music & VO sits in its own area under a divider. */
   .labels > span:last-child, .inner > .row.music { border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 2px; align-self: start; }
   .labels { font-size: 12px; color: var(--muted); align-items: center; }
   .scroller { overflow-x: auto; overflow-y: hidden; }
-  .inner { position: relative; min-width: 100%; cursor: pointer; }
+  .inner { position: relative; min-width: 100%; cursor: pointer; touch-action: pan-y pinch-zoom; }
+  /* Zoomed: horizontal swipes on the tracks scroll the timeline; the ruler and knob keep scrubbing. */
+  .inner.zoomed { touch-action: pan-x pan-y pinch-zoom; }
   .inner:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .row { position: relative; }
-  .ruler { position: relative; border-bottom: 1px solid var(--border-soft); }
+  .ruler { position: relative; border-bottom: 1px solid var(--border-soft); touch-action: none; }
   .tick { position: absolute; top: 0; font-size: 11px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
   .tick:first-child { transform: none; }
   .seg { position: absolute; top: 0; bottom: 0; overflow: hidden; border-radius: 6px; background: var(--surface); border: 2px solid var(--border-soft); }
@@ -308,4 +343,7 @@
   .aud:hover .edge, .aud.sel .edge { background: rgb(106 184 255 / .55); }
   .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); pointer-events: none; transform: translateX(-1px); }
   .playhead::before { content: ''; position: absolute; top: -2px; left: -4px; border: 5px solid transparent; border-top-color: var(--accent); }
+  /* Grab area around the playhead's head, wider than it looks so a finger can catch it. */
+  .knob { position: absolute; top: -4px; left: -12px; width: 26px; height: 26px; pointer-events: auto; touch-action: none; cursor: ew-resize; z-index: 3; }
+  @media (pointer: coarse) { .knob { left: -16px; width: 34px; height: 34px; } }
 </style>

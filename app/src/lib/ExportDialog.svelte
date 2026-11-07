@@ -29,6 +29,17 @@
     dialog?.showModal();
   }
 
+  // Save the rendered file right away; the link in the dialog stays as a fallback if the browser blocks it.
+  function download(url: string, file: string) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file;
+    a.style.display = 'none';
+    document.body.append(a);
+    a.click();
+    a.remove();
+  }
+
   async function start() {
     if (result) URL.revokeObjectURL(result.url);
     result = null;
@@ -47,6 +58,7 @@
         mb: (blob.size / 1e6).toFixed(1),
         secs: ((performance.now() - t0) / 1000).toFixed(1),
       };
+      download(result.url, result.name);
     } catch (e) {
       error = (e as Error).name === 'AbortError' ? 'ex.cancelled' : (e as Error).message;
     } finally {
@@ -115,7 +127,7 @@
       <button onclick={() => abort?.abort()}>{t('ex.cancel')}</button>
     {:else}
       <button onclick={() => dialog?.close()}>{t('ex.cancel')}</button>
-      <button class="primary" onclick={start}>{result ? t('ex.again') : t('export')}</button>
+      <button class="primary" onclick={start}>{result ? t('ex.goAgain') : t('ex.go')}</button>
     {/if}
   </div>
 </dialog>
