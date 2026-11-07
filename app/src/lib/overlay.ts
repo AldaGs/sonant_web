@@ -10,6 +10,7 @@ export type Transform = {
   rotation: number; // degrees, clockwise
   opacity: number; // 0..1
   flipX?: boolean;
+  sx?: number; // live only (title styles): extra horizontal stretch
   crop?: [number, number, number, number]; // media only: left, top, right, bottom, fractions of the source
 };
 export type Overlay = {
@@ -24,7 +25,27 @@ export type Overlay = {
   style?: Partial<Style>; // text: look (on top of its preset)
   tf: Transform; // base transform; flipX and crop always come from here
   kf?: Keyframe[]; // animation: when present, x/y/scale/rotation/opacity come from these (sorted by t)
+  motion?: Motion; // animated title: in/out animation and an optional path, layered on top of tf/kf
 };
+// Animated title. The layer animates in over `in` seconds and out over the last `out` seconds.
+// With path 's' it travels left to right along a horizontal S curve centred on its transform's x/y.
+export type Motion = {
+  path: TitlePath;
+  style?: TitleStyle; // how it enters and leaves (default 'pop')
+  in: number; // seconds
+  out: number; // seconds
+  span: number; // horizontal travel, fraction of frame width
+  amp: number; // height of the S bends, fraction of frame height
+};
+// Paths: s = sideways S, wave = three bends, arc = rainbow arc, loop = S with a loop-the-loop in the middle,
+// zigzag = sharp diagonal switchbacks.
+export const TITLE_PATHS = ['none', 's', 'wave', 'arc', 'loop', 'zigzag'] as const;
+export type TitlePath = (typeof TITLE_PATHS)[number];
+// Styles: pop = fade + grow, drop = falls in with a bounce, spin = spins in/out, swing = swings like a sign,
+// stretch = squashes in from wide, flip = turns in edge-on.
+export const TITLE_STYLES = ['pop', 'drop', 'spin', 'swing', 'stretch', 'flip'] as const;
+export type TitleStyle = (typeof TITLE_STYLES)[number];
+export const DEFAULT_MOTION: Motion = { path: 's', in: 0.6, out: 0.6, span: 0.7, amp: 0.08 };
 // t is seconds from the layer's start.
 export type Keyframe = { t: number; x: number; y: number; scale: number; rotation: number; opacity: number };
 export const ANIMATED = ['x', 'y', 'scale', 'rotation', 'opacity'] as const;
@@ -42,6 +63,57 @@ export function tfAt(o: Overlay, t: number): Transform {
   const u = b.t > a.t ? smooth((r - a.t) / (b.t - a.t)) : 0;
   const out = { ...o.tf };
   for (const p of ANIMATED) out[p] = a[p] + (b[p] - a[p]) * u;
+  return out;
+}
+// Point on the S curve at u ∈ 0..1, as an offset from the centre in frame fractions.
+// One full sine period across the span: down-bend then up-bend, a sideways S.
+export function sPoint(m: Motion, u: number): { dx: number; dy: number } {
+  const x = m.span * (u - 0.5), A = m.amp, T = 2 * Math.PI;
+  switch (m.path) {
+    case 'wave': return { dx: x, dy: -A * Math.sin(3 * T * u) * 0.7 };
+    case 'arc': return { dx: x, dy: -A * 2 * Math.sin(Math.PI * u) + A };
+    case 'zigzag': { const f = (u * 4) % 1, k = Math.floor(u * 4) % 2; return { dx: x, dy: A * ((k ? 1 - f : f) * 2 - 1) }; }
+    case 'loop': {
+      // The S, plus a full loop-the-loop in the middle third (x runs backwards briefly, y rises and returns).
+      const a = T * Math.max(0, Math.min(1, (u - 1 / 3) * 3));
+      return { dx: x + (m.span / 8) * Math.sin(a), dy: -A * Math.sin(T * u) * 0.5 - (1 - Math.cos(a)) * A * 1.5 };
+    }
+    case 'none': return { dx: 0, dy: 0 };
+    default: return { dx: x, dy: -A * Math.sin(T * u) };
+  }
+}
+export const hasPath = (m?: Motion) => !!m && m.path !== 'none';
+// Falls and settles with two small bounces.
+const bounce = (u: number) => { const n = 7.5625, d = 2.75;
+  if (u < 1 / d) return n * u * u; if (u < 2 / d) return n * (u -= 1.5 / d) * u + 0.75;
+  if (u < 2.5 / d) return n * (u -= 2.25 / d) * u + 0.9375; return n * (u -= 2.625 / d) * u + 0.984375; };
+const ease = (u: number) => 1 - (1 - Math.max(0, Math.min(1, u))) ** 3; // ease-out cubic
+// Transform actually drawn at output time t: keyframes, then the title's motion on top.
+export function liveTf(o: Overlay, t: number, aspect = 16 / 9): Transform {
+  const tf = tfAt(o, t), m = o.motion;
+  if (!m) return tf;
+  const r = Math.max(0, Math.min(o.len, t - o.at));
+  const inU = m.in > 0 ? ease(r / m.in) : 1, outU = m.out > 0 ? ease((o.len - r) / m.out) : 1;
+  const out = { ...tf, opacity: tf.opacity * Math.min(1, inU * 1.5) * Math.min(1, outU * 1.5) };
+  const ri = m.in > 0 ? Math.min(1, r / m.in) : 1, ro = m.out > 0 ? Math.min(1, (o.len - r) / m.out) : 1; // 0→1 raw
+  switch (m.style ?? 'pop') {
+    case 'pop': out.opacity = tf.opacity * inU * outU; out.scale = tf.scale * (0.6 + 0.4 * inU) * (1 + 0.15 * (1 - outU)); break;
+    case 'drop': out.y = tf.y - 0.3 * (1 - bounce(ri)) + 0.3 * (1 - ease(ro)) ** 2; break;
+    case 'spin': out.rotation = tf.rotation - 360 * (1 - inU) + 360 * (1 - outU); out.scale = tf.scale * inU * Math.min(1, 0.2 + outU); break;
+    case 'swing': out.rotation = tf.rotation + 40 * Math.exp(-5 * ri) * Math.cos(12 * ri) * (ri < 1 ? 1 : 0) - 30 * (1 - ease(ro)); break;
+    case 'stretch': out.sx = 1 + 2 * (1 - inU) + 1.5 * (1 - outU); out.scale = tf.scale / Math.sqrt(out.sx); break;
+    case 'flip': out.sx = Math.max(0.02, Math.min(Math.sin((Math.PI / 2) * ri), Math.sin((Math.PI / 2) * ro))); break;
+  }
+  if (m.path === 'none') return out;
+  {
+    // Travel at an even pace (sine in-out), tilted along the curve's tangent.
+    const u = 0.5 - Math.cos((Math.PI * r) / Math.max(1e-6, o.len)) / 2, p = sPoint(m, u);
+    out.x += p.dx;
+    out.y += p.dy;
+    const q = sPoint(m, Math.min(1, u + 1e-3)), q0 = sPoint(m, Math.max(0, u - 1e-3));
+    const ang = Math.atan2((q.dy - q0.dy) / aspect, q.dx - q0.dx || 1e-9) * 180 / Math.PI; // tangent in px
+    out.rotation += Math.max(-35, Math.min(35, ang * 0.5));
+  }
   return out;
 }
 // Set (or add) the keyframe at layer time t to the given transform.
@@ -108,7 +180,7 @@ function textCaption(o: Overlay): Caption {
 
 // Draw one overlay at output time t. `src` is the decoded frame/image (null for text or not ready).
 export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number, src: CanvasImageSource | null, sw: number, sh: number): Placed | null {
-  const W = ctx.canvas.width, H = ctx.canvas.height, tf = tfAt(o, t);
+  const W = ctx.canvas.width, H = ctx.canvas.height, tf = liveTf(o, t, W / H);
   ctx.save();
   ctx.globalAlpha *= Math.max(0, Math.min(1, tf.opacity));
   let placed: Placed | null = null;
@@ -117,9 +189,9 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number
     // drawCaption centres on (x·W, y·H); move the origin to the layer's centre and draw at 0,0.
     ctx.translate(tf.x * W, tf.y * H);
     ctx.rotate((tf.rotation * Math.PI) / 180);
-    if (tf.flipX) ctx.scale(-1, 1);
+    if (tf.flipX || tf.sx) ctx.scale((tf.flipX ? -1 : 1) * (tf.sx ?? 1), 1);
     const box = drawCaption(ctx, textCaption(o), t, { ...s, x: 0, y: 0, size: s.size * tf.scale });
-    placed = { id: o.id, cx: tf.x * W + box.x + box.w / 2, cy: tf.y * H + box.y + box.h / 2, w: box.w, h: box.h, rot: tf.rotation };
+    placed = { id: o.id, cx: tf.x * W + (box.x + box.w / 2) * (tf.sx ?? 1), cy: tf.y * H + box.y + box.h / 2, w: box.w * (tf.sx ?? 1), h: box.h, rot: tf.rotation };
   } else if (src && sw && sh) {
     const p = placeMedia(tf, sw, sh, W, H);
     ctx.translate(p.cx, p.cy);
@@ -151,3 +223,5 @@ export const newText = (at: number, text: string): Overlay =>
 export const newMedia = (kind: 'video' | 'image', assetId: string, at: number, len: number): Overlay =>
   ({ id: crypto.randomUUID(), kind, assetId, at, len, ...(kind === 'video' ? { offset: 0, volume: 0 } : {}),
     tf: { ...DEFAULT_TF, x: 0.72, y: 0.28, scale: 0.4 } });
+export const newTitle = (at: number, text: string, len = 4): Overlay =>
+  ({ ...newText(at, text), len, motion: { ...DEFAULT_MOTION }, tf: { ...DEFAULT_TF, y: 0.25, scale: 1.2 } });

@@ -22,7 +22,7 @@
   import { beatsOfFile } from './lib/beats';
   import { translateTexts, translated, type Dir } from './lib/translate';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
-  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform } from './lib/overlay';
+  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
   import { audioPeaks } from './lib/waveform';
@@ -394,6 +394,13 @@
     pushOverlay(newMedia(a.kind === 'video' ? 'video' : 'image', a.id, at, len));
   }
   const addText = () => pushOverlay(newText(outNow(), t('newText')));
+  // Animated title: a text layer on top of the stack that animates in and out along an S curve.
+  const addTitle = () => {
+    const at = outNow(), end = outDuration(segments);
+    pushOverlay(newTitle(at, t('newTitle'), end > at ? Math.min(4, Math.max(1, end - at)) : 4));
+  };
+  const setMotion = (o: Overlay, m: Partial<Motion> | null) =>
+    setOverlay(o.id, { motion: m ? { ...(o.motion ?? DEFAULT_MOTION), ...m } : undefined });
 
   // ---- Templates (shared by every project in this browser) ----
   let myTemplates = $state<Template[]>([]);
@@ -631,6 +638,8 @@
         trans.apply(ctx, strip!.fx?.trans, si, player.o - segStartOut, strip!.fx?.transDur ?? TRANS_DUR);
       }
       const sel = placed.find((p) => p.id === selectedOverlay);
+      const selO = sel && overlays.find((o) => o.id === sel.id);
+      if (hasPath(selO?.motion)) drawSPath(ctx, selO, cv.width / (cv.getBoundingClientRect().width || cv.width));
       if (sel) drawLayerBox(ctx, sel, cv.width / (cv.getBoundingClientRect().width || cv.width));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
       // Platform UI zones (preview only): captions under the app's buttons/description get a warning.
@@ -752,6 +761,21 @@
       if (p) res.push(p);
     }
     return res;
+  }
+  // Preview guide for a title's S path (export never draws it).
+  function drawSPath(ctx: CanvasRenderingContext2D, o: Overlay, k: number) {
+    const W = ctx.canvas.width, H = ctx.canvas.height, base = tfAt(o, player.o), m = o.motion!;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(106,184,255,0.8)';
+    ctx.lineWidth = 2 * k;
+    ctx.setLineDash([6 * k, 6 * k]);
+    ctx.beginPath();
+    for (let i = 0; i <= 48; i++) {
+      const p = sPoint(m, i / 48), x = (base.x + p.dx) * W, y = (base.y + p.dy) * H;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
   }
   // Selection frame: rotated outline, corner squares to scale, a round knob above to rotate.
   const ROT_GAP = 26; // CSS px from the top edge to the rotate knob
@@ -1575,6 +1599,40 @@
             </label>
           </div>
         {/if}
+        {#if o.kind === 'text'}
+          {@const m = o.motion}
+          <div class="lrow">
+            <label class="vol">{t('titleAnim')}
+              <select value={m ? m.path : 'off'} onchange={(e) => { const v = e.currentTarget.value; setMotion(o, v === 'off' ? null : { path: v as Motion['path'] }); doneEditing(); }}>
+                <option value="off">{t('titleOff')}</option>
+                {#each TITLE_PATHS as p}<option value={p}>{t('tpath.' + p)}</option>{/each}
+              </select>
+            </label>
+            {#if m}
+              <label class="vol">{t('titleStyle')}
+                <select value={m.style ?? 'pop'} onchange={(e) => (setMotion(o, { style: e.currentTarget.value as Motion['style'] }), doneEditing())}>
+                  {#each TITLE_STYLES as st}<option value={st}>{t('tstyle.' + st)}</option>{/each}
+                </select>
+              </label>
+            {/if}
+          </div>
+          {#if m}
+            <label class="vol">{t('titleIn')} <span class="mono small">{m.in.toFixed(1)}s</span>
+              <input type="range" min="0" max={Math.max(0.1, o.len / 2)} step="0.1" value={m.in} oninput={(e) => setMotion(o, { in: +e.currentTarget.value })} />
+            </label>
+            <label class="vol">{t('titleOut')} <span class="mono small">{m.out.toFixed(1)}s</span>
+              <input type="range" min="0" max={Math.max(0.1, o.len / 2)} step="0.1" value={m.out} oninput={(e) => setMotion(o, { out: +e.currentTarget.value })} />
+            </label>
+            {#if m.path !== 'none'}
+              <label class="vol">{t('titleSpan')} <span class="mono small">{Math.round(m.span * 100)}%</span>
+                <input type="range" min="0" max="1.2" step="0.01" value={m.span} oninput={(e) => setMotion(o, { span: +e.currentTarget.value })} />
+              </label>
+              <label class="vol">{t('titleCurve')} <span class="mono small">{Math.round(m.amp * 100)}%</span>
+                <input type="range" min="0" max="0.3" step="0.01" value={m.amp} oninput={(e) => setMotion(o, { amp: +e.currentTarget.value })} />
+              </label>
+            {/if}
+          {/if}
+        {/if}
         <div class="keyrow" role="group" aria-label={t('keyframes')}>
           <button class="sm icon" onclick={() => jumpKey(o, -1)} disabled={!o.kf?.length} title={t('prevKey')} aria-label={t('prevKey')}><Icon name="chevron_left" /></button>
           <button class="sm key" class:on={onKey} aria-pressed={onKey} onclick={() => toggleKey(o)}
@@ -1701,6 +1759,7 @@
           <span class="divider"></span>
         {/if}
         <button class="sm" onclick={addText} disabled={!hasMedia} title={t('addTextTip')}><Icon name="title" /> {t('addText')}</button>
+        <button class="sm" onclick={addTitle} disabled={!hasMedia} title={t('addTitleTip')}><Icon name="animation" /> {t('addTitle')}</button>
         <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}><Icon name="content_cut" /> {t('splitAt')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
