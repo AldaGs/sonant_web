@@ -4,7 +4,7 @@
   import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Caption, type Word } from './lib/captions';
   import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
-  import { zoomPlace, segAt, PUNCH_IN, freezeAt, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment, type Fx } from './lib/cuts';
+  import { zoomPlace, segAt, PUNCH_IN, freezeAt, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, isCut, keptCaptions, type Segment, type Fx } from './lib/cuts';
   import { drawFrame } from './lib/segment';
   import { itemLen, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
@@ -17,6 +17,7 @@
   import { subjectCenter } from './lib/segment';
   import { wantsProxy, makeProxy, loadProxy, saveProxy, deleteProxy } from './lib/proxy';
   import { cleanup, cleanupRanges } from './lib/cleanup.svelte';
+  import { fileSilences } from './lib/silence';
   import { speechRanges } from './lib/audio';
   import { beatsOfFile } from './lib/beats';
   import { translateTexts, translated, type Dir } from './lib/translate';
@@ -532,6 +533,29 @@
     }
   }
 
+
+  // Trim silences from the audio itself (no transcription): quiet stretches in every clip are cut.
+  let silBusy = $state(false);
+  async function cutAudioSilences() {
+    if (!hasMedia || silBusy) return;
+    silBusy = true;
+    error = notice = '';
+    try {
+      const starts = clipStarts(clips, durations), byAsset = new Map<string, [number, number][]>();
+      const ranges: [number, number][] = [];
+      for (let i = 0; i < clips.length; i++) {
+        const id = clips[i].assetId, f = files.get(id), len = durations.get(id) ?? 0;
+        if (!f) continue;
+        if (!byAsset.has(id)) byAsset.set(id, await fileSilences(f, cleanup.db, cleanup.min, cleanup.pad).catch(() => []));
+        for (const [a, b] of byAsset.get(id)!) if (a < len) ranges.push([starts[i] + a, starts[i] + Math.min(b, len)]);
+      }
+      const fresh = ranges.filter(([a, b]) => !isCut(segments, { start: a, end: b }));
+      if (fresh.length) cutRanges(fresh);
+      else error = 'noSilence';
+    } finally {
+      silBusy = false;
+    }
+  }
 
   // ---- Playback ----
   const active = (c: Caption) => time >= startOf(c) && time < endOf(c);
@@ -1314,6 +1338,18 @@
       {#if error}<p class="error small">{t(error)}</p>{/if}
 
       {#if tab === 'transcript'}
+        <details class="audio-sil">
+          <summary>{t('audioSilTitle')}</summary>
+          <p class="muted small">{t('audioSilHint')}</p>
+          <label class="sl">{t('audioSilDb')} <span class="mono">{cleanup.db} dB</span>
+            <input type="range" min="-60" max="-15" step="1" bind:value={cleanup.db} /></label>
+          <label class="sl">{t('minPause')} <span class="mono">{cleanup.min.toFixed(1)}s</span>
+            <input type="range" min="0.2" max="2" step="0.1" bind:value={cleanup.min} /></label>
+          <label class="sl">{t('keepPad')} <span class="mono">{cleanup.pad.toFixed(2)}s</span>
+            <input type="range" min="0" max="0.5" step="0.05" bind:value={cleanup.pad} /></label>
+          <button class="sm primary" onclick={cutAudioSilences} disabled={!hasMedia || silBusy || busy}>
+            {silBusy ? t('audioSilBusy') : t('audioSilRun')}</button>
+        </details>
         {#if !captions.length && !busy}<p class="muted small">{t('transcriptEmpty')}</p>{/if}
         {#if captions.length}
           <TranscriptView bind:this={transcriptView} {captions} {segments} {time} {duration}
@@ -1984,4 +2020,8 @@
   .keys kbd { font: 12px ui-monospace, monospace; background: var(--tab-on); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
   .keys > button { justify-self: end; }
   @keyframes up { from { transform: translateY(100%); } }
+  .audio-sil { display: grid; gap: 6px; margin: 8px 0; }
+  .audio-sil summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+  .audio-sil .sl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+  .audio-sil .sl input { grid-column: 1 / -1; accent-color: var(--accent); }
 </style>

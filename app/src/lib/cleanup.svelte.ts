@@ -4,9 +4,9 @@ import { isFiller, silenceRanges } from './transcript';
 
 // Clean-up settings (shared by the transcript panel, the timeline preview and auto-clean after transcription).
 // Remembered per browser.
-type Settings = { min: number; pad: number; fillers: boolean; silences: boolean; auto: boolean; preview: boolean };
+type Settings = { min: number; pad: number; fillers: boolean; silences: boolean; auto: boolean; preview: boolean; db: number };
 const KEY = 'sonant.cleanup';
-const DEFAULTS: Settings = { min: 0.6, pad: 0.15, fillers: true, silences: true, auto: false, preview: false };
+const DEFAULTS: Settings = { min: 0.6, pad: 0.15, fillers: true, silences: true, auto: false, preview: false, db: -35 };
 function load(): Settings {
   try {
     return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') };
