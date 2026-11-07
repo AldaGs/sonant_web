@@ -9,7 +9,7 @@
   let {
     segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = 1,
     selected = $bindable(-1), selectedCapIds = new Set<string>(), selectedAudio = $bindable(''), onselectcap,
-    onseek, ontrim, oncommit, onmovecap, onaudio,
+    onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
   }: {
     segments: Segment[];
     time: number; // sequence time
@@ -28,6 +28,9 @@
     onselectcap: (id: string, e: MouseEvent) => void; // Ctrl/⌘ toggles, Shift selects a range
     selectedAudio: string;
     onseek: (out: number) => void;
+    onseeksrc?: (src: number) => void; // show the frame at a source time (live trim preview)
+    snap?: boolean; // snap drags to edges and the playhead (hold Alt to bypass)
+    range?: [number | null, number | null] | null; // I/O marks, sequence time
     ontrim: (i: number, start: number, end: number) => void; // live while dragging
     oncommit: () => void; // a drag started: snapshot for undo
     onmovecap: (id: string, start: number, end: number) => void; // move or retime a caption, live, sequence time
@@ -49,14 +52,18 @@
 
   function moveAudio(e: PointerEvent, item: AudioItem) {
     selectedAudio = item.id;
-    const a = item.at;
-    drag(e, (d) => onaudio(item.id, { at: Math.max(0, Math.min(total - 0.1, a + d)) }));
+    const a = item.at, len = audLen(item), pts = outPoints(item.id);
+    drag(e, (d, on) => {
+      const at = a + d;
+      onaudio(item.id, { at: Math.max(0, Math.min(total - 0.1, at + nearest([at, at + len], pts, on, idOut))) });
+    });
   }
   // Drag an audio item's edge to trim it (the left edge also moves its start).
   function audEdge(e: PointerEvent, item: AudioItem, side: 'start' | 'end') {
     selectedAudio = item.id;
-    const dur = durations.get(item.assetId) ?? 0;
-    drag(e, (d) => onaudio(item.id, trimAudio(item, dur, side, d)));
+    const dur = durations.get(item.assetId) ?? 0, pts = outPoints(item.id);
+    const x = side === 'start' ? item.at : item.at + audLen(item);
+    drag(e, (d, on) => onaudio(item.id, trimAudio(item, dur, side, d + nearest([x + d], pts, on, idOut))));
   }
   const audLen = (a: AudioItem) => itemLen(a, durations.get(a.assetId) ?? 0);
   // Overlapping audio items stack into lanes; the Music & VO row grows to fit them.
@@ -137,8 +144,37 @@
     el.onpointerup = el.onpointercancel = () => (el.onpointermove = el.onpointerup = el.onpointercancel = null);
   }
 
-  // Generic horizontal drag: calls move(deltaSeconds) live; a press without movement runs onclick.
-  function drag(e: PointerEvent, move: (d: number) => void, onclick?: () => void) {
+  // ---- Snapping ----
+  // Drags snap to strip edges, caption edges, audio edges and the playhead when within SNAP_PX.
+  // Hold Alt (Option) while dragging to place freely. A guide line marks the snap.
+  const SNAP_PX = 8;
+  let guide = $state<number | null>(null); // output time of the active snap line
+  const tol = () => (SNAP_PX * total) / (inner?.clientWidth || 1);
+  // Snap points in output time (audio items live there).
+  const outPoints = (skipAudio = '') => [0, total, ...(playhead === null ? [] : [playhead]),
+    ...segPos.flatMap((p) => [p.start, p.start + p.len]),
+    ...outCaps.flatMap((c) => [startOf(c), endOf(c)]),
+    ...audios.filter((a) => a.id !== skipAudio).flatMap((a) => [a.at, a.at + audLen(a)])];
+  // Snap points in sequence (source) time (strips and captions live there).
+  const srcPoints = (skipCap = '', skipSeg = -1) => [0, duration, time,
+    ...segments.flatMap((g, i) => (i === skipSeg ? [] : [g.start, g.end])),
+    ...captions.filter((c) => c.id !== skipCap).flatMap((c) => [startOf(c), endOf(c)])];
+  // Nearest point within tolerance: returns the shift to apply (0 = no snap) and sets the guide.
+  function nearest(vals: number[], pts: number[], on: boolean, toOut: (v: number) => number | null): number {
+    guide = null;
+    if (!on) return 0;
+    let best = 0, bd = tol();
+    for (const v of vals) for (const p of pts) {
+      const d = Math.abs(p - v);
+      if (d < bd) ((bd = d), (best = p - v), (guide = toOut(p)));
+    }
+    return best;
+  }
+  const idOut = (v: number) => v;
+  const srcOut = (v: number) => toOutput(segments, v) ?? null;
+
+  // Generic horizontal drag: calls move(deltaSeconds, snapOn) live; a press without movement runs onclick.
+  function drag(e: PointerEvent, move: (d: number, snapOn: boolean) => void, onclick?: () => void) {
     e.stopPropagation();
     const x0 = e.clientX, perPx = total / inner!.clientWidth;
     const el = e.currentTarget as HTMLElement;
@@ -147,24 +183,33 @@
     el.onpointermove = (m) => {
       if (!moved && Math.abs(m.clientX - x0) < 3) return;
       if (!moved) ((moved = true), oncommit());
-      move((m.clientX - x0) * perPx);
+      move((m.clientX - x0) * perPx, snap && !m.altKey);
     };
     el.onpointerup = el.onpointercancel = (u) => {
       el.onpointermove = el.onpointerup = el.onpointercancel = null;
+      guide = null;
       if (u.type === 'pointerup' && !moved) onclick?.();
     };
   }
 
   function edge(e: PointerEvent, i: number, side: 'start' | 'end') {
-    const s0 = segments[i];
-    drag(e, (d) => (side === 'start' ? ontrim(i, s0.start + d, s0.end) : ontrim(i, s0.start, s0.end + d)));
+    const s0 = segments[i], pts = srcPoints('', i); // captured at drag start, so the preview seek doesn't move the target
+    drag(e, (d, on) => {
+      const v = (side === 'start' ? s0.start : s0.end) + d;
+      const x = v + nearest([v], pts, on, srcOut);
+      if (side === 'start') ontrim(i, x, s0.end);
+      else ontrim(i, s0.start, x);
+      // Live preview: show the frame at the edge being trimmed (the last frame for the out edge).
+      onseeksrc?.(side === 'start' ? x : Math.max(s0.start, x - 1 / 30));
+    });
   }
 
   function moveCap(e: PointerEvent, id: string) {
     const c = sourceById.get(id);
     if (!c) return;
-    const a = startOf(c), b = endOf(c);
-    drag(e, (d) => {
+    const a = startOf(c), b = endOf(c), pts = srcPoints(id);
+    drag(e, (d0, on) => {
+      const d = d0 + nearest([a + d0, b + d0], pts, on, srcOut);
       const dd = Math.max(-a, Math.min(duration - b, d));
       onmovecap(id, a + dd, b + dd);
     }, () => onseek(toOutput(segments, a) ?? 0));
@@ -173,10 +218,12 @@
   function capEdge(e: PointerEvent, id: string, side: 'start' | 'end') {
     const c = sourceById.get(id);
     if (!c) return;
-    const a = startOf(c), b = endOf(c);
-    drag(e, (d) => (side === 'start'
-      ? onmovecap(id, Math.max(0, Math.min(b - 0.1, a + d)), b)
-      : onmovecap(id, a, Math.max(a + 0.1, Math.min(duration, b + d)))));
+    const a = startOf(c), b = endOf(c), pts = srcPoints(id);
+    drag(e, (d0, on) => {
+      const d = d0 + nearest([(side === 'start' ? a : b) + d0], pts, on, srcOut);
+      if (side === 'start') onmovecap(id, Math.max(0, Math.min(b - 0.1, a + d)), b);
+      else onmovecap(id, a, Math.max(a + 0.1, Math.min(duration, b + d)));
+    });
   }
 
   // Waveform of the clips' own audio: one bar every 3px, height = loudest peak under it.
@@ -229,7 +276,7 @@
       role="slider" tabindex="0" aria-label={t('timeline')} aria-valuemin={0} aria-valuemax={total} aria-valuenow={playhead ?? 0}
       onclick={seekAt} onpointerdown={scrub}
       onkeydown={(e) => {
-        const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        const d = (e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0) * (e.shiftKey ? 1 : 1 / 30);
         if (d) (e.preventDefault(), onseek(Math.max(0, (playhead ?? 0) + d)));
       }}>
       <div class="ruler">
@@ -290,6 +337,14 @@
         {/each}
       </div>
 
+      {#if range && (range[0] !== null || range[1] !== null)}
+        {@const a = toOutput(segments, range[0] ?? range[1]!) ?? 0}
+        {@const b = toOutput(segments, range[1] ?? range[0]!) ?? a}
+        <div class="range" style:left={pct(Math.min(a, b))} style:width={pct(Math.abs(b - a))} aria-hidden="true">
+          {#if range[0] !== null}<span class="mk in">I</span>{/if}{#if range[1] !== null}<span class="mk out">O</span>{/if}
+        </div>
+      {/if}
+      {#if guide !== null}<div class="guide" style:left={pct(guide)} aria-hidden="true"></div>{/if}
       {#if playhead !== null}
         <div class="playhead" style:left={pct(playhead)}>
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events (the timeline itself is the keyboard slider) -->
@@ -341,6 +396,11 @@
   .edge.l { left: 0; border-radius: 6px 0 0 6px; } .edge.r { right: 0; border-radius: 0 6px 6px 0; }
   .cap:hover .edge, .cap.sel .edge { background: rgb(200 245 96 / .55); }
   .aud:hover .edge, .aud.sel .edge { background: rgb(106 184 255 / .55); }
+  .guide { position: absolute; top: 0; bottom: 0; width: 1px; background: #ffd84d; pointer-events: none; z-index: 4; box-shadow: 0 0 4px #ffd84d; }
+  .range { position: absolute; top: 0; bottom: 0; background: rgb(255 216 77 / .12); border-left: 1px solid #ffd84d; border-right: 1px solid #ffd84d;
+    pointer-events: none; z-index: 1; min-width: 1px; }
+  .mk { position: absolute; top: 2px; font-size: 10px; font-weight: 700; color: #1a1a1a; background: #ffd84d; border-radius: 3px; padding: 0 3px; }
+  .mk.in { left: 2px; } .mk.out { right: 2px; }
   .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); pointer-events: none; transform: translateX(-1px); }
   .playhead::before { content: ''; position: absolute; top: -2px; left: -4px; border: 5px solid transparent; border-top-color: var(--accent); }
   /* Grab area around the playhead's head, wider than it looks so a finger can catch it. */

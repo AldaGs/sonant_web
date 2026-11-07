@@ -558,19 +558,33 @@
   // Auto-select: follow the playhead. The caption under it becomes the selection (none in a gap),
   // and with more than one video strip the strip under it is selected too. Only acts when the
   // thing under the playhead changes, so a manual pick stays until the playhead moves on.
+  const pref = (k: string) => { try { return localStorage.getItem('sonant.' + k) !== '0'; } catch { return true; } };
+  let snapOn = $state(pref('snap'));
+  $effect(() => { try { localStorage.setItem('sonant.snap', snapOn ? '1' : '0'); } catch {} });
+  let marks = $state<[number | null, number | null]>([null, null]); // I/O range, sequence time
+  let showKeys = $state(false);
   let autoSelect = $state((() => { try { return localStorage.getItem('sonant.autoSelect') !== '0'; } catch { return true; } })());
   $effect(() => { try { localStorage.setItem('sonant.autoSelect', autoSelect ? '1' : '0'); } catch {} });
   const capUnder = $derived(visibleCaps.find((c) => time >= startOf(c) && time < endOf(c))?.id ?? null);
   const stripUnder = $derived(segments.length > 1 ? segments.findIndex((g) => time >= g.start && time < g.end) : -2);
+  // Paused while a pointer is down, so a drag's live preview seek can't swap the selection mid-drag.
+  let pressing = $state(false);
+  $effect(() => {
+    const down = () => (pressing = true), up = () => (pressing = false);
+    addEventListener('pointerdown', down, true);
+    addEventListener('pointerup', up, true);
+    addEventListener('pointercancel', up, true);
+    return () => (removeEventListener('pointerdown', down, true), removeEventListener('pointerup', up, true), removeEventListener('pointercancel', up, true));
+  });
   $effect(() => {
     const id = capUnder;
-    if (!autoSelect) return;
+    if (!autoSelect || pressing) return;
     if (id) { if (selectedCapIds.length !== 1 || selectedCapIds[0] !== id) selectedCapIds = [id]; }
     else if (selectedCapIds.length) selectedCapIds = [];
   });
   $effect(() => {
     const i = stripUnder;
-    if (autoSelect && i !== -2 && selected !== i) selected = i;
+    if (autoSelect && !pressing && i !== -2 && selected !== i) selected = i;
   });
 
   // Add a 2-second line at the playhead, kept in time order.
@@ -601,8 +615,20 @@
   }
   const setAudio = (id: string, patch: Partial<AudioItem>) => (audios = audios.map((a) => (a.id === id ? { ...a, ...patch } : a)));
 
+  const FRAME = 1 / 30;
+  const step = (d: number) => (player.playing && player.pause(), (paused = true), seek(time + d));
+  // Cut the I/O range (ripple: later material slides left).
+  function cutMarks() {
+    const [a, b] = marks;
+    if (a === null || b === null) return false;
+    setSegs(cutRange(segments, Math.min(a, b), Math.max(a, b)));
+    marks = [null, null];
+    return true;
+  }
+
   function keys(e: KeyboardEvent) {
     const mod = e.ctrlKey || e.metaKey;
+    if (showKeys && (e.key === 'Escape' || e.key === '?')) return (e.preventDefault(), (showKeys = false));
     // Ctrl/⌘+S saves the project file from anywhere (Shift = choose a new file).
     if (mod && e.key.toLowerCase() === 's') return (e.preventDefault(), void saveToFile(!e.shiftKey));
     if ((e.target as HTMLElement).closest?.('input, textarea, select')) return;
@@ -610,10 +636,26 @@
     else if (mod && e.key.toLowerCase() === 'y') (e.preventDefault(), redo());
     else if (mod) return;
     else if (e.code === 'Space' && !(e.target as HTMLElement).closest?.('button')) (e.preventDefault(), toggle());
+    else if (e.key === '?') showKeys = true;
+    else if (e.altKey) return;
     else if (e.key.toLowerCase() === 's') cutHere();
-    else if (e.key === 'Escape') clearCapSelection();
+    else if (e.key === 'Escape') (clearCapSelection(), (marks = [null, null]));
     else if (e.key === 'Delete' || e.key === 'Backspace')
-      (tab === 'transcript' && transcriptView?.toggleSelection()) || removeAudioItem() || deleteSelected();
+      cutMarks() || (tab === 'transcript' && transcriptView?.toggleSelection()) || removeAudioItem() || deleteSelected();
+    // The timeline and the preview canvas handle their own arrows (seek / nudge caption).
+    else if (e.key.startsWith('Arrow') && (e.target as HTMLElement).closest?.('.tl, canvas')) return;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+      (e.preventDefault(), step((e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 1 : FRAME)));
+    else if (e.key === 'Home') (e.preventDefault(), seek(0));
+    else if (e.key === 'End') (e.preventDefault(), seek(duration));
+    else if (e.key.toLowerCase() === 'k') (player.pause(), (paused = true));
+    else if (e.key.toLowerCase() === 'l') (player.play(), (paused = !player.playing));
+    else if (e.key.toLowerCase() === 'j') seek(time - (e.shiftKey ? 5 : 1));
+    else if (e.key.toLowerCase() === 'i') marks = [time, marks[1]];
+    else if (e.key.toLowerCase() === 'o') marks = [marks[0], time];
+    else if (e.key.toLowerCase() === 'x') cutMarks();
+    else if (e.key.toLowerCase() === 'n') snapOn = !snapOn;
+    else if (e.key.toLowerCase() === 'a') autoSelect = !autoSelect;
   }
 
   // Drag an asset card onto the timeline (or drop files anywhere on it).
@@ -907,18 +949,21 @@
         {/if}
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}>{t('splitAt')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
+        <button class="sm icon" class:on={snapOn} aria-pressed={snapOn} title={t('snapTip')} aria-label={t('snap')}
+          onclick={() => (snapOn = !snapOn)}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 3v8a6 6 0 0 0 12 0V3"/><path d="M6 7h4M14 7h4"/></svg></button>
         <button class="sm icon" class:on={autoSelect} aria-pressed={autoSelect} title={t('autoSelectTip')} aria-label={t('autoSelect')}
           onclick={() => (autoSelect = !autoSelect)}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v4M12 18v4"/><path d="M5 9l3 3-3 3"/><path d="M19 9l-3 3 3 3"/></svg></button>
         <button class="sm icon" onclick={undo} disabled={!past.length} title={t('undo')} aria-label={t('undo')}>↶</button>
         <button class="sm icon" onclick={redo} disabled={!future.length} title={t('redo')} aria-label={t('redo')}>↷</button>
         <button class="sm icon" onclick={() => (tlZoom = Math.max(1, tlZoom / 1.5))} disabled={tlZoom <= 1} aria-label={t('zoomOut')}>−</button>
         <button class="sm icon" onclick={() => (tlZoom = Math.min(16, tlZoom * 1.5))} aria-label={t('zoomIn')}>+</button>
+        <button class="sm icon" onclick={() => (showKeys = true)} title={t('keysTitle') + ' (?)'} aria-label={t('keysTitle')}>?</button>
       </div>
     </div>
     <Timeline {segments} {time} {clips} {durations} {names} {thumbs} {peaks} {duration} {captions} {audios}
       zoom={tlZoom} bind:selected bind:selectedAudio selectedCapIds={selectedSet} onselectcap={selectCap}
       animLabel={t('allCaptions', { name: animName })}
-      onseek={(o) => seek(toSource(segments, o))}
+      onseek={(o) => seek(toSource(segments, o))} onseeksrc={seek} snap={snapOn} range={marks}
       oncommit={commit}
       ontrim={(i, s, e) => (segments = trim(segments, i, s, e, duration))}
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
@@ -954,6 +999,22 @@
 </div>
 
 {#if hasMedia}
+  {#if showKeys}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="keys-bg" onclick={() => (showKeys = false)}>
+      <div class="keys" role="dialog" aria-modal="true" aria-label={t('keysTitle')} tabindex="-1" onclick={(e) => e.stopPropagation()}>
+        <h3>{t('keysTitle')}</h3>
+        <dl>
+          {#each [['Space', 'k.play'], ['J / K / L', 'k.jkl'], ['← / →', 'k.frame'], ['Shift + ← / →', 'k.second'], ['Home / End', 'k.ends'],
+            ['S', 'k.split'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
+            ['A', 'k.auto'], ['Ctrl/⌘ + Z', 'undo'], ['Ctrl/⌘ + Shift + Z', 'redo'], ['Ctrl/⌘ + S', 'k.save'], ['Esc', 'k.esc'], ['?', 'keysTitle']] as [k, d]}
+            <dt><kbd>{k}</kbd></dt><dd>{t(d)}</dd>
+          {/each}
+        </dl>
+        <button class="sm" onclick={() => (showKeys = false)}>OK</button>
+      </div>
+    </div>
+  {/if}
   <ExportDialog bind:this={exporter} {name} {segments} {captions} {style} srcW={frameW} srcH={frameH}
     source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), clipVolume })} />
 {/if}
@@ -1138,5 +1199,13 @@
     .scrim { display: block; position: fixed; inset: 0; z-index: 19; background: rgb(0 0 0 / .45); border: 0; border-radius: 0; height: auto; padding: 0; }
     .tools, .acts { display: flex; }
   }
+  .keys-bg { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .55); display: grid; place-items: center; padding: 16px; }
+  .keys { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; width: min(440px, 100%);
+    max-height: 90vh; overflow: auto; display: grid; gap: 12px; }
+  .keys h3 { margin: 0; font-size: 15px; }
+  .keys dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 13px; align-items: center; }
+  .keys dd { margin: 0; color: var(--muted); }
+  .keys kbd { font: 12px ui-monospace, monospace; background: var(--tab-on); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+  .keys > button { justify-self: end; }
   @keyframes up { from { transform: translateY(100%); } }
 </style>

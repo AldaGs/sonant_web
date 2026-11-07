@@ -21,11 +21,11 @@ Status from a code review (Nov 2026). ✅ done · 🟡 partly done · ⬜ not st
 | **Auto-select at playhead** (toggle, on by default) | ✅ | `App.svelte` `autoSelect` |
 
 ## Phase A: Timeline basics
-1. **Snapping**: playhead, strip edges, caption edges, audio edges; hold Alt to turn it off. `Timeline.svelte`.
-2. **Ripple delete** of a gap or strip. This is already implied by segments (cut = ripple). Add a "lift" mode that leaves a gap.
-3. **Trim strip edges by dragging** (segment start/end handles) with live preview.
-4. **Shortcuts**: J/K/L shuttle, ←/→ to step a frame, Shift+←/→ to step a second, I/O for range, `?` for a cheat-sheet overlay.
-5. **Undo memory**: switch from full snapshots to structural sharing (or diffs) once projects get big.
+1. ✅ **Snapping** to the playhead and to strip, caption and audio edges, with a yellow guide line. Hold Alt to drag freely; toggle with the magnet button or N.
+2. 🟡 **Ripple delete**: deleting a strip or an I/O range (X / Del) already ripples. A "lift" mode that leaves a gap is moved to Phase B, because the model has no gaps until there are tracks.
+3. ✅ **Trim strip edges by dragging**, now with a live preview: the preview shows the frame at the edge being trimmed.
+4. ✅ **Shortcuts**: J (back 1s, Shift 5s) / K (pause) / L (play), ←/→ to step a frame, Shift+←/→ to step a second, Home/End, I/O to mark a range, X to cut it, A for auto-select, `?` for the cheat-sheet. Real reverse and multi-speed J/L come with Phase C speed control.
+5. ⬜ **Undo memory**: still full snapshots (100 steps). Postponed until projects get big; revisit with the Phase B track model.
 
 ## Phase B: Tracks and layers
 6. **Data model**: `Track = { id, kind: 'video'|'text'|'overlay'|'audio', items }`. Overlay items have `at`, `len`, `transform`. Migrate `clips` into track 0 with a remap in `remapProject`.
