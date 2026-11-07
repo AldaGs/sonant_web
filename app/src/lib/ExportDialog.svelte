@@ -7,7 +7,8 @@
   import type { Style } from './render';
   import { t } from './i18n.svelte';
 
-  let { source, name, segments, captions, style, srcW, srcH, canvasAspect = 'source' }: {
+  let { source, name, segments, captions, style, srcW, srcH, canvasAspect = 'source', onsubtitles }: {
+    onsubtitles?: (ext: 'srt' | 'vtt') => void; // caption files, offered once there are captions
     source: () => ExportSource; name: string; segments: Segment[]; captions: Caption[]; style: Style; srcW: number; srcH: number;
     canvasAspect?: Aspect; // the project's canvas shape: the default output shape
   } = $props();
@@ -167,6 +168,16 @@
     <label title={t('ex.loudTip')}><input type="checkbox" bind:checked={loudness} disabled={running} /> {t('ex.loud')}</label>
     <label title={t('ex.voiceTip')}><input type="checkbox" bind:checked={voice} disabled={running} /> {t('ex.voice')}</label>
   </div>
+
+  {#if onsubtitles}
+    <fieldset>
+      <legend>{t('subtitleFiles')}</legend>
+      <div class="seg">
+        <button onclick={() => onsubtitles('srt')}>{t('dlSrt')}</button>
+        <button onclick={() => onsubtitles('vtt')}>{t('dlVtt')}</button>
+      </div>
+    </fieldset>
+  {/if}
 
   {#if size}<p class="muted summary">{t('ex.summary', { w: size.width, h: size.height })}</p>{/if}
 

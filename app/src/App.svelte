@@ -1398,14 +1398,17 @@
 
   // ---- Layout state ----
   let tab = $state<'transcript' | 'captions'>('transcript');
+  // Left panel: Media (library + sequence), Audio (levels, cleanup, music, voiceover), AI tools.
+  type LeftTab = 'media' | 'audio' | 'ai';
   // Desktop panel visibility, remembered per project.
   const layoutKey = `sonant.layout.${projectId}`;
   const savedLayout = (() => { try { return JSON.parse(localStorage.getItem(layoutKey) ?? '{}'); } catch { return {}; } })();
   let assetsOpen = $state<boolean>(savedLayout.assets ?? true);
   let textOpen = $state<boolean>(savedLayout.text ?? true);
   let styleOpen = $state<boolean>(savedLayout.style ?? true);
+  let leftTab = $state<LeftTab>(['media', 'audio', 'ai'].includes(savedLayout.left) ? savedLayout.left : 'media');
   $effect(() => {
-    const v = JSON.stringify({ assets: assetsOpen, text: textOpen, style: styleOpen });
+    const v = JSON.stringify({ assets: assetsOpen, text: textOpen, style: styleOpen, left: leftTab });
     try { localStorage.setItem(layoutKey, v); } catch { /* storage unavailable */ }
   });
   const gridCols = $derived([assetsOpen && '270px', textOpen && '340px', 'minmax(0, 1fr)', styleOpen && '340px'].filter(Boolean).join(' '));
@@ -1414,19 +1417,23 @@
     return [mid.map(() => 'top'), mid, mid.map(() => 'tl')].map((r) => `'${r.join(' ')}'`).join(' ');
   });
   // Phone layout: panels open one at a time as bottom sheets from the tool dock.
-  let sheet = $state<'assets' | 'text' | 'style' | 'color' | null>(null);
-  function openSheet(s: 'assets' | 'text' | 'style' | 'color', t?: 'transcript' | 'captions') {
-    if (t) tab = t;
-    sheet = sheet === s && (!t || tab === t) ? null : s;
+  let sheet = $state<'assets' | 'text' | 'style' | null>(null);
+  function openSheet(s: 'assets' | 'text' | 'style', sub?: LeftTab) {
+    const same = sheet === s && (!sub || leftTab === sub);
+    if (sub) leftTab = sub;
+    sheet = same ? null : s;
   }
-  // Phone: a video strip or video/image layer is selected → color & video styles get their own sheet.
-  const hasVideoSel = $derived(selected >= 0 && !!segments[selected] && !selOverlay);
-  $effect(() => { if (sheet === 'color' && !hasVideoSel) sheet = null; });
   let zoom = $state(1); // 1 = fit to the stage
   let filter = $state<'all' | 'video' | 'audio' | 'image'>('all');
   const shown = $derived(assets.filter((a) => filter === 'all' || a.kind === filter));
   const used = $derived(new Set([...clips.map((c) => c.assetId), ...audios.map((a) => a.assetId)]));
   const selAudio = $derived(audios.find((a) => a.id === selectedAudio));
+  // Selecting music on the timeline brings up its settings in the Audio tab.
+  $effect(() => {
+    if (!selectedAudio) return;
+    leftTab = 'audio';
+    if (!sheet) assetsOpen = true;
+  });
 
   let transcriptView = $state<TranscriptView>();
   const cutRanges = (r: [number, number][]) => setSegs(r.reduce((s, [a, b]) => cutRange(s, a, b), segments));
@@ -1701,9 +1708,9 @@
         <Icon name="description" />
         {t('text')}
       </button>
-      <button class="desk" class:on={styleOpen} onclick={() => (styleOpen = !styleOpen)} aria-pressed={styleOpen} title={t('toggleStyle')}>
-        <Icon name="text_fields" />
-        {t('style')}
+      <button class="desk" class:on={styleOpen} onclick={() => (styleOpen = !styleOpen)} aria-pressed={styleOpen} title={t('toggleInspector')}>
+        <Icon name="tune" />
+        {t('inspector')}
       </button>
       <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length || !firstVideo}><Icon name="ios_share" size={16} /> {t('ex.title')}</button>
     </div>
@@ -1713,75 +1720,204 @@
     <aside class="assets panel" class:shown={sheet === 'assets'}>
       <div class="grab" aria-hidden="true"></div>
       <div class="phead">
-        <h2>{t('assets')}</h2>
+        <div class="tabs ltabs" role="tablist" aria-label={t('assets')}>
+          {#each ['media', 'audio', 'ai'] as const as k}
+            <button role="tab" aria-selected={leftTab === k} class:on={leftTab === k} onclick={() => (leftTab = k)}>{t('tab.' + k)}</button>
+          {/each}
+        </div>
         <button class="icon sm" onclick={() => { if (sheet) sheet = null; else assetsOpen = false; }} aria-label={t('collapse')}><Icon name="chevron_left" /></button>
       </div>
-      <label class="import">
-        <Icon name="upload" /> {t('importMedia')}
-        <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
-      </label>
-      <div class="filters" role="group" aria-label={t('assets')}>
-        {#each ['all', 'video', 'audio', 'image'] as const as f}
-          <button class:on={filter === f} aria-pressed={filter === f} onclick={() => (filter = f)}>{t('filter.' + f)}</button>
-        {/each}
-      </div>
-      <div class="grid">
-        {#each shown as a (a.id)}
-          <div class="asset" draggable="true" role="listitem"
-            ondragstart={(e) => e.dataTransfer?.setData('text/x-asset', a.id)}>
-            <div class="thumb" class:used={used.has(a.id)}>
-              {#if a.kind === 'image' && urls[a.id]}<img src={urls[a.id]} alt="" />
-              {:else if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
-              {:else}<span class="muted ph">{#if a.kind === 'audio'}<Icon name="music_note" size={20} />{/if}{a.kind === 'audio' ? t('filter.audio') : t('filter.video')}</span>{/if}
-              {#if a.kind !== 'image'}<span class="dur mono">{fmt(a.duration)}</span>{/if}
-              {#if a.id in proxyPct}<span class="proxybar" style:width="{proxyPct[a.id] * 100}%" title={t('proxyBuilding')}></span>{/if}
-              <span class="acts">
-                <button class="sm icon" onclick={() => addToTimeline(a)} aria-label={t('addToTimeline', { name: a.name })} title={t('addToTimeline', { name: a.name })}>+</button>
-                {#if a.kind === 'image'}
-                  <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}><Icon name="picture_in_picture_alt" /></button>
-                {/if}
-                {#if a.kind === 'video'}
-                  <button class="sm icon" class:on={!!a.proxy} aria-pressed={!!a.proxy} disabled={a.id in proxyPct}
-                    onclick={() => (a.proxy ? dropProxy(a) : buildProxy(a))} title={a.proxy ? t('proxyOn') : t('proxyMake')} aria-label={a.proxy ? t('proxyOn') : t('proxyMake')}><Icon name="bolt" /></button>
-                  <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}><Icon name="picture_in_picture_alt" /></button>
-                {/if}
-                <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}><Icon name="close" /></button>
-              </span>
-            </div>
-            <span class="aname" title={a.name}>{a.name}</span>
-          </div>
-        {/each}
-      </div>
-      <p class="muted small">{assets.length ? t('dragToTimeline') : t('assetsHint')}</p>
-
-      {#if clips.length}
-        <h3 class="sub">{t('sequence')}</h3>
-        <ol class="seq">
-          {#each clips as c, i (c.id)}
-            <li>
-              <span class="mono muted small">{i + 1}</span>
-              <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
-              {#if kindOf(c.assetId) === 'image'}
-                <input class="clen mono" type="number" min="0.5" max="600" step="0.5" value={clipLen(durations, c)}
-                  aria-label={t('clipDuration')} title={t('clipDuration')} onchange={(e) => setClipLen(i, +e.currentTarget.value)} /><span class="muted small">s</span>
-              {/if}
-              <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}><Icon name="arrow_upward" /></button>
-              <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}><Icon name="arrow_downward" /></button>
-              <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}><Icon name="close" /></button>
-            </li>
+      {#if leftTab === 'media'}
+        <label class="import">
+          <Icon name="upload" /> {t('importMedia')}
+          <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
+        </label>
+        <div class="filters" role="group" aria-label={t('assets')}>
+          {#each ['all', 'video', 'audio', 'image'] as const as f}
+            <button class:on={filter === f} aria-pressed={filter === f} onclick={() => (filter = f)}>{t('filter.' + f)}</button>
           {/each}
-        </ol>
-        <label class="vol">{t('clipAudio')} <span class="mono small">{Math.round(clipVolume * 100)}%</span>
-          <input type="range" min="0" max="1" step="0.05" bind:value={clipVolume} />
-        </label>
-        <label class="vol" title={t('dnTip')}>{t('denoise')}
-          <select bind:value={denoise}>
-            {#each DENOISE_LEVELS as l (l)}<option value={l}>{t('dn.' + l)}</option>{/each}
-          </select>
-        </label>
-        {#if cleanPct !== null}<p class="muted small" role="status">{t('dnBusy')} {Math.round(cleanPct)}%</p>{/if}
+        </div>
+        <div class="grid">
+          {#each shown as a (a.id)}
+            <div class="asset" draggable="true" role="listitem"
+              ondragstart={(e) => e.dataTransfer?.setData('text/x-asset', a.id)}>
+              <div class="thumb" class:used={used.has(a.id)}>
+                {#if a.kind === 'image' && urls[a.id]}<img src={urls[a.id]} alt="" />
+                {:else if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
+                {:else}<span class="muted ph">{#if a.kind === 'audio'}<Icon name="music_note" size={20} />{/if}{a.kind === 'audio' ? t('filter.audio') : t('filter.video')}</span>{/if}
+                {#if a.kind !== 'image'}<span class="dur mono">{fmt(a.duration)}</span>{/if}
+                {#if a.id in proxyPct}<span class="proxybar" style:width="{proxyPct[a.id] * 100}%" title={t('proxyBuilding')}></span>{/if}
+                <span class="acts">
+                  <button class="sm icon" onclick={() => addToTimeline(a)} aria-label={t('addToTimeline', { name: a.name })} title={t('addToTimeline', { name: a.name })}>+</button>
+                  {#if a.kind === 'image'}
+                    <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}><Icon name="picture_in_picture_alt" /></button>
+                  {/if}
+                  {#if a.kind === 'video'}
+                    <button class="sm icon" class:on={!!a.proxy} aria-pressed={!!a.proxy} disabled={a.id in proxyPct}
+                      onclick={() => (a.proxy ? dropProxy(a) : buildProxy(a))} title={a.proxy ? t('proxyOn') : t('proxyMake')} aria-label={a.proxy ? t('proxyOn') : t('proxyMake')}><Icon name="bolt" /></button>
+                    <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}><Icon name="picture_in_picture_alt" /></button>
+                  {/if}
+                  <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}><Icon name="close" /></button>
+                </span>
+              </div>
+              <span class="aname" title={a.name}>{a.name}</span>
+            </div>
+          {/each}
+        </div>
+        <p class="muted small">{assets.length ? t('dragToTimeline') : t('assetsHint')}</p>
+
+        {#if clips.length}
+          <h3 class="sub">{t('sequence')}</h3>
+          <ol class="seq">
+            {#each clips as c, i (c.id)}
+              <li>
+                <span class="mono muted small">{i + 1}</span>
+                <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
+                {#if kindOf(c.assetId) === 'image'}
+                  <input class="clen mono" type="number" min="0.5" max="600" step="0.5" value={clipLen(durations, c)}
+                    aria-label={t('clipDuration')} title={t('clipDuration')} onchange={(e) => setClipLen(i, +e.currentTarget.value)} /><span class="muted small">s</span>
+                {/if}
+                <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}><Icon name="arrow_upward" /></button>
+                <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}><Icon name="arrow_downward" /></button>
+                <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}><Icon name="close" /></button>
+              </li>
+            {/each}
+          </ol>
+        {/if}
+      {:else if leftTab === 'audio'}
+        {#if selAudio}
+          {@const ba = assets.find((a) => a.id === selAudio.assetId)}
+          <section class="layer music" aria-label={t('musicH')}>
+            <div class="lhead"><h3>{t('musicH')}</h3></div>
+            <div class="lrow">
+              <span class="aname small selname"><Icon name="music_note" size={16} /> {names.get(selAudio.assetId)}</span>
+              <label class="vol inline">{t('volume')}
+                <input type="range" min="0" max="1" step="0.05" value={selAudio.volume}
+                  oninput={(e) => setAudio(selAudio.id, { volume: +e.currentTarget.value })} />
+              </label>
+              {#if ba?.beats?.length}
+                <span class="small mono" title={t('beatsFound', { n: ba.beats.length })}><Icon name="graphic_eq" size={16} /> {ba.bpm} BPM</span>
+                <button class="sm" onclick={() => cutOnBeats(selAudio)} title={t('cutBeatsTip')}>{t('cutBeats')}</button>
+                <button class="sm" onclick={() => cutOnBeats(selAudio, 2)}>{t('cutBeats2')}</button>
+              {:else}
+                <button class="sm" onclick={() => detectBeatsFor(selAudio.assetId)} disabled={beatBusy}>{beatBusy ? t('detecting') : t('detectBeats')}</button>
+              {/if}
+              <label class="vol inline" title={t('vfxTip')}>{t('vfx')}
+                <select value={selAudio.vfx ?? ''} disabled={vfxBusy} onchange={(e) => setVoiceFx(selAudio, e.currentTarget.value as VoiceFx | '')}>
+                  <option value="">{t('vfx.none')}</option>
+                  {#each VOICE_FX as v}<option value={v}>{t('vfx.' + v)}</option>{/each}
+                </select>
+              </label>
+              <label class="vol inline" title={t('dnTip')}>{t('denoise')}
+                <select value={selAudio.dn ?? 0} disabled={vfxBusy} onchange={(e) => renderItem(selAudio, { vfx: selAudio.vfx, dn: +e.currentTarget.value || undefined })}>
+                  {#each DENOISE_LEVELS as l (l)}<option value={l}>{t('dn.' + l)}</option>{/each}
+                </select>
+              </label>
+              {#if vfxBusy}<span class="small muted">{t('vfxBusy')}</span>{/if}
+              <label class="chk" title={t('duckTip')}><input type="checkbox" checked={!!selAudio.duck}
+                onchange={(e) => (commit(), setAudio(selAudio.id, { duck: e.currentTarget.checked || undefined }))} /> {t('duck')}</label>
+              <button class="sm" onclick={removeAudioItem}>{t('removeAudio')}</button>
+            </div>
+          </section>
+        {/if}
+        {#if clips.length}
+          <label class="vol">{t('clipAudio')} <span class="mono small">{Math.round(clipVolume * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.05" bind:value={clipVolume} />
+          </label>
+          <label class="vol" title={t('dnTip')}>{t('denoise')}
+            <select bind:value={denoise}>
+              {#each DENOISE_LEVELS as l (l)}<option value={l}>{t('dn.' + l)}</option>{/each}
+            </select>
+          </label>
+          {#if cleanPct !== null}<p class="muted small" role="status">{t('dnBusy')} {Math.round(cleanPct)}%</p>{/if}
+        {/if}
+      <details class="audio-sil">
+        <summary>{t('audioSilTitle')}</summary>
+        <p class="muted small">{t('audioSilHint')}</p>
+        <label class="sl">{t('audioSilDb')} <span class="mono">{cleanup.db} dB</span>
+          <input type="range" min="-60" max="-15" step="1" bind:value={cleanup.db} /></label>
+        <label class="sl">{t('minPause')} <span class="mono">{cleanup.min.toFixed(1)}s</span>
+          <input type="range" min="0.2" max="2" step="0.1" bind:value={cleanup.min} /></label>
+        <label class="sl">{t('keepPad')} <span class="mono">{cleanup.pad.toFixed(2)}s</span>
+          <input type="range" min="0" max="0.5" step="0.05" bind:value={cleanup.pad} /></label>
+        <button class="sm primary" onclick={cutAudioSilences} disabled={!hasMedia || silBusy || busy}>
+          {silBusy ? t('audioSilBusy') : t('audioSilRun')}</button>
+      </details>
+        <VoiceoverPanel caps={captionsForOutput(displayCaps, segments)} selectedIds={selectedSet} lang={language} disabled={!hasMedia} onadd={addVoiceover} />
+      {:else}
+        <p class="muted small">{t('aiHint')}</p>
+      <details class="hl" ontoggle={(e) => e.currentTarget.open && !highlights && captions.length && findClips()}>
+        <summary><Icon name="auto_awesome_motion" size={16} /> {t('hlTitle')}</summary>
+        {#if !captions.length}
+          <p class="muted small">{t('hlNeedTranscript')}</p>
+        {:else}
+          <p class="muted small">{t('hlHint')}</p>
+          <div class="row">
+            <label class="vol inline">{t('hlLen')}
+              <select value={`${hlOpts.min}-${hlOpts.max}`} onchange={(e) => { const [a, b] = e.currentTarget.value.split('-').map(Number); hlOpts.min = a; hlOpts.max = b; findClips(); }}>
+                {#each ['15-30', '20-45', '30-60'] as r}<option value={r}>{r.replace('-', '–')}s</option>{/each}
+              </select>
+            </label>
+            <button class="sm" onclick={findClips}><Icon name="refresh" size={16} /> {t('hlFind')}</button>
+            <label class="chk" title={t('hlReframeTip')}><input type="checkbox" bind:checked={hlReframe} /> {t('hlReframe')}</label>
+            {#if highlights?.length}
+              <button class="sm" disabled={!!hlBusy} onclick={async () => { for (const [i, h] of (highlights ?? []).entries()) if (!shortsMade[h.start]) { hlBusy = t('hlMaking', { n: i + 1 }); await makeShort(h, i + 1); } hlBusy = ''; }}>
+                <Icon name="add" size={16} /> {t('hlMakeAll')}</button>
+            {/if}
+          </div>
+          {#if hlBusy}<p class="muted small" role="status">{hlBusy}</p>{/if}
+          {#if highlights && !highlights.length}<p class="muted small">{t('hlNone')}</p>{/if}
+          <ol class="hls">
+            {#each highlights ?? [] as h, i (h.start)}
+              <li>
+                <div class="mono small">{fmt(toOutput(segments, h.start) ?? h.start)} · {Math.round(h.end - h.start)}s
+                  {#each h.reasons as r}<span class="chip">{t('hl.' + r)}</span>{/each}</div>
+                <div class="hlt">“{h.title}”</div>
+                <div class="row">
+                  <button class="sm" onclick={() => previewClip(h)}><Icon name="play_arrow" size={16} /> {t('hlPreview')}</button>
+                  {#if shortsMade[h.start]}
+                    <a class="btn sm" href={`#/p/${shortsMade[h.start]}`}><Icon name="open_in_new" size={16} /> {t('hlOpen')}</a>
+                  {:else}
+                    <button class="sm primary" disabled={!!hlBusy} onclick={() => makeShort(h, i + 1)}><Icon name="add" size={16} /> {t('hlMake')}</button>
+                  {/if}
+                </div>
+              </li>
+            {/each}
+          </ol>
+        {/if}
+      </details>
+        {#if captions.length}
+          <h3 class="sub">{t('spkH')}</h3>
+          <div class="spkrow">
+            <button class="sm" onclick={detectSpeakers} disabled={spkBusy || busy} title={t('spkTip')}><Icon name="groups" size={16} /> {t('spkDetect')}</button>
+            <label class="vol inline">{t('spkCount')}
+              <select bind:value={spkCount} disabled={spkBusy}>
+                {#each [0, 2, 3, 4, 5, 6] as n}<option value={n}>{n ? n : t('spkAuto')}</option>{/each}
+              </select>
+            </label>
+            <label class="chk" title={t('spkSplitTip')}><input type="checkbox" bind:checked={spkSplit} disabled={spkBusy} /> {t('spkSplit')}</label>
+            {#if spkBusy}<span class="muted small" role="status">{t(spkStatus || 'st.spkListening')} {spkStatus === 'st.reading' ? '' : Math.round(spkPct) + '%'}</span>
+            {:else if spkMsg}<span class="muted small" role="status">{t(spkMsg, { n: spkPct })}</span>{/if}
+          </div>
+          <h3 class="sub">{t('autoZoom')}</h3>
+          <div class="trbox">
+            <label class="chk"><input type="checkbox" checked={!!autoZoom} onchange={(e) => (autoZoom = e.currentTarget.checked ? { ...DEFAULT_AUTOZOOM } : null)} /> {t('autoZoom')}</label>
+            {#if autoZoom}
+              <label class="sl">{t('azStrength')} <span class="mono">+{Math.round((autoZoom.scale - 1) * 100)}%</span>
+                <input type="range" min="1.05" max="1.35" step="0.05" bind:value={autoZoom.scale} /></label>
+              <label class="sl">{t('azGap')} <span class="mono">{autoZoom.gap}s</span>
+                <input type="range" min="1" max="8" step="0.5" bind:value={autoZoom.gap} /></label>
+              <label class="chk"><input type="checkbox" bind:checked={autoZoom.sentences} /> {t('azSentences')}</label>
+              <label class="chk"><input type="checkbox" bind:checked={autoZoom.shake} /> {t('azShake')}</label>
+              <button class="sm" onclick={aimZooms} disabled={aimBusy || !zooms.length} title={t('azAimTip')}><Icon name="person" size={16} /> {aimBusy ? t('azAiming') : t('azAim')}</button>
+              {#if autoZoom.aim && Object.keys(autoZoom.aim).length}<button class="sm" onclick={() => autoZoom && (autoZoom.aim = undefined)}>{t('azCentre')}</button>{/if}
+              {#if autoZoom.edits && Object.keys(autoZoom.edits).length}<button class="sm" onclick={() => autoZoom && (autoZoom.edits = undefined)} title={t('azResetTip')}>{t('azReset')}</button>{/if}
+              <span class="muted small">{t('azEditHint')}</span>
+              <span class="muted small">{zooms.length ? t('azCount').replace('{n}', String(zooms.length)) : t('azNone')}</span>
+            {/if}
+          </div>
+        {/if}
       {/if}
-      <VoiceoverPanel caps={captionsForOutput(displayCaps, segments)} selectedIds={selectedSet} lang={language} disabled={!hasMedia} onadd={addVoiceover} />
     </aside>
   {/if}
 
@@ -1815,71 +1951,8 @@
       {#if error}<p class="error small">{t(error)}</p>{/if}
 
       {#if tab === 'transcript'}
-        <details class="hl" ontoggle={(e) => e.currentTarget.open && !highlights && captions.length && findClips()}>
-          <summary><Icon name="auto_awesome_motion" size={16} /> {t('hlTitle')}</summary>
-          {#if !captions.length}
-            <p class="muted small">{t('hlNeedTranscript')}</p>
-          {:else}
-            <p class="muted small">{t('hlHint')}</p>
-            <div class="row">
-              <label class="vol inline">{t('hlLen')}
-                <select value={`${hlOpts.min}-${hlOpts.max}`} onchange={(e) => { const [a, b] = e.currentTarget.value.split('-').map(Number); hlOpts.min = a; hlOpts.max = b; findClips(); }}>
-                  {#each ['15-30', '20-45', '30-60'] as r}<option value={r}>{r.replace('-', '–')}s</option>{/each}
-                </select>
-              </label>
-              <button class="sm" onclick={findClips}><Icon name="refresh" size={16} /> {t('hlFind')}</button>
-              <label class="chk" title={t('hlReframeTip')}><input type="checkbox" bind:checked={hlReframe} /> {t('hlReframe')}</label>
-              {#if highlights?.length}
-                <button class="sm" disabled={!!hlBusy} onclick={async () => { for (const [i, h] of (highlights ?? []).entries()) if (!shortsMade[h.start]) { hlBusy = t('hlMaking', { n: i + 1 }); await makeShort(h, i + 1); } hlBusy = ''; }}>
-                  <Icon name="add" size={16} /> {t('hlMakeAll')}</button>
-              {/if}
-            </div>
-            {#if hlBusy}<p class="muted small" role="status">{hlBusy}</p>{/if}
-            {#if highlights && !highlights.length}<p class="muted small">{t('hlNone')}</p>{/if}
-            <ol class="hls">
-              {#each highlights ?? [] as h, i (h.start)}
-                <li>
-                  <div class="mono small">{fmt(toOutput(segments, h.start) ?? h.start)} · {Math.round(h.end - h.start)}s
-                    {#each h.reasons as r}<span class="chip">{t('hl.' + r)}</span>{/each}</div>
-                  <div class="hlt">“{h.title}”</div>
-                  <div class="row">
-                    <button class="sm" onclick={() => previewClip(h)}><Icon name="play_arrow" size={16} /> {t('hlPreview')}</button>
-                    {#if shortsMade[h.start]}
-                      <a class="btn sm" href={`#/p/${shortsMade[h.start]}`}><Icon name="open_in_new" size={16} /> {t('hlOpen')}</a>
-                    {:else}
-                      <button class="sm primary" disabled={!!hlBusy} onclick={() => makeShort(h, i + 1)}><Icon name="add" size={16} /> {t('hlMake')}</button>
-                    {/if}
-                  </div>
-                </li>
-              {/each}
-            </ol>
-          {/if}
-        </details>
-        <details class="audio-sil">
-          <summary>{t('audioSilTitle')}</summary>
-          <p class="muted small">{t('audioSilHint')}</p>
-          <label class="sl">{t('audioSilDb')} <span class="mono">{cleanup.db} dB</span>
-            <input type="range" min="-60" max="-15" step="1" bind:value={cleanup.db} /></label>
-          <label class="sl">{t('minPause')} <span class="mono">{cleanup.min.toFixed(1)}s</span>
-            <input type="range" min="0.2" max="2" step="0.1" bind:value={cleanup.min} /></label>
-          <label class="sl">{t('keepPad')} <span class="mono">{cleanup.pad.toFixed(2)}s</span>
-            <input type="range" min="0" max="0.5" step="0.05" bind:value={cleanup.pad} /></label>
-          <button class="sm primary" onclick={cutAudioSilences} disabled={!hasMedia || silBusy || busy}>
-            {silBusy ? t('audioSilBusy') : t('audioSilRun')}</button>
-        </details>
         {#if !captions.length && !busy}<p class="muted small">{t('transcriptEmpty')}</p>{/if}
         {#if captions.length}
-          <div class="spkrow">
-            <button class="sm" onclick={detectSpeakers} disabled={spkBusy || busy} title={t('spkTip')}><Icon name="groups" size={16} /> {t('spkDetect')}</button>
-            <label class="vol inline">{t('spkCount')}
-              <select bind:value={spkCount} disabled={spkBusy}>
-                {#each [0, 2, 3, 4, 5, 6] as n}<option value={n}>{n ? n : t('spkAuto')}</option>{/each}
-              </select>
-            </label>
-            <label class="chk" title={t('spkSplitTip')}><input type="checkbox" bind:checked={spkSplit} disabled={spkBusy} /> {t('spkSplit')}</label>
-            {#if spkBusy}<span class="muted small" role="status">{t(spkStatus || 'st.spkListening')} {spkStatus === 'st.reading' ? '' : Math.round(spkPct) + '%'}</span>
-            {:else if spkMsg}<span class="muted small" role="status">{t(spkMsg, { n: spkPct })}</span>{/if}
-          </div>
           <TranscriptView bind:this={transcriptView} {captions} {segments} {time} {duration}
             {speakers} onseek={seek} oncut={cutRanges} onkeep={keepRanges}
             onspeaker={(ids, k) => { if (k === speakers.length) speakers = [...speakers, '']; setCaps(setSpeaker(captions, new Set(ids), k)); }}
@@ -1907,22 +1980,6 @@
                 <input type="range" min="1" max="1.5" step="0.05" value={style.emScale ?? 1} oninput={(e) => (style = { ...style, emScale: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })} /></label>
             {/if}
             <span class="muted small">{t('emHandHint')}</span>
-          </div>
-          <div class="trbox">
-            <label class="chk"><input type="checkbox" checked={!!autoZoom} onchange={(e) => (autoZoom = e.currentTarget.checked ? { ...DEFAULT_AUTOZOOM } : null)} /> {t('autoZoom')}</label>
-            {#if autoZoom}
-              <label class="sl">{t('azStrength')} <span class="mono">+{Math.round((autoZoom.scale - 1) * 100)}%</span>
-                <input type="range" min="1.05" max="1.35" step="0.05" bind:value={autoZoom.scale} /></label>
-              <label class="sl">{t('azGap')} <span class="mono">{autoZoom.gap}s</span>
-                <input type="range" min="1" max="8" step="0.5" bind:value={autoZoom.gap} /></label>
-              <label class="chk"><input type="checkbox" bind:checked={autoZoom.sentences} /> {t('azSentences')}</label>
-              <label class="chk"><input type="checkbox" bind:checked={autoZoom.shake} /> {t('azShake')}</label>
-              <button class="sm" onclick={aimZooms} disabled={aimBusy || !zooms.length} title={t('azAimTip')}><Icon name="person" size={16} /> {aimBusy ? t('azAiming') : t('azAim')}</button>
-              {#if autoZoom.aim && Object.keys(autoZoom.aim).length}<button class="sm" onclick={() => autoZoom && (autoZoom.aim = undefined)}>{t('azCentre')}</button>{/if}
-              {#if autoZoom.edits && Object.keys(autoZoom.edits).length}<button class="sm" onclick={() => autoZoom && (autoZoom.edits = undefined)} title={t('azResetTip')}>{t('azReset')}</button>{/if}
-              <span class="muted small">{t('azEditHint')}</span>
-              <span class="muted small">{zooms.length ? t('azCount').replace('{n}', String(zooms.length)) : t('azNone')}</span>
-            {/if}
           </div>
         {/if}
         <ol class="caps">
@@ -1956,13 +2013,6 @@
           {/each}
         </ol>
         <button class="add" onclick={addLine} disabled={!hasMedia}><Icon name="add" /> {t('addLine')}</button>
-        {#if captions.length}
-          <h3 class="sub">{t('subtitleFiles')}</h3>
-          <div class="row">
-            <button class="sm" onclick={() => download('srt')}>{t('dlSrt')}</button>
-            <button class="sm" onclick={() => download('vtt')}>{t('dlVtt')}</button>
-          </div>
-        {/if}
       {/if}
     </div>
   </section>
@@ -2036,32 +2086,78 @@
     </div>
   </section>
 
-  <aside class="style panel" class:shown={sheet === 'style' || sheet === 'color'} class:color-only={sheet === 'color'}>
+  <aside class="style panel" class:shown={sheet === 'style'}>
     <div class="grab" aria-hidden="true"></div>
-    <div class="sheet-bar"><h2>{sheet === 'color' ? t('grading') : t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button></div>
-    {#if sheet === 'color'}
-      <ColorGrader color={selColor} {luts} onset={setColor} ondone={() => (colorEditing = false)} />
-    {:else}
-    <!-- A selected layer gets its own settings only; caption templates and styles come back when it's deselected. -->
-    {#if !selOverlay}
-    <details class="tpl">
-      <summary>{t('templates')}</summary>
-      <div class="tpl-list">
-        {#each [...BUILTIN, ...myTemplates] as tp (tp.id)}
-          <div class="tpl-item">
-            <button class="sm" onclick={() => applyTemplate(tp)} disabled={!hasMedia}
-              title={t('applyTemplateTip', { n: tp.layers.length })}>{tp.builtin ? t('tpl.' + tp.id) : tp.name}</button>
-            {#if !tp.builtin}<button class="sm icon" onclick={() => deleteTemplate(tp)} aria-label={t('del')}><Icon name="close" /></button>{/if}
-          </div>
-        {/each}
-      </div>
-      <button class="sm" onclick={saveTemplate} disabled={!hasMedia} title={t('saveTemplateTip')}><Icon name="add" /> {t('saveTemplate')}</button>
-    </details>
+    <div class="sheet-bar"><h2>{t('inspector')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button></div>
+    {#if selFx && !selOverlay}
+      <section class="layer clipfx" aria-label={t('clipH')}>
+        <div class="lhead"><h3>{t('clipH')}</h3></div>
+        <div class="lrow">
+        {#if selected > 0}
+          <label class="vol inline">{t('transIn')}
+            <select value={selFx.trans ?? ''} onchange={(e) => setFx({ trans: (e.currentTarget.value || undefined) as Fx['trans'] })}>
+              <option value="">{t('trans.none')}</option>
+              {#each TRANSITIONS as k}<option value={k}>{t('trans.' + k)}</option>{/each}
+            </select>
+          </label>
+        {/if}
+        {#if selFx.hold}
+          <label class="vol inline">{t('freezeLen')}
+            <input type="number" min="0.2" max="10" step="0.1" value={selFx.hold} style="width: 64px"
+              onchange={(e) => setFx({ hold: Math.max(0.2, Math.min(10, +e.currentTarget.value || 1)) })} />
+          </label>
+        {:else}
+          <label class="vol inline">{t('speed')}
+            <select value={selFx.speed ?? 1} onchange={(e) => setFx({ speed: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })}>
+              {#each [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as v}<option value={v}>{v}×</option>{/each}
+            </select>
+          </label>
+        {/if}
+        <button class="sm" class:on={!!selFx.zoom} aria-pressed={!!selFx.zoom} title={t('punchTip')}
+          onclick={() => setFx(selFx.zoom ? { zoom: undefined, zoomIn: undefined } : { zoom: PUNCH_IN, zoomIn: true })}><Icon name="zoom_in" /> {t('punchIn')}</button>
+        <label class="vol inline" title={t('shakeTip')}>{t('shake')}
+          <select value={selFx.shake ?? 0} onchange={(e) => setFx({ shake: +e.currentTarget.value || undefined })}>
+            {#each [0, 0.3, 0.6, 1] as v}<option value={v}>{t('shake.' + v)}</option>{/each}
+          </select>
+        </label>
+        <button class="sm" class:on={!!selFx.rev} aria-pressed={!!selFx.rev} title={t('reverseTip')} disabled={revPct !== null || !!selFx.hold}
+          onclick={() => reverseStrip(selected)}><Icon name="history" size={16} /> {revPct !== null ? `${t('reversing')} ${Math.round(revPct)}%` : t('reverse')}</button>
+        <button class="sm" class:on={!!selFx.stab} aria-pressed={!!selFx.stab} title={t('stabTip')} disabled={stabPct !== null || !!selFx.hold}
+          onclick={() => stabilize(selected)}><Icon name="videocam" size={16} /> {stabPct !== null ? `${t('stabBusy')} ${Math.round(stabPct)}%` : t('stab')}</button>
+        <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
+          onclick={() => setFx({ lift: !selFx.lift || undefined })}>{t('lift')}</button>
+        <button class="sm icon" class:on={selFx.behind} aria-pressed={!!selFx.behind} title={t('textBehind')} aria-label={t('textBehind')}
+          onclick={() => setFx({ behind: !selFx.behind })}><Icon name="person" /></button>
+        <label class="vol">{t('background')}
+          <select value={selFx.bg ?? ''} onchange={(e) => setFx({ bg: (e.currentTarget.value || undefined) as Fx['bg'] })}>
+            <option value="">{t('bgOriginal')}</option>
+            <option value="blur">{t('bgBlur')}</option>
+            <option value="color">{t('bgColor')}</option>
+            <option value="image" disabled={!imageAssets.length}>{t('bgImage')}</option>
+          </select>
+        </label>
+        {#if selFx.bg === 'image'}
+          <select value={selFx.bgImage ?? ''} aria-label={t('bgImage')} onchange={(e) => setFx({ bgImage: e.currentTarget.value || undefined })}>
+            <option value="">{t('bgPick')}</option>
+            {#each imageAssets as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+          </select>
+        {/if}
+        {#if selFx.bg === 'color'}
+          <input type="color" value={selFx.bgColor ?? '#00b140'} aria-label={t('bgColor')}
+            onchange={(e) => setFx({ bgColor: e.currentTarget.value })} />
+        {/if}
+        <div class="stripkey">
+          <KeyControls key={selFx.key} picking={pickKey === 'strip'} onpick={() => startPick('strip')} set={setStripKey} />
+        </div>
+        </div>
+      </section>
     {/if}
     {#if selected >= 0 && segments[selected] && !selOverlay}
       {@const c = selColor}
       <section class="layer strip" aria-label={t('stripColor')} onchange={() => (colorEditing = false)} onpointerup={() => (colorEditing = false)}>
         <div class="lhead"><h3>{t('stripColor')}</h3></div>
+        <div class="mob-only"><ColorGrader color={selColor} {luts} onset={setColor} ondone={() => (colorEditing = false)} /></div>
+        <div class="desk-only grade-fields">
         <div class="lrow">
           <button class="sm" class:on={!Object.keys(c).length} onclick={() => (setColor({}, true), (colorEditing = false))}>{t('col.none')}</button>
           {#each Object.entries(COLOR_PRESETS) as [k, v]}
@@ -2099,6 +2195,7 @@
             <input type="range" min="0" max="1" step="0.01" value={c.lutMix ?? 1} oninput={(e) => setColor({ lutMix: +e.currentTarget.value })} />
           </label>
         {/if}
+        </div>
         <button class="sm" onclick={colorToAll} disabled={segments.length < 2}>{t('colorAll')}</button>
         {#if reframes}
           {@const fc = segments[selected].fx?.focus ?? { x: 0.5, y: 0.5 }}
@@ -2284,6 +2381,20 @@
       onclearfields={clearCapFields}
     />
     {/if}
+    {#if !selOverlay}
+      <details class="tpl">
+        <summary>{t('templates')}</summary>
+        <div class="tpl-list">
+          {#each [...BUILTIN, ...myTemplates] as tp (tp.id)}
+            <div class="tpl-item">
+              <button class="sm" onclick={() => applyTemplate(tp)} disabled={!hasMedia}
+                title={t('applyTemplateTip', { n: tp.layers.length })}>{tp.builtin ? t('tpl.' + tp.id) : tp.name}</button>
+              {#if !tp.builtin}<button class="sm icon" onclick={() => deleteTemplate(tp)} aria-label={t('del')}><Icon name="close" /></button>{/if}
+            </div>
+          {/each}
+        </div>
+        <button class="sm" onclick={saveTemplate} disabled={!hasMedia} title={t('saveTemplateTip')}><Icon name="add" /> {t('saveTemplate')}</button>
+      </details>
     {/if}
   </aside>
 
@@ -2292,96 +2403,6 @@
     <div class="thead">
       <h2>{t('timelineH')}</h2>
       <div class="row">
-        {#if selAudio}
-          <span class="aname small selname"><Icon name="music_note" size={16} /> {names.get(selAudio.assetId)}</span>
-          <label class="vol inline">{t('volume')}
-            <input type="range" min="0" max="1" step="0.05" value={selAudio.volume}
-              oninput={(e) => setAudio(selAudio.id, { volume: +e.currentTarget.value })} />
-          </label>
-          {@const ba = assets.find((a) => a.id === selAudio.assetId)}
-          {#if ba?.beats?.length}
-            <span class="small mono" title={t('beatsFound', { n: ba.beats.length })}><Icon name="graphic_eq" size={16} /> {ba.bpm} BPM</span>
-            <button class="sm" onclick={() => cutOnBeats(selAudio)} title={t('cutBeatsTip')}>{t('cutBeats')}</button>
-            <button class="sm" onclick={() => cutOnBeats(selAudio, 2)}>{t('cutBeats2')}</button>
-          {:else}
-            <button class="sm" onclick={() => detectBeatsFor(selAudio.assetId)} disabled={beatBusy}>{beatBusy ? t('detecting') : t('detectBeats')}</button>
-          {/if}
-          <label class="vol inline" title={t('vfxTip')}>{t('vfx')}
-            <select value={selAudio.vfx ?? ''} disabled={vfxBusy} onchange={(e) => setVoiceFx(selAudio, e.currentTarget.value as VoiceFx | '')}>
-              <option value="">{t('vfx.none')}</option>
-              {#each VOICE_FX as v}<option value={v}>{t('vfx.' + v)}</option>{/each}
-            </select>
-          </label>
-          <label class="vol inline" title={t('dnTip')}>{t('denoise')}
-            <select value={selAudio.dn ?? 0} disabled={vfxBusy} onchange={(e) => renderItem(selAudio, { vfx: selAudio.vfx, dn: +e.currentTarget.value || undefined })}>
-              {#each DENOISE_LEVELS as l (l)}<option value={l}>{t('dn.' + l)}</option>{/each}
-            </select>
-          </label>
-          {#if vfxBusy}<span class="small muted">{t('vfxBusy')}</span>{/if}
-          <label class="chk" title={t('duckTip')}><input type="checkbox" checked={!!selAudio.duck}
-            onchange={(e) => (commit(), setAudio(selAudio.id, { duck: e.currentTarget.checked || undefined }))} /> {t('duck')}</label>
-          <button class="sm" onclick={removeAudioItem}>{t('removeAudio')}</button>
-          <span class="divider"></span>
-        {/if}
-        {#if selFx}
-          {#if selected > 0}
-            <label class="vol inline">{t('transIn')}
-              <select value={selFx.trans ?? ''} onchange={(e) => setFx({ trans: (e.currentTarget.value || undefined) as Fx['trans'] })}>
-                <option value="">{t('trans.none')}</option>
-                {#each TRANSITIONS as k}<option value={k}>{t('trans.' + k)}</option>{/each}
-              </select>
-            </label>
-          {/if}
-          {#if selFx.hold}
-            <label class="vol inline">{t('freezeLen')}
-              <input type="number" min="0.2" max="10" step="0.1" value={selFx.hold} style="width: 64px"
-                onchange={(e) => setFx({ hold: Math.max(0.2, Math.min(10, +e.currentTarget.value || 1)) })} />
-            </label>
-          {:else}
-            <label class="vol inline">{t('speed')}
-              <select value={selFx.speed ?? 1} onchange={(e) => setFx({ speed: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })}>
-                {#each [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as v}<option value={v}>{v}×</option>{/each}
-              </select>
-            </label>
-          {/if}
-          <button class="sm" class:on={!!selFx.zoom} aria-pressed={!!selFx.zoom} title={t('punchTip')}
-            onclick={() => setFx(selFx.zoom ? { zoom: undefined, zoomIn: undefined } : { zoom: PUNCH_IN, zoomIn: true })}><Icon name="zoom_in" /> {t('punchIn')}</button>
-          <label class="vol inline" title={t('shakeTip')}>{t('shake')}
-            <select value={selFx.shake ?? 0} onchange={(e) => setFx({ shake: +e.currentTarget.value || undefined })}>
-              {#each [0, 0.3, 0.6, 1] as v}<option value={v}>{t('shake.' + v)}</option>{/each}
-            </select>
-          </label>
-          <button class="sm" class:on={!!selFx.rev} aria-pressed={!!selFx.rev} title={t('reverseTip')} disabled={revPct !== null || !!selFx.hold}
-            onclick={() => reverseStrip(selected)}><Icon name="history" size={16} /> {revPct !== null ? `${t('reversing')} ${Math.round(revPct)}%` : t('reverse')}</button>
-          <button class="sm" class:on={!!selFx.stab} aria-pressed={!!selFx.stab} title={t('stabTip')} disabled={stabPct !== null || !!selFx.hold}
-            onclick={() => stabilize(selected)}><Icon name="videocam" size={16} /> {stabPct !== null ? `${t('stabBusy')} ${Math.round(stabPct)}%` : t('stab')}</button>
-          <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
-            onclick={() => setFx({ lift: !selFx.lift || undefined })}>{t('lift')}</button>
-          <button class="sm icon" class:on={selFx.behind} aria-pressed={!!selFx.behind} title={t('textBehind')} aria-label={t('textBehind')}
-            onclick={() => setFx({ behind: !selFx.behind })}><Icon name="person" /></button>
-          <label class="vol">{t('background')}
-            <select value={selFx.bg ?? ''} onchange={(e) => setFx({ bg: (e.currentTarget.value || undefined) as Fx['bg'] })}>
-              <option value="">{t('bgOriginal')}</option>
-              <option value="blur">{t('bgBlur')}</option>
-              <option value="color">{t('bgColor')}</option>
-              <option value="image" disabled={!imageAssets.length}>{t('bgImage')}</option>
-            </select>
-          </label>
-          {#if selFx.bg === 'image'}
-            <select value={selFx.bgImage ?? ''} aria-label={t('bgImage')} onchange={(e) => setFx({ bgImage: e.currentTarget.value || undefined })}>
-              <option value="">{t('bgPick')}</option>
-              {#each imageAssets as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
-            </select>
-          {/if}
-          {#if selFx.bg === 'color'}
-            <input type="color" value={selFx.bgColor ?? '#00b140'} aria-label={t('bgColor')}
-              onchange={(e) => setFx({ bgColor: e.currentTarget.value })} />
-          {/if}
-          <div class="stripkey">
-            <KeyControls key={selFx.key} picking={pickKey === 'strip'} onpick={() => startPick('strip')} set={setStripKey} />
-          </div>
-          <span class="divider"></span>
-        {/if}
         <button class="sm" onclick={addText} disabled={!hasMedia} title={t('addTextTip')}><Icon name="title" /> {t('addText')}</button>
         <button class="sm" onclick={addTitle} disabled={!hasMedia} title={t('addTitleTip')}><Icon name="animation" /> {t('addTitle')}</button>
         <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
@@ -2416,28 +2437,20 @@
   {/if}
 
   <nav class="dock" aria-label={t('tools')}>
-    <button class:on={sheet === 'assets'} onclick={() => openSheet('assets')}>
-      <Icon name="video_library" size={24} />
-      <span>{t('assets')}</span>
-    </button>
-    <button class:on={sheet === 'text' && tab === 'transcript'} onclick={() => openSheet('text', 'transcript')}>
+    {#each [['media', 'video_library'], ['audio', 'music_note'], ['ai', 'auto_awesome_motion']] as const as [k, icon]}
+      <button class:on={sheet === 'assets' && leftTab === k} onclick={() => openSheet('assets', k)}>
+        <Icon name={icon} size={24} />
+        <span>{t('tab.' + k)}</span>
+      </button>
+    {/each}
+    <button class:on={sheet === 'text'} onclick={() => openSheet('text')}>
       <Icon name="description" size={24} />
-      <span>{t('transcript')}</span>
-    </button>
-    <button class:on={sheet === 'text' && tab === 'captions'} onclick={() => openSheet('text', 'captions')}>
-      <Icon name="closed_caption" size={24} />
-      <span>{t('captions')}</span>
+      <span>{t('text')}</span>
     </button>
     <button class:on={sheet === 'style'} onclick={() => openSheet('style')}>
-      <Icon name="text_fields" size={24} />
-      <span>{t('style')}</span>
+      <Icon name="tune" size={24} />
+      <span>{t('inspector')}</span>
     </button>
-    {#if hasVideoSel}
-      <button class:on={sheet === 'color'} onclick={() => openSheet('color')}>
-        <Icon name="palette" size={24} />
-        <span>{t('grading')}</span>
-      </button>
-    {/if}
     <button onclick={() => saveToFile()} disabled={!assets.length}>
       <Icon name="download" size={24} />
       <span>{fileStatus ? t(fileStatus) : t('saveFile')}</span>
@@ -2478,7 +2491,7 @@
       </div>
     </div>
   {/if}
-  <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} {style} {srcW} {srcH} {canvasAspect}
+  <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} onsubtitles={captions.length ? download : undefined} {style} {srcW} {srcH} {canvasAspect}
     source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume, zoomShake: !!autoZoom?.shake, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
 {/if}
 
@@ -2536,7 +2549,6 @@
   .vol.inline { display: flex; align-items: center; gap: 6px; }
   .vol.inline input { width: 90px; }
   .selname { max-width: 160px; color: var(--speaker-1); }
-  .divider { width: 1px; height: 20px; background: var(--border); }
   .thead .row { flex-wrap: wrap; justify-content: flex-end; }
   .small { font-size: 12px; }
   .text { grid-area: text; border-right: 1px solid var(--border-soft); }
@@ -2613,6 +2625,11 @@
   }
 
   /* Desktop-only / phone-only chrome */
+  .mob-only { display: none; }
+  .grade-fields { display: grid; gap: 10px; }
+  .ltabs { padding: 0; flex: 1; }
+  .ltabs button { flex: 1; padding: 0 6px; white-space: nowrap; font-size: 13px; }
+  .music .aname { flex-basis: 100%; }
   .mob-close, .dock, .scrim, .grab, .sheet-x, .sheet-bar { display: none; }
 
   /* Phone: preview + transport + timeline fill the screen; panels open as bottom sheets from a tool dock. */
@@ -2661,8 +2678,9 @@
       padding-bottom: env(safe-area-inset-bottom); animation: up .22s ease-out;
     }
     .assets.shown, .text.shown, .style.shown { display: flex; }
-    /* Strip grading lives in its own Color sheet on phones. */
-    .style > .strip { display: none; }
+    /* Phones grade with the touch grader instead of the slider stack. */
+    .desk-only { display: none; }
+    .mob-only { display: block; }
     .text .scroll { max-height: none; flex: 1; min-height: 0; }
     .style { overflow: auto; }
     .grab { display: block; flex: none; width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 8px auto 0; }
