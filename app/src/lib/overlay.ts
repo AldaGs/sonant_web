@@ -26,6 +26,7 @@ export type Overlay = {
   tf: Transform; // base transform; flipX and crop always come from here
   kf?: Keyframe[]; // animation: when present, x/y/scale/rotation/opacity come from these (sorted by t)
   motion?: Motion; // animated title: in/out animation and an optional path, layered on top of tf/kf
+  behind?: boolean; // drawn behind the person (over the background, under the cutout subject)
 };
 // Animated title. The layer animates in over `in` seconds and out over the last `out` seconds.
 // With path 's' it travels left to right along a horizontal S curve centred on its transform's x/y.

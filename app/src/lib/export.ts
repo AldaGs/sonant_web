@@ -166,7 +166,7 @@ export async function exportVideo(
     throw new Error('err.noH264');
   const aCodec = (await canEncodeAudio('aac')) ? 'aac' : 'opus';
 
-  if (segs.some((s) => s.fx?.behind || s.fx?.bg)) await loadSegmenter(); // every exported frame must be segmented
+  if (segs.some((s) => s.fx?.behind || s.fx?.bg) || src.overlays?.some((o) => o.behind)) await loadSegmenter(); // every exported frame must be segmented
   const total = frameCount(segs, opts.fps);
   const mix = await mixAudio(src, segs, total / opts.fps, opts);
   if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
@@ -209,13 +209,25 @@ export async function exportVideo(
   const advance = async (i: number) => {
     for (const l of layers) if (l.frames && i >= l.first && i <= l.last) l.cur = (await l.frames.next()).value?.canvas ?? l.cur;
   };
-  const paintLayers = (i: number) => {
-    for (const l of layers) if (i >= l.first && i <= l.last) drawOverlay(ctx, l.o, i / opts.fps, l.cur, l.w, l.h);
+  // behind: only the layers marked "behind person", or only the others. True if anything was drawn.
+  const paintLayers = (i: number, behind = false) => {
+    let n = 0;
+    for (const l of layers) if (i >= l.first && i <= l.last && !!l.o.behind === behind) (drawOverlay(ctx, l.o, i / opts.fps, l.cur, l.w, l.h), n++);
+    return n > 0;
   };
+  const hasBehind = layers.some((l) => l.o.behind);
 
   // Video: for each kept piece, pull its clip's frames (one decoder per asset), draw + caption, encode.
   const videoTask = (async () => {
     const sinks = new Map<string, { sink: InstanceType<typeof CanvasSink>; w: number; h: number }>();
+    const stills = new Map<string, ImageBitmap | null>(); // image clips: decoded once, the same frame throughout
+    const stillFor = async (assetId: string) => {
+      if (!stills.has(assetId)) {
+        const f = src.files.get(assetId);
+        stills.set(assetId, f ? await createImageBitmap(f).catch(() => null) : null);
+      }
+      return stills.get(assetId) ?? null;
+    };
     const sinkFor = async (assetId: string) => {
       if (!sinks.has(assetId)) {
         const f = src.files.get(assetId);
@@ -234,8 +246,10 @@ export async function exportVideo(
     for (const piece of splitAtBoundaries(segs, starts)) {
       const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2);
       const offset = at ? starts[at.index] : 0;
-      const decoded = at ? await sinkFor(src.clips[at.index].assetId) : undefined, sink = decoded?.sink;
-      const sw = decoded?.w ?? width, sh = decoded?.h ?? height;      const times = [...frameTimes([piece], opts.fps)];
+      const clipId = at ? src.clips[at.index].assetId : undefined;
+      const still = clipId && assets.get(clipId)?.kind === 'image' ? await stillFor(clipId) : null;
+      const decoded = clipId && !still ? await sinkFor(clipId) : undefined, sink = decoded?.sink;
+      const sw = still?.width ?? decoded?.w ?? width, sh = still?.height ?? decoded?.h ?? height;      const times = [...frameTimes([piece], opts.fps)];
       const lifted = !!piece.fx?.lift; // a gap: black, no frames decoded
       const frames = sink && !lifted ? sink.canvasesAtTimestamps(times.map((t) => t - offset)) : null;
       const si = segs.findIndex((g) => piece.start >= g.start - 1e-6 && piece.start < g.end);
@@ -250,11 +264,12 @@ export async function exportVideo(
         await advance(i);
         // Same order as the preview: video, layers, caption (and the person over both with "text behind").
         const color = piece.fx?.color;
-        const img = frame?.canvas && color ? grader.apply(frame.canvas, sw, sh, color, lutOf(color.lut)) : frame?.canvas ?? null;
+        const raw = lifted ? null : still ?? frame?.canvas ?? null;
+        const img = raw && color ? grader.apply(raw, sw, sh, color, lutOf(color.lut)) : raw;
         drawFrame(ctx, img, sw, sh, zoomPlace(coverPlace(width, height, sw, sh, piece.fx?.focus), width, height, piece.fx, t - segStart), piece.fx, !!cap, () => {
           paintLayers(i);
           if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
-        });
+        }, hasBehind ? () => paintLayers(i, true) : undefined);
         trans.apply(ctx, segs[si]?.fx?.trans, si, i / opts.fps - segOut, segs[si]?.fx?.transDur ?? TRANS_DUR);
         await vOut.add(i / opts.fps, 1 / opts.fps);
         onProgress(++i / total);
@@ -262,6 +277,7 @@ export async function exportVideo(
       await frames?.return(undefined);
     }
     for (const l of layers) (await l.frames?.return(null), l.img?.close());
+    for (const b of stills.values()) b?.close();
   })();
 
   // Audio: the pre-rendered mix, fed in 1-second chunks.
