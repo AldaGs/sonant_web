@@ -454,6 +454,11 @@
   // Clearing keeps the look at the playhead as the layer's fixed transform.
   const clearKeys = (o: Overlay) => (setOverlay(o.id, { tf: tfAt(o, outNow()), kf: undefined }), doneEditing());
   const doneEditing = () => (ovEditing = false);
+  // Closing a layer's settings closes the Style sheet too (on phones), instead of leaving the caption styles behind.
+  const closeLayer = () => {
+    selectedOverlay = '';
+    if (sheet === 'style') sheet = null;
+  };
   function removeOverlay() {
     if (!selectedOverlay) return false;
     commit();
@@ -1586,7 +1591,7 @@
       <section class="layer" class:vlayer={o.kind !== 'text'} aria-label={t('layer')} onchange={doneEditing} onpointerup={doneEditing}>
         <div class="lhead">
           <h3>{o.motion ? t('addTitle') : o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
-          <button class="sm icon" onclick={() => (selectedOverlay = '')} aria-label={t('ex.close')}><Icon name="close" /></button>
+          <button class="sm icon" onclick={closeLayer} aria-label={t('ex.close')}><Icon name="close" /></button>
         </div>
         {#if o.kind === 'text'}
           <label class="vol">{t('text')}
