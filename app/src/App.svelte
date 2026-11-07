@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { acceptExt } from './lib/platform';
   import { onMount, untrack } from 'svelte';
   import { transcribe } from './lib/transcribe';
   import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Caption, type Word } from './lib/captions';
@@ -29,6 +30,7 @@
   import { embed, cluster, smooth, spanOf, applySpeakers, units, splitBySpeaker, type Unit } from './lib/diarize';
   import { decodeAudio } from './lib/transcribe';
   import { gpuFor } from './lib/perf';
+  import { decodeFileAudio } from './lib/audiodecode';
   import { shiftOf, planStab, stabPlace, grey, STAB_FPS, STAB_W } from './lib/stabilize';
   import { makeReversed } from './lib/reverse';
   import { applyVoiceFx, VOICE_FX, type VoiceFx } from './lib/voicefx';
@@ -591,9 +593,8 @@
     try {
       // Noise reduction first (RNNoise wants the raw recording), then the voice effect.
       const srcBlob: Blob = want.dn ? ((await cleanAudio(f, want.dn, () => {})) ?? f) : f;
-      const ctx = new AudioContext();
-      let buf: AudioBuffer;
-      try { buf = await ctx.decodeAudioData(await srcBlob.arrayBuffer()); } finally { ctx.close(); }
+      const buf = await decodeFileAudio(srcBlob); // Safari's decodeAudioData can't read most video files
+      if (!buf) throw new Error('err.noAudio');
       await new Promise((r) => setTimeout(r)); // let the "working" state paint
       const out = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, c) => (want.vfx ? applyVoiceFx(buf.getChannelData(c), buf.sampleRate, want.vfx) : buf.getChannelData(c)));
       const base = (names.get(orig) ?? 'audio').replace(/\.[^.]+$/, '');
@@ -2091,7 +2092,7 @@
               {#each luts as l}<option value={l.id}>{l.name}</option>{/each}
             </select>
           </label>
-          <label class="btn sm">{t('importLut')}<input type="file" accept=".cube" hidden onchange={(e) => importLut(e.currentTarget.files?.[0])} /></label>
+          <label class="btn sm">{t('importLut')}<input type="file" accept={acceptExt(".cube")} hidden onchange={(e) => importLut(e.currentTarget.files?.[0])} /></label>
         </div>
         {#if c.lut}
           <label class="vol">{t('lutMix')} <span class="mono small">{Math.round((c.lutMix ?? 1) * 100)}%</span>
