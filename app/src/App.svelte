@@ -1047,6 +1047,12 @@
   const currentCap = $derived(visibleCaps.find((c) => time >= startOf(c) && time < endOf(c)) ?? selectedCap);
   const currentAnim = $derived(currentCap?.style?.animation ?? style.animation);
   const animName = $derived(t('anim.' + currentAnim));
+  // The preview pill names the animation only when every caption uses the same one (no mixed overrides).
+  const sharedAnim = $derived.by(() => {
+    if (!captions.length) return null;
+    const set = new Set(captions.map((c) => c.style?.animation ?? style.animation));
+    return set.size === 1 ? [...set][0] : null;
+  });
   const saveState = $derived(saving ? t('saving') : t('saved'));
 
   const cutHere = () => (setSegs(splitAt(segments, time)), announce(t('a11y.split', { t: tc(outTime) })));
@@ -1371,7 +1377,7 @@
         <!-- .frame is the visible stage box; .fit is the largest box with the video's aspect ratio inside it (× zoom). -->
         <div class="frame">
           <div class="fit" style:--ar={frameW / frameH} style:--z={zoom}>
-            <span class="badge">{t('animBadge', { name: animName })}</span>
+            {#if sharedAnim}<span class="badge">{t('animBadge', { name: t('anim.' + sharedAnim) })}</span>{/if}
             <!-- svelte-ignore a11y_no_noninteractive_tabindex (focusable so arrow keys can move the caption) -->
             <canvas bind:this={canvas} tabindex="0" onpointerdown={pointer} onpointermove={pointer} onpointerup={pointer}
               onpointercancel={pointer} onpointerleave={() => (hover = false)} onkeydown={nudge}
