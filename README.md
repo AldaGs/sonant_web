@@ -102,6 +102,7 @@ app/src/
 ## Known limits
 
 - Speaker labels are manual; there is no automatic speaker detection.
-- There is one video per project, with no multi-clip timeline or extra audio tracks.
+- Clips play whole and in sequence (cut inside them with the transcript or timeline); there is no overlap or transitions between clips.
+- Music and voiceover play in output time, so cutting words does not move them; they are not transcribed.
 - Very large files (> ~2 GB) can run out of browser memory.
 - Filler removal only targets hesitation sounds (um, uh, eh…). Words like "like" or "este" are left alone.

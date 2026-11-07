@@ -21,11 +21,11 @@ Status compares against the current app in `app/`.
 ## 2. Assets panel (media library)
 | # | Feature | Status | Notes |
 |---|---|---|---|
-| 2.1 | "+ Import media" (multiple files, video + audio) | 🟡 | Today: one video at a time. |
-| 2.2 | Filter tabs: All / Video / Audio | ❌ | |
-| 2.3 | Asset grid with thumbnail + duration badge + filename | ❌ | Thumbnail code exists (`thumbs.ts`). |
-| 2.4 | Drag asset onto timeline to add | ❌ | |
-| 2.5 | Persist all imported assets (IndexedDB) | 🟡 | Today stores one video. |
+| 2.1 | "+ Import media" (multiple files, video + audio) | ✅ | Today: one video at a time. |
+| 2.2 | Filter tabs: All / Video / Audio | ✅ | |
+| 2.3 | Asset grid with thumbnail + duration badge + filename | ✅ | Thumbnail code exists (`thumbs.ts`). |
+| 2.4 | Drag asset onto timeline to add | ✅ | |
+| 2.5 | Persist all imported assets (IndexedDB) | ✅ | Today stores one video. |
 
 ## 3. Transcript tab (text-based editing)
 | # | Feature | Status | Notes |
@@ -78,11 +78,11 @@ Status compares against the current app in `app/`.
 | 7.1 | Time ruler with labels (0:00, 0:20 …) | ✅ | |
 | 7.2 | Zoom −/+ (horizontal scroll when zoomed) | ✅ | |
 | 7.3 | Split at playhead | ✅ | |
-| 7.4 | Video track with **multiple clips** in sequence | ❌ | Today: one source video, cut into segments. Big change: multi-source model + export concatenation. |
+| 7.4 | Video track with **multiple clips** in sequence | ✅ | Today: one source video, cut into segments. Big change: multi-source model + export concatenation. |
 | 7.5 | Audio track with waveform | ✅ | Compute peaks from decoded audio (already decoded for Whisper). |
-| 7.6 | Separate audio files (voiceover, music bed) mixed in | ❌ | Needs multi-track audio mix in export (OfflineAudioContext). |
+| 7.6 | Separate audio files (voiceover, music bed) mixed in | ✅ | Needs multi-track audio mix in export (OfflineAudioContext). |
 | 7.7 | Captions track (one block per line, draggable) | ✅ | |
-| 7.8 | Text-anim track ("Karaoke · all captions") — animation per range | 🟡 | Track shows the one global animation; per-range overrides still to do. Implies per-caption animation overrides; today one global style. |
+| 7.8 | Text-anim track ("Karaoke · all captions") — animation per range | ✅ | Track shows the one global animation; per-range overrides still to do. Implies per-caption animation overrides; today one global style. |
 | 7.9 | Playhead line spanning all tracks | ✅ | Have one on the video strip. |
 | 7.10 | Trim handles, delete, undo/redo | ✅ | Not shown in design; keep. |
 
@@ -110,7 +110,7 @@ Status compares against the current app in `app/`.
 
 ## Suggested build order
 
-> Step 1 done (re-skin + layout). Step 2 done (transcript editing; fillers = hesitation sounds only, not "like"/"este"). Step 3 done (Boxed, Editorial, Fade up, letter-by-letter Typewriter, duration + easing). Step 4 done (ruler, zoom, waveform, draggable captions track, text-anim track, full-height playhead). Step 5 done (manual speaker tagging). Note 6.1: cards show our 6 presets; Boxed + Editorial arrive in step 3. Share (9.1) left out until decided.
+> Step 1 done (re-skin + layout). Step 2 done (transcript editing; fillers = hesitation sounds only, not "like"/"este"). Step 3 done (Boxed, Editorial, Fade up, letter-by-letter Typewriter, duration + easing). Step 4 done (ruler, zoom, waveform, draggable captions track, text-anim track, full-height playhead). Step 5 done (manual speaker tagging). Step 6 done (multi-clip sequence, media library, music/VO track with volume, mixed export; per-caption styles merged from a parallel edit). Note 6.1: cards show our 6 presets; Boxed + Editorial arrive in step 3. Share (9.1) left out until decided.
 1. **Re-skin + layout** (1.1–1.6, 5.2–5.5, 6.1, 6.4, 8.1–8.3) — visual match, mostly UI work, low risk.
 2. **Transcript editing** (3.1, 3.3–3.8) — delete words to cut, fillers, silences, search. Builds on existing cuts + word timings. Biggest value.
 3. **New styles & animations** (6.2, 6.3, 6.6–6.9).

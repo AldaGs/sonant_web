@@ -5,6 +5,7 @@
 @import '@fontsource/jetbrains-mono/400.css';
 
 :root {
+  --ui-zoom: 0.88; /* whole UI ~12% smaller; .app height divides by this to still fill the window */
   --bg: #0f0f0f;
   --panel: #121212;
   --surface: #181818;
@@ -30,6 +31,7 @@
   background: var(--bg);
 }
 * { box-sizing: border-box; }
+html { zoom: var(--ui-zoom); }
 body { margin: 0; background: var(--bg); }
 button, .btn {
   font: inherit; color: var(--text); background: transparent;

@@ -19,4 +19,5 @@ async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBReq
 
 export const get = <T>(key: string) => tx<T | undefined>('readonly', (s) => s.get(key)).catch(() => undefined);
 export const set = (key: string, value: unknown) => tx<void>('readwrite', (s) => s.put(value, key));
-export const del = (key: string) => tx<void>('readwrite', (s) => s.delete(key)).catch(() => {});
+export const keys = () => tx<IDBValidKey[]>('readonly', (s) => s.getAllKeys()).catch(() => [] as IDBValidKey[]);
+export const del =(key: string) => tx<void>('readwrite', (s) => s.delete(key)).catch(() => {});

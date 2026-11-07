@@ -3,26 +3,55 @@
   import { startOf, endOf, type Caption } from './captions';
   import type { Thumb } from './thumbs';
   import { tickStep } from './waveform';
+  import { clipAt, clipStarts, type AudioItem, type Clip } from './project';
   import { t } from './i18n.svelte';
 
   let {
-    segments, time, thumbs, peaks, duration, captions, animLabel, zoom = 1,
-    selected = $bindable(-1), onseek, ontrim, oncommit, onmovecap,
+    segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = 1,
+    selected = $bindable(-1), selectedCapIds = new Set<string>(), selectedAudio = $bindable(''), onselectcap,
+    onseek, ontrim, oncommit, onmovecap, onmoveaudio,
   }: {
     segments: Segment[];
-    time: number; // source time
-    thumbs: Thumb[];
-    peaks: Float32Array | null;
-    duration: number; // source duration
-    captions: Caption[]; // source time
+    time: number; // sequence time
+    clips: Clip[];
+    durations: Map<string, number>; // assetId → seconds
+    names: Map<string, string>; // assetId → file name
+    thumbs: Record<string, Thumb[]>; // assetId → thumbnails (asset-local time)
+    peaks: Record<string, Float32Array>; // assetId → waveform peaks
+    duration: number; // sequence duration
+    captions: Caption[]; // sequence time
+    audios: AudioItem[]; // output time
     animLabel: string;
     zoom?: number; // 1 = whole video fits
     selected: number;
+    selectedCapIds?: Set<string>; // captions selected for styling
+    onselectcap: (id: string, e: MouseEvent) => void; // Ctrl/⌘ toggles, Shift selects a range
+    selectedAudio: string;
     onseek: (out: number) => void;
     ontrim: (i: number, start: number, end: number) => void; // live while dragging
     oncommit: () => void; // a drag started: snapshot for undo
-    onmovecap: (id: string, start: number, end: number) => void; // live while dragging, source time
+    onmovecap: (id: string, start: number, end: number) => void; // live while dragging, sequence time
+    onmoveaudio: (id: string, at: number) => void; // live while dragging, output time
   } = $props();
+
+  const starts = $derived(clipStarts(clips, durations));
+  // Thumbnails for a kept segment: those of its clip that fall inside it.
+  function segThumbs(s: Segment): Thumb[] {
+    const at = clipAt(clips, durations, (s.start + s.end) / 2);
+    if (!at) return [];
+    const off = starts[at.index];
+    return (thumbs[clips[at.index].assetId] ?? []).filter((th) => th.t >= s.start - off && th.t < s.end - off);
+  }
+  const clipName = (s: Segment) => {
+    const at = clipAt(clips, durations, (s.start + s.end) / 2);
+    return at ? names.get(clips[at.index].assetId) ?? '' : '';
+  };
+
+  function moveAudio(e: PointerEvent, item: AudioItem) {
+    selectedAudio = item.id;
+    const a = item.at;
+    drag(e, (d) => onmoveaudio(item.id, Math.max(0, Math.min(total - 0.1, a + d))));
+  }
 
   let scroller = $state<HTMLDivElement>();
   let inner = $state<HTMLDivElement>();
@@ -87,22 +116,27 @@
     }, () => onseek(toOutput(segments, a) ?? 0));
   }
 
-  // Waveform: one bar every 3px, height = loudest peak under it (cut parts skipped via output→source mapping).
+  // Waveform of the clips' own audio: one bar every 3px, height = loudest peak under it.
+  // Output x → sequence time (skipping cuts) → clip + local time → that asset's peaks.
   $effect(() => {
-    const cv = wave, p = peaks, w = width, segs = segments, dur = duration, tot = total;
+    const cv = wave, w = width, segs = segments, tot = total, cl = clips, durs = durations, pk = peaks;
     if (!cv || !w) return;
     const dpr = devicePixelRatio || 1;
     cv.width = Math.round(w * dpr);
     cv.height = Math.round(28 * dpr);
     const ctx = cv.getContext('2d')!;
     ctx.clearRect(0, 0, cv.width, cv.height);
-    if (!p || !dur) return;
     ctx.fillStyle = '#6b6b6b';
     const bar = 3 * dpr, mid = cv.height / 2;
     for (let x = 0; x < cv.width; x += bar) {
       const a = toSource(segs, (x / cv.width) * tot), b = toSource(segs, ((x + bar) / cv.width) * tot);
+      const at = clipAt(cl, durs, a);
+      if (!at) continue;
+      const id = cl[at.index].assetId, p = pk[id], dur = durs.get(id) ?? 0;
+      if (!p || !dur) continue;
+      const la = at.local, lb = Math.min(dur, at.local + Math.max(0, b - a));
       let m = 0;
-      for (let i = Math.floor((a / dur) * p.length), end = Math.max(i + 1, Math.ceil((b / dur) * p.length)); i < end && i < p.length; i++) m = Math.max(m, p[i]);
+      for (let i = Math.floor((la / dur) * p.length), end = Math.max(i + 1, Math.ceil((lb / dur) * p.length)); i < end && i < p.length; i++) m = Math.max(m, p[i]);
       const h = Math.max(dpr, m * (cv.height - 2 * dpr));
       ctx.fillRect(x, mid - h / 2, Math.max(dpr, bar - dpr), h);
     }
@@ -123,6 +157,7 @@
     <span>{t('audioTrack')}</span>
     <span>{t('captions')}</span>
     <span>{t('animTrack')}</span>
+    <span>{t('musicTrack')}</span>
   </div>
 
   <div class="scroller" bind:this={scroller}>
@@ -142,10 +177,11 @@
         {#each segments as s, i}
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events (segment select is mouse-only; keyboard users split/delete via shortcuts) -->
           <div class="seg" class:sel={i === selected} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
-            onclick={() => (selected = i)}>
+            onclick={() => (selected = i)} title={clipName(s)}>
             <div class="thumbs">
-              {#each thumbs.filter((th) => th.t >= s.start && th.t < s.end) as th}<img src={th.url} alt="" />{/each}
+              {#each segThumbs(s) as th}<img src={th.url} alt="" />{/each}
             </div>
+            <span class="cname">{clipName(s)}</span>
             {#if i === selected}
               <div class="handle l" role="slider" tabindex="-1" aria-label={t('trimStart')} aria-valuenow={s.start}
                 onpointerdown={(e) => edge(e, i, 'start')}></div>
@@ -160,18 +196,33 @@
 
       <div class="row">
         {#each outCaps as c, i (c.id)}
-          <button class="cap" style:left={pct(startOf(c))} style:width={pct(Math.max(0.05, endOf(c) - startOf(c)))}
-            title={c.words.map((w) => w.text).join(' ')} onpointerdown={(e) => moveCap(e, c.id)}
-            onclick={(e) => e.stopPropagation()}>{t('lineN', { n: i + 1 })}</button>
+          <button class="cap" class:sel={selectedCapIds.has(c.id)}
+            style:left={pct(startOf(c))} style:width={pct(Math.max(0.05, endOf(c) - startOf(c)))}
+            title={c.words.map((w) => w.text).join(' ')}
+            onpointerdown={(e) => moveCap(e, c.id)}
+            onclick={(e) => { e.stopPropagation(); onselectcap(c.id, e); }}>{t('lineN', { n: i + 1 })}</button>
         {/each}
       </div>
 
       <div class="row">
-        {#if outCaps.length}
-          <div class="animbar" style:left={pct(startOf(outCaps[0]))} style:right="{100 - (endOf(outCaps[outCaps.length - 1]) / total) * 100}%">
-            {animLabel}
-          </div>
-        {/if}
+        {#each outCaps as c (c.id)}
+          {@const anim = sourceById.get(c.id)?.style?.animation}
+          <button class="animbar" class:sel={selectedCapIds.has(c.id)}
+            style:left={pct(startOf(c))} style:width={pct(Math.max(0.05, endOf(c) - startOf(c)))}
+            title={anim ? t('anim.' + anim) : animLabel}
+            onclick={(e) => { e.stopPropagation(); onselectcap(c.id, e); }}>
+            {anim ? t('anim.' + anim) : animLabel}
+          </button>
+        {/each}
+      </div>
+
+      <div class="row">
+        {#each audios as item (item.id)}
+          <button class="aud" class:sel={item.id === selectedAudio} style:left={pct(item.at)}
+            style:width={pct(Math.min(durations.get(item.assetId) ?? 0, total - item.at))}
+            title={names.get(item.assetId)} aria-pressed={item.id === selectedAudio}
+            onpointerdown={(e) => moveAudio(e, item)} onclick={(e) => e.stopPropagation()}>♪ {names.get(item.assetId)}</button>
+        {/each}
       </div>
 
       {#if playhead !== null}<div class="playhead" style:left={pct(playhead)}></div>{/if}
@@ -181,7 +232,7 @@
 
 <style>
   .tl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; }
-  .labels, .inner { display: grid; grid-template-rows: 20px 48px 30px 22px 22px; row-gap: 6px; }
+  .labels, .inner { display: grid; grid-template-rows: 20px 48px 30px 22px 22px 24px; row-gap: 6px; }
   .labels { font-size: 12px; color: var(--muted); align-items: center; }
   .scroller { overflow-x: auto; overflow-y: hidden; }
   .inner { position: relative; min-width: 100%; cursor: pointer; }
@@ -201,8 +252,15 @@
     white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(200 245 96 / .35);
     background: rgb(200 245 96 / .12); color: var(--accent); cursor: grab; touch-action: none; }
   .cap:active { cursor: grabbing; }
-  .animbar { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; padding: 0 8px; font-size: 11px;
-    background: var(--tab-on); border-radius: 6px; white-space: nowrap; overflow: hidden; }
+  .cap.sel { border-color: var(--accent); background: rgb(200 245 96 / .35); font-weight: 700; z-index: 2; box-shadow: 0 0 0 1px var(--accent); }
+  .animbar { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; padding: 0 6px; font-size: 11px;
+    background: var(--tab-on); border-radius: 6px; white-space: nowrap; overflow: hidden; border: 1px solid transparent; cursor: pointer; }
+  .animbar.sel { border-color: var(--accent); background: rgb(200 245 96 / .2); color: var(--accent); font-weight: 700; z-index: 2; }
+  .cname { position: absolute; left: 6px; bottom: 3px; font-size: 11px; color: #fff; text-shadow: 0 1px 2px #000; pointer-events: none; white-space: nowrap; overflow: hidden; max-width: calc(100% - 12px); }
+  .aud { position: absolute; top: 0; height: 24px; min-width: 8px; padding: 0 8px; justify-content: flex-start; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(106 184 255 / .4);
+    background: rgb(106 184 255 / .12); color: var(--speaker-1); cursor: grab; touch-action: none; }
+  .aud.sel { border-color: var(--speaker-1); background: rgb(106 184 255 / .25); }
   .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); pointer-events: none; transform: translateX(-1px); }
   .playhead::before { content: ''; position: absolute; top: -2px; left: -4px; border: 5px solid transparent; border-top-color: var(--accent); }
 </style>

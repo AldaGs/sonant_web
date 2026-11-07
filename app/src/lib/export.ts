@@ -1,7 +1,8 @@
 import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
 import { keptCaptions, type Segment } from './cuts.ts';
-import { drawCaption, type Style } from './render.ts';
+import { drawCaption, resolveStyle, type Style } from './render.ts';
+import { clipAt, clipStarts, splitAtBoundaries, type Asset, type AudioItem, type Clip } from './project.ts';
 
 export type Aspect = 'source' | '16:9' | '9:16' | '1:1';
 export type Res = 'source' | 1080 | 720 | 540 | 480;
@@ -24,36 +25,92 @@ export function* frameTimes(segs: Segment[], fps: number) {
 export const frameCount = (segs: Segment[], fps: number) =>
   segs.reduce((n, s) => n + Math.ceil((s.end - s.start - 1e-6) * fps), 0);
 
-// Copy the part of `b` (which starts at source time t0) that lies inside [from, to).
-function sliceAudio(b: AudioBuffer, t0: number, from: number, to: number): AudioBuffer | null {
-  const a = Math.max(0, Math.round((from - t0) * b.sampleRate));
-  const z = Math.min(b.length, Math.round((to - t0) * b.sampleRate));
-  if (z <= a) return null;
-  if (a === 0 && z === b.length) return b;
+// Copy samples [a, z) of `b` into a new buffer.
+function slice(b: AudioBuffer, a: number, z: number): AudioBuffer {
   const out = new AudioBuffer({ length: z - a, numberOfChannels: b.numberOfChannels, sampleRate: b.sampleRate });
   for (let c = 0; c < b.numberOfChannels; c++) out.copyToChannel(b.getChannelData(c).subarray(a, z), c);
   return out;
 }
 
+// What export needs to know about the project. Times: segments/captions in sequence time, audio items in output time.
+export type ExportSource = {
+  files: Map<string, File>; // assetId → file
+  assets: Asset[];
+  clips: Clip[];
+  audios: AudioItem[];
+  clipVolume: number;
+};
+
+// Mix the kept parts of each clip's audio plus the extra audio items into one buffer, `seconds` long.
+// ponytail: renders the whole mix in memory (~23 MB per stereo minute); stream in chunks if long videos hit memory limits
+async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Promise<AudioBuffer | null> {
+  const sr = 48000;
+  const durations = new Map(src.assets.map((a) => [a.id, a.duration]));
+  const needed = new Set([...src.clips.map((c) => c.assetId), ...src.audios.map((a) => a.assetId)]);
+  const decoder = new AudioContext({ sampleRate: sr });
+  const decoded = new Map<string, AudioBuffer>();
+  try {
+    for (const id of needed) {
+      const f = src.files.get(id);
+      if (!f) continue;
+      try {
+        decoded.set(id, await decoder.decodeAudioData(await f.arrayBuffer()));
+      } catch {} // no audio track in this file
+    }
+  } finally {
+    decoder.close();
+  }
+  if (!decoded.size || seconds <= 0) return null;
+
+  const ctx = new OfflineAudioContext({ numberOfChannels: 2, length: Math.ceil(seconds * sr), sampleRate: sr });
+  const play = (buf: AudioBuffer, when: number, offset: number, len: number, volume: number) => {
+    const s = ctx.createBufferSource(), g = ctx.createGain();
+    s.buffer = buf;
+    g.gain.value = volume;
+    s.connect(g).connect(ctx.destination);
+    s.start(when, offset, len);
+  };
+
+  // Clip audio: each kept piece, back to back in output time.
+  const starts = clipStarts(src.clips, durations);
+  let out = 0;
+  for (const s of splitAtBoundaries(segs, starts)) {
+    const at = clipAt(src.clips, durations, (s.start + s.end) / 2);
+    const buf = at && decoded.get(src.clips[at.index].assetId);
+    if (buf) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume);
+    out += s.end - s.start;
+  }
+  // Extra audio: placed in output time, cut off at the end of the video.
+  for (const item of src.audios) {
+    const buf = decoded.get(item.assetId);
+    if (buf && item.at < seconds) play(buf, Math.max(0, item.at), Math.max(0, -item.at), Math.min(buf.duration, seconds - item.at), item.volume);
+  }
+  return ctx.startRendering();
+}
+
 export async function exportVideo(
-  file: File, segs: Segment[], captions: Caption[], style: Style, opts: ExportOptions,
+  src: ExportSource, segs: Segment[], captions: Caption[], style: Style, opts: ExportOptions,
   onProgress: (p: number) => void, signal: AbortSignal,
 ): Promise<Blob> {
   // Loaded on demand so the encoder library doesn't slow down the first page load.
   const {
     Input, Output, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS,
-    CanvasSink, CanvasSource, AudioBufferSink, AudioBufferSource,
+    CanvasSink, CanvasSource, AudioBufferSource,
     canEncodeVideo, canEncodeAudio, QUALITY_LOW, QUALITY_MEDIUM, QUALITY_HIGH,
   } = await import('mediabunny');
-  const input =new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
-  const vIn = await input.getPrimaryVideoTrack();
-  if (!vIn) throw new Error('err.noVideo');
-  const aIn = await input.getPrimaryAudioTrack();
 
-  const { width, height } = outputSize(vIn.displayWidth, vIn.displayHeight, opts.res, opts.aspect);
+  const assets = new Map(src.assets.map((a) => [a.id, a]));
+  const durations = new Map(src.assets.map((a) => [a.id, a.duration]));
+  const first = src.clips.map((c) => assets.get(c.assetId)).find((a) => a?.width);
+  if (!first) throw new Error('err.noVideo');
+  const { width, height } = outputSize(first.width!, first.height!, opts.res, opts.aspect);
   if (!(await canEncodeVideo('avc', { width, height })))
     throw new Error('err.noH264');
   const aCodec = (await canEncodeAudio('aac')) ? 'aac' : 'opus';
+
+  const total = frameCount(segs, opts.fps);
+  const mix = await mixAudio(src, segs, total / opts.fps);
+  if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
 
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d')! as unknown as CanvasRenderingContext2D;
@@ -61,53 +118,52 @@ export async function exportVideo(
   const bitrate = { draft: QUALITY_LOW, standard: QUALITY_MEDIUM, high: QUALITY_HIGH }[opts.quality];
   const vOut = new CanvasSource(canvas, { codec: 'avc', bitrate });
   output.addVideoTrack(vOut, { frameRate: opts.fps });
-  const aOut = aIn ? new AudioBufferSource({ codec: aCodec, bitrate }) : null;
+  const aOut = mix ? new AudioBufferSource({ codec: aCodec, bitrate }) : null;
   if (aOut) output.addAudioTrack(aOut);
   await output.start();
 
-  const total = frameCount(segs, opts.fps);
   const sorted = keptCaptions(captions, segs).sort((a, b) => startOf(a) - startOf(b)); // cut words never appear
 
-  // Video: walk output frames, draw source frame + caption, encode.
+  // Video: for each kept piece, pull its clip's frames (one decoder per asset), draw + caption, encode.
   const videoTask = (async () => {
-    const sink = new CanvasSink(vIn, { width, height, fit: 'cover', poolSize: 2 });
-    const times = frameTimes(segs, opts.fps);
+    const sinks = new Map<string, InstanceType<typeof CanvasSink>>();
+    const sinkFor = async (assetId: string) => {
+      if (!sinks.has(assetId)) {
+        const f = src.files.get(assetId);
+        const track = f && (await new Input({ source: new BlobSource(f), formats: ALL_FORMATS }).getPrimaryVideoTrack());
+        if (track) sinks.set(assetId, new CanvasSink(track, { width, height, fit: 'cover', poolSize: 2 }));
+      }
+      return sinks.get(assetId);
+    };
+    const starts = clipStarts(src.clips, durations);
     let i = 0;
-    for await (const frame of sink.canvasesAtTimestamps(frameTimes(segs, opts.fps))) {
-      const t = times.next().value as number;
-      if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, width, height);
-      if (frame) ctx.drawImage(frame.canvas, 0, 0);
-      const cap = sorted.find((c) => t >= startOf(c) && t < endOf(c));
-      if (cap) drawCaption(ctx, cap, t, style);
-      await vOut.add(i / opts.fps, 1 / opts.fps);
-      onProgress(++i / total);
+    for (const piece of splitAtBoundaries(segs, starts)) {
+      const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2);
+      const offset = at ? starts[at.index] : 0;
+      const sink = at ? await sinkFor(src.clips[at.index].assetId) : undefined;
+      const times = [...frameTimes([piece], opts.fps)];
+      const frames = sink ? sink.canvasesAtTimestamps(times.map((t) => t - offset)) : null;
+      for (const t of times) {
+        if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
+        const frame = frames ? (await frames.next()).value : null;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, width, height);
+        if (frame) ctx.drawImage(frame.canvas, 0, 0);
+        const cap = sorted.find((c) => t >= startOf(c) && t < endOf(c));
+        if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
+        await vOut.add(i / opts.fps, 1 / opts.fps);
+        onProgress(++i / total);
+      }
+      await frames?.return(undefined);
     }
   })();
 
-  // Audio: copy only the kept ranges, back to back.
+  // Audio: the pre-rendered mix, fed in 1-second chunks.
   const audioTask = (async () => {
-    if (!aIn || !aOut) return;
-    const sink = new AudioBufferSink(aIn);
-    const sr = aIn.sampleRate, chans = aIn.numberOfChannels;
-    // Silence keeps audio aligned with video when the source audio has gaps or ends early.
-    const pad = (seconds: number) => {
-      const n = Math.round(seconds * sr);
-      return n > 0 ? aOut.add(new AudioBuffer({ length: n, numberOfChannels: chans, sampleRate: sr })) : undefined;
-    };
-    for (const s of segs) {
-      let cursor = s.start; // source time written so far in this segment
-      for await (const { buffer, timestamp } of sink.buffers(s.start, s.end)) {
-        if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
-        const from = Math.max(cursor, timestamp); // skip overlap with what's already written
-        const part = sliceAudio(buffer, timestamp, from, s.end);
-        if (!part) continue;
-        await pad(from - cursor);
-        await aOut.add(part);
-        cursor = from + part.duration;
-      }
-      await pad(Math.ceil((s.end - s.start) * opts.fps) / opts.fps - (cursor - s.start)); // match video frame count
+    if (!mix || !aOut) return;
+    for (let a = 0; a < mix.length; a += mix.sampleRate) {
+      if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
+      await aOut.add(slice(mix, a, Math.min(mix.length, a + mix.sampleRate)));
     }
   })();
 

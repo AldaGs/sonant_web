@@ -1,10 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { transcribe } from './lib/transcribe';
-  import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, type Caption } from './lib/captions';
-  import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, type Style } from './lib/render';
+  import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, type Caption, type Word } from './lib/captions';
+  import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
-  import { splitAt, remove, trim, toSource, toOutput, nextKept, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment } from './lib/cuts';
+  import { splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment } from './lib/cuts';
+  import { clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
+  import { Player } from './lib/player';
+  import { importFile, loadFile, deleteFile, probe } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
   import { audioPeaks } from './lib/waveform';
   import * as store from './lib/store';
@@ -14,10 +17,28 @@
   import StylePanel from './lib/StylePanel.svelte';
   import TranscriptView from './lib/TranscriptView.svelte';
 
-  let file = $state<File | null>(null);
-  let src = $state<string | null>(null);
-  let duration = $state(0);
-  let time = $state(0);
+  // ---- Project media ----
+  let assets = $state<Asset[]>([]);
+  let clips = $state<Clip[]>([]); // video track, in play order
+  let audios = $state<AudioItem[]>([]); // music / voiceover, output time
+  let clipVolume = $state(1); // volume of the clips' own sound
+  let urls = $state<Record<string, string>>({}); // assetId → object URL
+  const files = new Map<string, File>(); // assetId → file
+  let thumbs = $state<Record<string, Thumb[]>>({});
+  let peaks = $state<Record<string, Float32Array>>({});
+  let wordCache: Record<string, Word[]> = {}; // `${assetId}|${language}` → words in asset time
+
+  const durations = $derived(new Map(assets.map((a) => [a.id, a.duration])));
+  const names = $derived(new Map(assets.map((a) => [a.id, a.name])));
+  const duration = $derived(seqDuration(clips, durations)); // whole sequence, before cuts
+  const hasMedia = $derived(clips.length > 0);
+  const videoIds = $derived([...new Set(clips.map((c) => c.assetId))]);
+  const firstVideo = $derived(clips.map((c) => assets.find((a) => a.id === c.assetId)).find((a) => a?.width));
+  const frameW = $derived(firstVideo?.width || 1280);
+  const frameH = $derived(firstVideo?.height || 720);
+
+  // ---- Editing state ----
+  let time = $state(0); // sequence time
   let paused = $state(true);
   let dragging = $state(false);
   let language = $state<'english' | 'spanish' | null>(null);
@@ -27,26 +48,70 @@
   let error = $state('');
   let notice = $state('');
   let captions = $state<Caption[]>([]);
-  let video = $state<HTMLVideoElement>();
   let canvas = $state<HTMLCanvasElement>();
   let style = $state<Style>({ ...DEFAULT_STYLE });
   let fonts = $state<Font[]>([...BUNDLED]);
   let fontError = $state('');
   let segments = $state<Segment[]>([]);
   let selected = $state(-1);
-  let thumbs = $state<Thumb[]>([]);
-  let peaks = $state<Float32Array | null>(null);
+  // Selected captions for per-caption styling. The last one clicked is the "primary": the style panel shows its look.
+  let selectedCapIds = $state<string[]>([]);
+  let selectedAudio = $state('');
   let tlZoom = $state(1);
-  let videoWidth = $state(0);
-  let videoHeight = $state(0);
   let exporter = $state<ExportDialog>();
 
-  // Undo/redo: snapshots of the editable project (cuts + captions).
-  type Snap = { segments: Segment[]; captions: Caption[] };
+  const selectedCapId = $derived(selectedCapIds.at(-1) ?? null);
+  const selectedSet = $derived(new Set(selectedCapIds));
+  const selectedCapIndex = $derived(captions.findIndex((c) => c.id === selectedCapId));
+  const selectedCap = $derived(selectedCapIndex >= 0 ? captions[selectedCapIndex] : null);
+
+  // Click = select one; Ctrl/⌘+click = add or remove; Shift+click = range from the primary.
+  function selectCap(id: string, e?: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
+    if (e?.shiftKey && selectedCapId) {
+      const a = captions.findIndex((c) => c.id === selectedCapId), b = captions.findIndex((c) => c.id === id);
+      const range = captions.slice(Math.min(a, b), Math.max(a, b) + 1).map((c) => c.id).filter((x) => x !== id);
+      selectedCapIds = [...new Set([...selectedCapIds, ...range]), id].filter((x, i, l) => l.lastIndexOf(x) === i);
+    } else if (e && (e.ctrlKey || e.metaKey)) {
+      selectedCapIds = selectedSet.has(id) ? selectedCapIds.filter((x) => x !== id) : [...selectedCapIds, id];
+    } else selectedCapIds = [id];
+  }
+  const clearCapSelection = () => (selectedCapIds = []);
+
+  // Style edits go to every selected caption, as one undo step.
+  function updateCapStyle(override: Partial<Style>) {
+    if (!selectedCapIds.length) return;
+    commit();
+    captions = captions.map((c) => (selectedSet.has(c.id) ? { ...c, style: { ...c.style, ...override } } : c));
+  }
+
+  function applyAllCapStyle() {
+    if (!selectedCap) return;
+    commit();
+    style = resolveStyle(style, selectedCap.style);
+    captions = captions.map((c) => {
+      const { style: _, ...rest } = c;
+      return rest;
+    });
+  }
+
+  function resetCapStyle() {
+    if (!selectedCapIds.length) return;
+    commit();
+    captions = captions.map((c) => {
+      if (!selectedSet.has(c.id)) return c;
+      const { style: _, ...rest } = c;
+      return rest;
+    });
+  }
+
+  const player = new Player(() => ({ clips, audios, segments, durations, clipVolume }));
+
+  // Undo/redo: snapshots of the editable project.
+  type Snap = { segments: Segment[]; captions: Caption[]; clips: Clip[]; audios: AudioItem[] };
   let past = $state<Snap[]>([]);
   let future = $state<Snap[]>([]);
-  const snap = (): Snap => $state.snapshot({ segments, captions });
-  const restore = (s: Snap) => ((segments = s.segments), (captions = s.captions), (selected = -1));
+  const snap = (): Snap => $state.snapshot({ segments, captions, clips, audios });
+  const restore = (s: Snap) => ((segments = s.segments), (captions = s.captions), (clips = s.clips), (audios = s.audios), (selected = -1), (selectedCapIds = []));
   function commit() {
     past = [...past.slice(-99), snap()]; // ponytail: 100-step cap, full snapshots; fine at caption-list sizes
     future = [];
@@ -60,20 +125,43 @@
     if (s) ((past = [...past, snap()]), (future = future.slice(1)), restore(s));
   }
   const setCaps = (c: Caption[]) => (commit(), (captions = c));
-  const setSegs = (s: Segment[]) => s !== segments && (commit(), (segments = s));
+  // Kept segments never cross a clip boundary (so clips can be reordered and exported piece by piece).
+  const normalize = (s: Segment[]) => splitAtBoundaries(s, clipStarts(clips, durations));
+  const setSegs = (s: Segment[]) => s !== segments && (commit(), (segments = normalize(s)));
 
-  // ---- Persistence (IndexedDB): video file, editable doc, uploaded fonts ----
-  type Doc = { name: string; captions: Caption[]; segments: Segment[]; style: Style; language: typeof language; speakers?: string[] };
+  // Change the clip list; cuts and captions follow their clips.
+  function setClips(next: Clip[]) {
+    commit();
+    const r = remapProject(clips, next, durations, segments, captions);
+    clips = next;
+    segments = r.segments;
+    captions = r.captions;
+    selected = -1;
+  }
+
+  // ---- Persistence (IndexedDB) ----
+  type Doc = {
+    name: string; captions: Caption[]; segments: Segment[]; style: Style; language: typeof language; speakers?: string[];
+    assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; words?: Record<string, Word[]>;
+  };
   let speakers = $state<string[]>([]);
   let name = $state('');
   let saving = $state(false);
   let ready = false; // no autosave until the saved project has been restored
-  let pendingSegs: Segment[] | null = null; // saved cuts, applied once the video's metadata is known
   let savedFonts: SavedFont[] = [];
+
+  // Make a file usable: object URL, thumbnails, waveform.
+  function register(a: Asset, f: File) {
+    files.set(a.id, f);
+    const url = URL.createObjectURL(f);
+    urls[a.id] = url;
+    if (a.kind === 'video') thumbnails(url, a.duration).then((th) => (thumbs[a.id] = th)).catch(() => {});
+    audioPeaks(f).then((p) => (peaks[a.id] = p)).catch(() => {}); // no audio track: no waveform
+  }
 
   onMount(async () => {
     document.documentElement.lang = ui.lang;
-    const [v, doc, fts] = await Promise.all([
+    const [legacy, doc, fts] = await Promise.all([
       store.get<File>('video'), store.get<Doc>('doc'), store.get<SavedFont[]>('fonts'),
     ]);
     for (const f of fts ?? []) {
@@ -82,89 +170,171 @@
         savedFonts.push(f);
       } catch {}
     }
-    if (v) {
-      load(v, false);
-      if (doc) {
-        name = doc.name ?? name;
-        speakers = doc.speakers ?? [];
-        captions = doc.captions;
-        pendingSegs = doc.segments;
-        style = migrateStyle(doc.style);
-        language = doc.language;
-        // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
-        if (!fonts.some((f) => f.family === style.family)) fonts = [...fonts, { family: style.family, weight: style.weight }];
-        notice = 'restored';
+    if (doc?.assets) {
+      let missing = false;
+      for (const a of doc.assets) {
+        const f = await loadFile(a.id);
+        if (f) register(a, f);
+        else missing = true;
       }
+      assets = doc.assets;
+      clips = doc.clips ?? [];
+      audios = doc.audios ?? [];
+      clipVolume = doc.clipVolume ?? 1;
+      wordCache = doc.words ?? {};
+      restoreDoc(doc);
+      if (missing) notice = 'err.missingMedia';
+    } else if (legacy) {
+      // Projects from before multi-clip: one video becomes the first (and only) clip.
+      try {
+        const { asset } = await importFile(legacy);
+        register(asset, legacy);
+        assets = [asset];
+        clips = [{ id: crypto.randomUUID(), assetId: asset.id }];
+        if (doc) restoreDoc(doc);
+        else segments = [{ start: 0, end: asset.duration }];
+        await store.del('video');
+      } catch {}
+    } else if (doc) restoreDoc(doc); // older doc without a media list: keep its captions and cuts
+
+    // Safety net: media files in storage that the project doesn't list (e.g. an old tab overwrote the
+    // project during the upgrade) are added back as clips. Exact duplicates (same name and size) are skipped.
+    const listed = new Set(assets.map((a) => a.id));
+    for (const key of await store.keys()) {
+      const id = String(key);
+      if (!id.startsWith('asset:') || listed.has(id.slice(6))) continue;
+      const f = await loadFile(id.slice(6));
+      if (!f || assets.some((a) => a.name === f.name && files.get(a.id)?.size === f.size)) continue;
+      try {
+        const asset: Asset = { id: id.slice(6), name: f.name, ...(await probe(f)) };
+        register(asset, f);
+        assets = [...assets, asset];
+        if (asset.kind !== 'video') continue;
+        const start = duration;
+        clips = [...clips, { id: crypto.randomUUID(), assetId: asset.id }];
+        // The first recovered clip reuses saved cuts if there are any; later ones are fully kept.
+        if (!(start === 0 && segments.length)) segments = [...segments, { start, end: start + asset.duration }];
+      } catch {}
     }
+    if (clips.length && !captions.length && !segments.length) segments = [{ start: 0, end: duration }];
     ready = true;
   });
 
+  function restoreDoc(doc: Doc) {
+    name = doc.name ?? '';
+    speakers = doc.speakers ?? [];
+    captions = doc.captions ?? [];
+    segments = doc.segments ?? [];
+    style = migrateStyle(doc.style ?? {});
+    language = doc.language ?? null;
+    // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
+    if (!fonts.some((f) => f.family === style.family)) fonts = [...fonts, { family: style.family, weight: style.weight }];
+    if (clips.length) notice = 'restored';
+  }
+
   $effect(() => {
-    const doc: Doc = $state.snapshot({ name, captions, segments, style, language, speakers });
-    if (!ready || !file) return;
+    const doc: Doc = $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume });
+    if (!ready) return;
+    doc.words = wordCache;
     saving = true;
     const id = setTimeout(() => store.set('doc', doc).catch(() => {}).finally(() => (saving = false)), 400);
     return () => clearTimeout(id);
   });
 
-  function load(f: File | undefined, save = true) {
-    if (!f?.type.startsWith('video/')) return;
-    if (src) URL.revokeObjectURL(src);
-    src = URL.createObjectURL(f);
-    file = f;
-    if (save) ((name = f.name.replace(/\.[^.]+$/, '')), (speakers = []));
-    captions = [];
-    segments = [];
-    thumbs = [];
-    peaks = null;
-    tlZoom = 1;
-    past = future = [];
-    selected = -1;
+  // ---- Media library ----
+  async function importMedia(list: FileList | File[] | undefined | null) {
+    const media = [...(list ?? [])].filter((f) => /^(video|audio)\//.test(f.type));
+    if (!media.length) return;
     error = notice = '';
-    if (save) {
-      pendingSegs = null;
-      store.del('doc');
-      store.set('video', f).catch(() => (store.del('video'), (notice = 'err.saveVideo')));
+    for (const f of media) {
+      try {
+        const { asset, saved } = await importFile(f);
+        if (!saved) notice = 'err.saveVideo';
+        assets = [...assets, asset];
+        register(asset, f);
+        if (!name) name = f.name.replace(/\.[^.]+$/, '');
+        if (asset.kind === 'video') addClip(asset.id);
+      } catch {
+        error = 'err.badMedia';
+      }
     }
+  }
+
+  const addClip = (assetId: string) => setClips([...clips, { id: crypto.randomUUID(), assetId }]);
+  function addAudio(assetId: string, at = toOutput(segments, time) ?? 0) {
+    commit();
+    const item = { id: crypto.randomUUID(), assetId, at, volume: 1 };
+    audios = [...audios, item];
+    selectedAudio = item.id;
+  }
+  const addToTimeline = (a: Asset) => (a.kind === 'video' ? addClip(a.id) : addAudio(a.id));
+
+  async function removeAsset(a: Asset) {
+    if (!confirm(t('confirmRemoveAsset', { name: a.name }))) return;
+    setClips(clips.filter((c) => c.assetId !== a.id));
+    audios = audios.filter((x) => x.assetId !== a.id);
+    assets = assets.filter((x) => x.id !== a.id);
+    past = future = []; // the file is gone, so earlier states can't be restored
+    files.delete(a.id);
+    URL.revokeObjectURL(urls[a.id]);
+    delete urls[a.id];
+    await deleteFile(a.id);
   }
 
   async function newProject() {
     if (!confirm(t('confirmNew'))) return;
-    await Promise.all([store.del('video'), store.del('doc')]);
-    if (src) URL.revokeObjectURL(src);
-    src = file = null;
+    player.pause();
+    await Promise.all([...assets.map((a) => deleteFile(a.id)), store.del('doc'), store.del('video')]);
+    for (const u of Object.values(urls)) URL.revokeObjectURL(u);
+    files.clear();
+    urls = {};
+    thumbs = {};
+    peaks = {};
+    wordCache = {};
+    assets = clips = audios = [];
     name = '';
     speakers = [];
-    captions = segments = thumbs = [];
-    peaks = null;
+    captions = segments = [];
     past = future = [];
     selected = -1;
+    selectedCapIds = [];
+    selectedAudio = '';
     error = notice = '';
   }
 
-  async function onMeta() {
-    const v = video, s = src;
-    if (!v || !s) return;
-    // Browser-recorded WebM often has no duration header; seeking far forces the browser to find it.
-    if (!Number.isFinite(v.duration)) {
-      v.currentTime = 1e9;
-      await new Promise((r) => v.addEventListener('durationchange', r, { once: true }));
-      v.currentTime = 0;
-      await new Promise((r) => v.addEventListener('seeked', r, { once: true }));
-      duration = v.duration;
-    }
-    segments = pendingSegs ?? [{ start: 0, end: v.duration }];
-    pendingSegs = null;
-    thumbnails(s, v.duration).then((t) => src === s && (thumbs = t)).catch(() => {});
-    if (file) audioPeaks(file).then((p) => src === s && (peaks = p)).catch(() => {}); // no audio track: no waveform
+  // Register each <video>/<audio> with the player.
+  function media(node: HTMLMediaElement, [kind, id]: ['v' | 'a', string]) {
+    const map = (kind === 'v' ? player.videos : player.audios) as Map<string, HTMLMediaElement>;
+    map.set(id, node);
+    return { destroy: () => map.get(id) === node && map.delete(id) };
   }
 
+  // ---- Transcription: per asset (cached), then laid out along the sequence ----
   async function run() {
-    if (!file) return;
+    if (!hasMedia) return;
     busy = true;
     error = notice = '';
+    const lang = language ?? 'auto';
     try {
-      const words = await transcribe(file, language, (s, p) => ((status = s), (pct = p)));
+      const ids = videoIds;
+      for (let k = 0; k < ids.length; k++) {
+        const key = `${ids[k]}|${lang}`, f = files.get(ids[k]);
+        if (wordCache[key] || !f) continue;
+        try {
+          wordCache[key] = await transcribe(f, language, (s, p) => ((status = s), (pct = ((k + p / 100) / ids.length) * 100)));
+        } catch (e) {
+          if ((e as Error).message !== 'err.noAudio') throw e;
+          wordCache[key] = []; // a silent clip just has no words
+        }
+      }
+      const starts = clipStarts(clips, durations);
+      // Whisper can hallucinate timestamps past the end of short or silent clips; keep words inside their clip.
+      const words = clips.flatMap((c, i) => {
+        const len = durations.get(c.assetId) ?? 0;
+        return (wordCache[`${c.assetId}|${lang}`] ?? [])
+          .filter((w) => w.start < len)
+          .map((w) => ({ ...w, start: w.start + starts[i], end: Math.min(w.end, len) + starts[i] }));
+      });
       setCaps(groupWords(words));
       if (!captions.length) error = 'noSpeech';
     } catch (e) {
@@ -174,14 +344,10 @@
     }
   }
 
+  // ---- Playback ----
   const active = (c: Caption) => time >= startOf(c) && time < endOf(c);
-  const seek = (t: number) => video && (video.currentTime = Math.max(0, Math.min(t, duration || t)));
-  function toggle() {
-    if (!video) return;
-    if (!video.paused) return video.pause();
-    if (segments.length && nextKept(segments, video.currentTime) === null) seek(segments[0].start); // at end: restart
-    video.play();
-  }
+  const seek = (s: number) => (player.seek(Math.max(0, Math.min(s, duration))), (time = player.t));
+  const toggle = () => (player.playing ? player.pause() : player.play(), (paused = !player.playing));
   const update = (i: number, c: Caption) => setCaps(captions.with(i, c));
   const outTime = $derived(toOutput(segments, time) ?? 0);
 
@@ -189,40 +355,36 @@
     const caps = captionsForOutput(captions, segments);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([ext === 'srt' ? toSRT(caps) : toVTT(caps)], { type: 'text/plain' }));
-    a.download = (file?.name.replace(/\.[^.]+$/, '') ?? 'captions') + '.' + ext;
+    a.download = (name || 'captions') + '.' + ext;
     a.click();
     URL.revokeObjectURL(a.href);
   }
 
-  // While playing, jump over cut ranges. Returns the (possibly corrected) time.
-  function skipCuts(v: HTMLVideoElement) {
-    const t = v.currentTime;
-    if (v.paused || !segments.length) return t;
-    const k = nextKept(segments, t);
-    if (k === null) {
-      v.pause();
-      return (v.currentTime = segments[segments.length - 1].end - 0.01);
-    }
-    if (k !== t) v.currentTime = k;
-    return k;
-  }
-
-  // Draw loop: video frame + active caption, every animation frame.
+  // Draw loop: advance the player, draw the current clip's frame (cover-fit) + active caption.
   $effect(() => {
-    if (!canvas || !video) return;
+    if (!canvas) return;
     const ctx = canvas.getContext('2d')!;
-    const v = video, cv = canvas;
+    const cv = canvas;
     let id = 0;
     const tick = () => {
-      const w = v.videoWidth || 1280, h = v.videoHeight || 720;
+      const w = frameW, h = frameH;
       if (cv.width !== w || cv.height !== h) ((cv.width = w), (cv.height = h));
-      const t = skipCuts(v);
-      time = t;
+      const tNow = player.tick();
+      time = tNow;
+      paused = !player.playing;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
-      if (v.readyState >= 2 && v.videoWidth) ctx.drawImage(v, 0, 0, w, h);
-      const cap = visibleCaps.find((c) => t >= startOf(c) && t < endOf(c));
-      if (cap) drawCaption(ctx, cap, t, style);
+      const f = player.frame();
+      if (f && f.videoWidth) {
+        const k = Math.max(w / f.videoWidth, h / f.videoHeight);
+        const dw = f.videoWidth * k, dh = f.videoHeight * k;
+        ctx.drawImage(f, (w - dw) / 2, (h - dh) / 2, dw, dh);
+      }
+      const cap = visibleCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
+      capOnScreen = cap ?? null;
+      capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
+      // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
+      if (capBox && (paused || hover || drag?.onBox)) drawDragBox(ctx, capBox, cv.width / (cv.getBoundingClientRect().width || cv.width));
       id = requestAnimationFrame(tick);
     };
     tick();
@@ -234,20 +396,94 @@
     document.fonts.load(fontString(style, 40)).catch(() => {});
   });
 
-  // Drag on the canvas moves the caption; a click without moving plays/pauses.
-  let drag: { moved: boolean } | null = null;
+  // ---- Caption drag box ----
+  // Drag inside the box (or its grab handle) to move the caption; a tap elsewhere plays/pauses.
+  // Touch and pen get a much larger grab margin than a mouse.
+  let capBox: Box | null = null; // canvas px, caption drawn this frame
+  let capOnScreen: Caption | null = null;
+  let hover = false;
+  let drag: { moved: boolean; onBox: boolean; x0: number; y0: number; ox: number; oy: number; capId: string | null } | null = null;
+  const GROW = { mouse: 8, touch: 28 }; // CSS px around the box that still grabs it
+  const HANDLE = 14; // CSS px radius of the round grab handle under the box
+
+  const handleAt = (b: Box, k: number) => ({ x: b.x + b.w / 2, y: b.y + b.h + HANDLE * 1.6 * k });
+
+  function drawDragBox(ctx: CanvasRenderingContext2D, b: Box, k: number) {
+    ctx.save();
+    ctx.strokeStyle = '#c8f560';
+    ctx.lineWidth = 2 * k;
+    ctx.setLineDash([6 * k, 4 * k]);
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#c8f560';
+    const s = 8 * k;
+    for (const [x, y] of [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]]) ctx.fillRect(x - s / 2, y - s / 2, s, s);
+    // Round grab handle with a four-way arrow, easy to hit with a thumb.
+    const h = handleAt(b, k), r = HANDLE * k;
+    ctx.beginPath();
+    ctx.arc(h.x, h.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#0f0f0f';
+    ctx.lineWidth = 2 * k;
+    ctx.beginPath();
+    ctx.moveTo(h.x - r * 0.55, h.y); ctx.lineTo(h.x + r * 0.55, h.y);
+    ctx.moveTo(h.x, h.y - r * 0.55); ctx.lineTo(h.x, h.y + r * 0.55);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Is this pointer on the caption box or its handle? Coordinates are canvas px.
+  function onCaption(e: PointerEvent) {
+    if (!capBox) return false;
+    const r = canvas!.getBoundingClientRect(), k = canvas!.width / r.width;
+    const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k;
+    const touch = e.pointerType !== 'mouse';
+    const h = handleAt(capBox, k);
+    return inBox(capBox, x, y, (touch ? GROW.touch : GROW.mouse) * k) || Math.hypot(x - h.x, y - h.y) <= (HANDLE + (touch ? 16 : 4)) * k;
+  }
+
+  // Captions with their own position override move by themselves; others move the project style.
+  const ownPosition = (c: Caption | null) => !!c && (c.style?.x !== undefined || c.style?.y !== undefined || selectedSet.has(c.id));
+  function moveCaption(capId: string | null, x: number, y: number) {
+    const nx = Math.min(0.95, Math.max(0.05, x)), ny = Math.min(0.95, Math.max(0.05, y));
+    if (capId) captions = captions.map((c) => (c.id === capId ? { ...c, style: { ...c.style, x: nx, y: ny } } : c));
+    else ((style.x = nx), (style.y = ny));
+  }
+
   function pointer(e: PointerEvent) {
     const r = canvas!.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
-    if (e.type === 'pointerdown') ((drag = { moved: false }), canvas!.setPointerCapture(e.pointerId));
-    else if (e.type === 'pointermove' && drag) {
-      drag.moved = true;
-      style.x = Math.min(0.95, Math.max(0.05, x));
-      style.y = Math.min(0.95, Math.max(0.05, y));
-    } else if (e.type === 'pointerup' && drag) {
-      if (!drag.moved) toggle();
+    if (e.type === 'pointerdown') {
+      const onBox = onCaption(e);
+      const capId = onBox && ownPosition(capOnScreen) ? capOnScreen!.id : null;
+      const pos = capId ? resolveStyle(style, capOnScreen!.style) : style;
+      drag = { moved: false, onBox, x0: e.clientX, y0: e.clientY, ox: pos.x, oy: pos.y, capId };
+      canvas!.setPointerCapture(e.pointerId);
+    } else if (e.type === 'pointermove') {
+      if (!drag) {
+        hover = onCaption(e);
+        canvas!.style.cursor = hover ? 'move' : 'pointer';
+        return;
+      }
+      if (!drag.onBox) return;
+      const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+      if (!drag.moved) ((drag.moved = true), drag.capId && commit()); // one undo step per drag of a caption override
+      moveCaption(drag.capId, drag.ox + dx / r.width, drag.oy + dy / r.height);
+    } else if (e.type === 'pointerup' || e.type === 'pointercancel') {
+      if (drag && !drag.moved && e.type === 'pointerup') toggle();
       drag = null;
     }
+  }
+
+  // Keyboard: with the preview focused, arrow keys nudge the caption (Shift = bigger steps).
+  function nudge(e: KeyboardEvent) {
+    const d = e.shiftKey ? 0.05 : 0.01;
+    const dir = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] }[e.key];
+    if (!dir) return;
+    e.preventDefault();
+    const capId = ownPosition(capOnScreen) ? capOnScreen!.id : null;
+    const pos = capId ? resolveStyle(style, capOnScreen!.style) : style;
+    moveCaption(capId, pos.x + dir[0], pos.y + dir[1]);
   }
 
   function pickFont(family: string) {
@@ -283,6 +519,10 @@
   let tab = $state<'transcript' | 'captions'>('transcript');
   let assetsOpen = $state(true);
   let zoom = $state(1); // 1 = fit to the stage
+  let filter = $state<'all' | 'video' | 'audio'>('all');
+  const shown = $derived(assets.filter((a) => filter === 'all' || a.kind === filter));
+  const used = $derived(new Set([...clips.map((c) => c.assetId), ...audios.map((a) => a.assetId)]));
+  const selAudio = $derived(audios.find((a) => a.id === selectedAudio));
 
   let transcriptView = $state<TranscriptView>();
   const cutRanges = (r: [number, number][]) => setSegs(r.reduce((s, [a, b]) => cutRange(s, a, b), segments));
@@ -298,21 +538,42 @@
     tab = 'captions';
   }
 
-  const animName = $derived(t('anim.' + style.animation));
+  const currentCap = $derived(visibleCaps.find((c) => time >= startOf(c) && time < endOf(c)) ?? selectedCap);
+  const currentAnim = $derived(currentCap?.style?.animation ?? style.animation);
+  const animName = $derived(t('anim.' + currentAnim));
   const saveState = $derived(saving ? t('saving') : t('saved'));
 
-  const cutHere = () => video && setSegs(splitAt(segments, video.currentTime));
+  const cutHere = () => setSegs(splitAt(segments, time));
   const deleteSelected = () => selected >= 0 && (setSegs(remove(segments, selected)), (selected = -1));
+  function removeAudioItem() {
+    if (!selectedAudio) return false;
+    commit();
+    audios = audios.filter((a) => a.id !== selectedAudio);
+    selectedAudio = '';
+    return true;
+  }
+  const setAudio = (id: string, patch: Partial<AudioItem>) => (audios = audios.map((a) => (a.id === id ? { ...a, ...patch } : a)));
 
   function keys(e: KeyboardEvent) {
-    if ((e.target as HTMLElement).closest('input, textarea, select')) return;
+    if ((e.target as HTMLElement).closest?.('input, textarea, select')) return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'z') (e.preventDefault(), e.shiftKey ? redo() : undo());
     else if (mod && e.key.toLowerCase() === 'y') (e.preventDefault(), redo());
     else if (mod) return;
-    else if (e.code === 'Space' && !(e.target as HTMLElement).closest('button')) (e.preventDefault(), toggle());
+    else if (e.code === 'Space' && !(e.target as HTMLElement).closest?.('button')) (e.preventDefault(), toggle());
     else if (e.key.toLowerCase() === 's') cutHere();
-    else if (e.key === 'Delete' || e.key === 'Backspace') (tab === 'transcript' && transcriptView?.toggleSelection()) || deleteSelected();
+    else if (e.key === 'Escape') clearCapSelection();
+    else if (e.key === 'Delete' || e.key === 'Backspace')
+      (tab === 'transcript' && transcriptView?.toggleSelection()) || removeAudioItem() || deleteSelected();
+  }
+
+  // Drag an asset card onto the timeline (or drop files anywhere on it).
+  function dropOnTimeline(e: DragEvent) {
+    e.preventDefault();
+    const id = e.dataTransfer?.getData('text/x-asset');
+    const a = id && assets.find((x) => x.id === id);
+    if (a) addToTimeline(a);
+    else importMedia(e.dataTransfer?.files);
   }
 
   const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
@@ -328,25 +589,30 @@
 <div class="app" class:no-assets={!assetsOpen}>
   <header class="top">
     <div class="brand">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" aria-hidden="true">
-        <rect x="2" y="5" width="14" height="14" rx="3" /><path d="M16 10l6-3v10l-6-3z" stroke-linejoin="round" />
+      <!-- Sonant sound-ring mark (icon/sonant-mark.svg) -->
+      <svg width="26" height="26" viewBox="0 0 48 48" aria-hidden="true">
+        <circle cx="24" cy="24" r="6" fill="#C8F560" />
+        <g fill="none" stroke-linecap="round" stroke-width="5">
+          <path d="M24 11A13 13 0 0 1 37 24M11 24A13 13 0 0 0 24 37" stroke="#C8F560" />
+          <path d="M24 4A20 20 0 0 1 44 24M4 24A20 20 0 0 0 24 44" stroke="#707070" />
+        </g>
       </svg>
       <span class="logo">Sonant</span>
       <span class="slash">/</span>
-      <input class="pname" bind:value={name} placeholder={t('untitled')} aria-label={t('projectName')} disabled={!file} />
-      {#if file}<span class="pill">{saveState}</span>{/if}
+      <input class="pname" bind:value={name} placeholder={t('untitled')} aria-label={t('projectName')} disabled={!assets.length} />
+      {#if assets.length}<span class="pill">{saveState}</span>{/if}
     </div>
     <div class="actions">
       <select class="lang" value={ui.lang} onchange={(e) => setLang(e.currentTarget.value as 'en' | 'es')} aria-label="Interface language / Idioma">
         <option value="en">EN</option>
         <option value="es">ES</option>
       </select>
-      {#if file}<button onclick={newProject}>{t('newProject')}</button>{/if}
+      {#if assets.length}<button onclick={newProject}>{t('newProject')}</button>{/if}
       <button class:on={assetsOpen} onclick={() => (assetsOpen = !assetsOpen)} aria-pressed={assetsOpen} title={t('toggleAssets')}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
         {t('assets')}
       </button>
-      <button class="primary" onclick={() => exporter?.open()} disabled={!file || !segments.length || !videoWidth}>{t('ex.title')}</button>
+      <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length || !firstVideo}>{t('ex.title')}</button>
     </div>
   </header>
 
@@ -358,20 +624,49 @@
       </div>
       <label class="import">
         {t('importMedia')}
-        <input type="file" accept="video/*" hidden onchange={(e) => load(e.currentTarget.files?.[0])} />
+        <input type="file" accept="video/*,audio/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
       </label>
-      {#if file}
-        <div class="grid">
-          <div class="asset">
-            <div class="thumb">
-              {#if thumbs[0]}<img src={thumbs[Math.floor(thumbs.length / 3)].url} alt="" />{:else}<span class="muted">Video</span>{/if}
-              <span class="dur mono">{fmt(duration || 0)}</span>
+      <div class="filters" role="group" aria-label={t('assets')}>
+        {#each ['all', 'video', 'audio'] as const as f}
+          <button class:on={filter === f} aria-pressed={filter === f} onclick={() => (filter = f)}>{t('filter.' + f)}</button>
+        {/each}
+      </div>
+      <div class="grid">
+        {#each shown as a (a.id)}
+          <div class="asset" draggable="true" role="listitem"
+            ondragstart={(e) => e.dataTransfer?.setData('text/x-asset', a.id)}>
+            <div class="thumb" class:used={used.has(a.id)}>
+              {#if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
+              {:else}<span class="muted">{a.kind === 'audio' ? '♪ ' + t('filter.audio') : t('filter.video')}</span>{/if}
+              <span class="dur mono">{fmt(a.duration)}</span>
+              <span class="acts">
+                <button class="sm icon" onclick={() => addToTimeline(a)} aria-label={t('addToTimeline', { name: a.name })} title={t('addToTimeline', { name: a.name })}>+</button>
+                <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}>✕</button>
+              </span>
             </div>
-            <span class="aname">{file.name}</span>
+            <span class="aname" title={a.name}>{a.name}</span>
           </div>
-        </div>
+        {/each}
+      </div>
+      <p class="muted small">{assets.length ? t('dragToTimeline') : t('assetsHint')}</p>
+
+      {#if clips.length}
+        <h3 class="sub">{t('sequence')}</h3>
+        <ol class="seq">
+          {#each clips as c, i (c.id)}
+            <li>
+              <span class="mono muted small">{i + 1}</span>
+              <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
+              <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}>↑</button>
+              <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}>↓</button>
+              <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}>✕</button>
+            </li>
+          {/each}
+        </ol>
+        <label class="vol">{t('clipAudio')} <span class="mono small">{Math.round(clipVolume * 100)}%</span>
+          <input type="range" min="0" max="1" step="0.05" bind:value={clipVolume} />
+        </label>
       {/if}
-      <p class="muted small">{t('assetsHint')}</p>
     </aside>
   {/if}
 
@@ -388,7 +683,7 @@
           <option value="english">English</option>
           <option value="spanish">Español</option>
         </select>
-        <button onclick={run} disabled={!file || busy}>{captions.length ? t('retranscribe') : t('transcribe')}</button>
+        <button onclick={run} disabled={!hasMedia || busy}>{captions.length ? t('retranscribe') : t('transcribe')}</button>
       </div>
       {#if busy}
         <p class="muted small">{t(status)}</p>
@@ -405,18 +700,24 @@
             onrename={(k, n) => (speakers = speakers.with(k, n))} />
         {/if}
       {:else}
-        <p class="muted small">{t('captionsHint')}</p>
+        <p class="muted small">{t('captionsHint')} {t('selectHint')}</p>
         <ol class="caps">
           {#each captions as c, i (c.id)}
-            <li class:on={active(c)}>
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+            <li class:on={active(c)} class:sel-cap={selectedSet.has(c.id)} onclick={(e) => selectCap(c.id, e)}>
               <div class="times mono">
                 <input type="number" step="0.1" min="0" aria-label={t('start')} value={startOf(c).toFixed(2)}
                   onchange={(e) => update(i, setRange(c, +e.currentTarget.value, endOf(c)))} />
                 <input type="number" step="0.1" min="0" aria-label={t('end')} value={endOf(c).toFixed(2)}
                   onchange={(e) => update(i, setRange(c, startOf(c), +e.currentTarget.value))} />
               </div>
-              <textarea rows="2" aria-label={t('capText')} value={captionText(c)} onfocus={() => seek(startOf(c))}
-                onchange={(e) => update(i, setText(c, e.currentTarget.value))}></textarea>
+              <div class="cap-main">
+                <textarea rows="2" aria-label={t('capText')} value={captionText(c)} onfocus={() => { if (!selectedSet.has(c.id)) selectCap(c.id); seek(startOf(c)); }}
+                  onchange={(e) => update(i, setText(c, e.currentTarget.value))}></textarea>
+                {#if c.style?.animation}
+                  <span class="cap-anim-tag" title={t('animBadge', { name: t('anim.' + c.style.animation) })}>⚡ {t('anim.' + c.style.animation)}</span>
+                {/if}
+              </div>
               <span class="tools">
                 <button class="sm icon" title={t('playHere')} aria-label={t('playHere')} onclick={() => seek(startOf(c))}>▶</button>
                 <button class="sm icon" title={t('splitCap')} aria-label={t('splitCap')} disabled={c.words.length < 2} onclick={() => setCaps(split(captions, i))}>✂</button>
@@ -426,7 +727,7 @@
             </li>
           {/each}
         </ol>
-        <button class="add" onclick={addLine} disabled={!file}>{t('addLine')}</button>
+        <button class="add" onclick={addLine} disabled={!hasMedia}>{t('addLine')}</button>
         {#if captions.length}
           <h3 class="sub">{t('subtitleFiles')}</h3>
           <div class="row">
@@ -439,6 +740,14 @@
   </section>
 
   <section class="center">
+    <!-- Hidden media elements the player drives; the canvas shows the result. -->
+    {#each videoIds as id (id)}
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video src={urls[id]} use:media={['v', id]} preload="auto" playsinline hidden></video>
+    {/each}
+    {#each audios as item (item.id)}
+      <audio src={urls[item.assetId]} use:media={['a', item.id]} preload="auto"></audio>
+    {/each}
     <div
       class="stage"
       class:dragging
@@ -447,32 +756,34 @@
       role="region"
       ondragover={(e) => { e.preventDefault(); dragging = true; }}
       ondragleave={() => (dragging = false)}
-      ondrop={(e) => { e.preventDefault(); dragging = false; load(e.dataTransfer?.files[0]); }}
+      ondrop={(e) => { e.preventDefault(); dragging = false; importMedia(e.dataTransfer?.files); }}
     >
-      {#if src}
-        <!-- svelte-ignore a11y_media_has_caption -->
-        <video {src} bind:this={video} bind:duration bind:paused bind:videoWidth bind:videoHeight playsinline hidden onloadedmetadata={onMeta}
-          ontimeupdate={(e) => skipCuts(e.currentTarget)}></video>
-        <div class="frame" style:width={zoom !== 1 ? `${zoom * 100}%` : null}>
-          <span class="badge">{t('animBadge', { name: animName })}</span>
-          <canvas bind:this={canvas} onpointerdown={pointer} onpointermove={pointer} onpointerup={pointer}
-            aria-label={t('preview')}></canvas>
+      {#if hasMedia}
+        <!-- .frame is the visible stage box; .fit is the largest box with the video's aspect ratio inside it (× zoom). -->
+        <div class="frame">
+          <div class="fit" style:--ar={frameW / frameH} style:--z={zoom}>
+            <span class="badge">{t('animBadge', { name: animName })}</span>
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex (focusable so arrow keys can move the caption) -->
+            <canvas bind:this={canvas} tabindex="0" onpointerdown={pointer} onpointermove={pointer} onpointerup={pointer}
+              onpointercancel={pointer} onpointerleave={() => (hover = false)} onkeydown={nudge}
+              aria-label={t('previewAria')}></canvas>
+          </div>
         </div>
       {:else}
         <label class="empty">
           <span>{t('drop')}</span>
-          <input type="file" accept="video/*" hidden onchange={(e) => load(e.currentTarget.files?.[0])} />
+          <input type="file" accept="video/*,audio/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
         </label>
       {/if}
     </div>
     <div class="transport">
       <div class="row">
-        <button class="round" onclick={() => seek(time - 5)} disabled={!src} aria-label={t('back')}>«</button>
-        <button class="round play" onclick={toggle} disabled={!src} aria-label={paused ? t('play') : t('pause')}>{paused ? '▶' : '❚❚'}</button>
-        <button class="round" onclick={() => seek(time + 5)} disabled={!src} aria-label={t('forward')}>»</button>
+        <button class="round" onclick={() => seek(time - 5)} disabled={!hasMedia} aria-label={t('back')}>«</button>
+        <button class="round play" onclick={toggle} disabled={!hasMedia} aria-label={paused ? t('play') : t('pause')}>{paused ? '▶' : '❚❚'}</button>
+        <button class="round" onclick={() => seek(time + 5)} disabled={!hasMedia} aria-label={t('forward')}>»</button>
         <span class="mono tcode">{tc(outTime)} <span class="muted">/ {tc(outDuration(segments))}</span></span>
       </div>
-      <div class="row">
+      <div class="row zoomctl">
         <button class="sm icon" onclick={() => (zoom = Math.max(0.5, zoom - 0.25))} aria-label={t('zoomOut')}>−</button>
         <span class="mono small zl">{zoom === 1 ? t('fit') : `${Math.round(zoom * 100)}%`}</span>
         <button class="sm icon" onclick={() => (zoom = Math.min(3, zoom + 0.25))} aria-label={t('zoomIn')}>+</button>
@@ -482,13 +793,36 @@
   </section>
 
   <aside class="style panel">
-    <StylePanel bind:style {fonts} {fontError} onlocal={addLocalFonts} onupload={addUploadedFont} />
+    <StylePanel
+      bind:style
+      {selectedCap}
+      capIndex={selectedCapIndex}
+      {fonts}
+      {fontError}
+      onlocal={addLocalFonts}
+      onupload={addUploadedFont}
+      onupdatecapstyle={updateCapStyle}
+      onapplyall={applyAllCapStyle}
+      onresetcapstyle={resetCapStyle}
+      selectedCount={selectedCapIds.length}
+      onclearcapselection={clearCapSelection}
+    />
   </aside>
 
-  <section class="timeline-area">
+  <section class="timeline-area" aria-label={t('timelineH')}
+    ondragover={(e) => e.preventDefault()} ondrop={dropOnTimeline}>
     <div class="thead">
       <h2>{t('timelineH')}</h2>
       <div class="row">
+        {#if selAudio}
+          <span class="aname small selname">♪ {names.get(selAudio.assetId)}</span>
+          <label class="vol inline">{t('volume')}
+            <input type="range" min="0" max="1" step="0.05" value={selAudio.volume}
+              oninput={(e) => setAudio(selAudio.id, { volume: +e.currentTarget.value })} />
+          </label>
+          <button class="sm" onclick={removeAudioItem}>{t('removeAudio')}</button>
+          <span class="divider"></span>
+        {/if}
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}>{t('splitAt')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
         <button class="sm icon" onclick={undo} disabled={!past.length} title={t('undo')} aria-label={t('undo')}>↶</button>
@@ -497,22 +831,25 @@
         <button class="sm icon" onclick={() => (tlZoom = Math.min(16, tlZoom * 1.5))} aria-label={t('zoomIn')}>+</button>
       </div>
     </div>
-    <Timeline {segments} {time} {thumbs} {peaks} {duration} {captions} zoom={tlZoom} bind:selected
+    <Timeline {segments} {time} {clips} {durations} {names} {thumbs} {peaks} {duration} {captions} {audios}
+      zoom={tlZoom} bind:selected bind:selectedAudio selectedCapIds={selectedSet} onselectcap={selectCap}
       animLabel={t('allCaptions', { name: animName })}
       onseek={(o) => seek(toSource(segments, o))}
       oncommit={commit}
       ontrim={(i, s, e) => (segments = trim(segments, i, s, e, duration))}
-      onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))} />
+      onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
+      onmoveaudio={(id, at) => setAudio(id, { at })} />
   </section>
 </div>
 
-{#if file}
-  <ExportDialog bind:this={exporter} {file} {segments} {captions} {style} srcW={videoWidth} srcH={videoHeight} />
+{#if hasMedia}
+  <ExportDialog bind:this={exporter} {name} {segments} {captions} {style} srcW={frameW} srcH={frameH}
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), clipVolume })} />
 {/if}
 
 <style>
   .app {
-    height: 100vh; display: grid;
+    height: calc(100dvh / var(--ui-zoom)); display: grid;
     grid-template-columns: 270px 340px minmax(0, 1fr) 340px;
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas: 'top top top top' 'assets text center style' 'tl tl tl tl';
@@ -542,6 +879,26 @@
   .thumb img { width: 100%; height: 100%; object-fit: cover; }
   .dur { position: absolute; right: 4px; bottom: 4px; background: rgb(0 0 0 / .75); font-size: 11px; padding: 1px 4px; border-radius: 4px; }
   .aname { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .thumb { outline: none; }
+  .thumb.used { outline: 2px solid var(--accent); }
+  .asset { cursor: grab; }
+  .acts { position: absolute; top: 4px; right: 4px; display: none; gap: 2px; }
+  .asset:hover .acts, .asset:focus-within .acts { display: flex; }
+  .acts button { width: 24px; height: 24px; background: rgb(15 15 15 / .85); }
+  .filters { display: flex; gap: 4px; }
+  .filters button { border: 0; height: 30px; font-size: 13px; color: var(--muted); border-radius: 8px; }
+  .filters button.on { background: var(--tab-on); color: var(--text); }
+  .seq { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+  .seq li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto auto; gap: 4px; align-items: center;
+    padding: 4px 6px; background: var(--card); border: 1px solid var(--border-soft); border-radius: 8px; }
+  .seq button { width: 26px; height: 26px; }
+  .vol { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+  .vol input { accent-color: var(--accent); }
+  .vol.inline { display: flex; align-items: center; gap: 6px; }
+  .vol.inline input { width: 90px; }
+  .selname { max-width: 160px; color: var(--speaker-1); }
+  .divider { width: 1px; height: 20px; background: var(--border); }
+  .thead .row { flex-wrap: wrap; justify-content: flex-end; }
   .small { font-size: 12px; }
   .text { grid-area: text; border-right: 1px solid var(--border-soft); }
   .tabs { display: flex; gap: 4px; padding: 12px 16px; }
@@ -554,8 +911,11 @@
   .notice { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); margin: 0; }
   .caps { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
   .caps li { position: relative; display: grid; grid-template-columns: 72px 1fr; gap: 8px; padding: 10px 12px;
-    background: var(--card); border: 1px solid var(--border-soft); border-radius: 10px; }
+    background: var(--card); border: 1px solid var(--border-soft); border-radius: 10px; cursor: pointer; }
   .caps li.on { border-color: var(--accent); }
+  .caps li.sel-cap { border-color: var(--accent); background: rgb(200 245 96 / .08); box-shadow: 0 0 0 1px var(--accent); }
+  .cap-main { display: grid; gap: 4px; min-width: 0; }
+  .cap-anim-tag { font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: rgb(200 245 96 / .18); color: var(--accent); display: inline-flex; align-items: center; width: fit-content; }
   .times { display: grid; gap: 2px; align-content: start; }
   .times input { width: 100%; font-family: var(--mono); font-size: 12px; color: var(--muted); background: none; border: 1px solid transparent; padding: 1px 2px; }
   .times input:hover, .times input:focus { border-color: var(--border); color: var(--text); }
@@ -567,16 +927,16 @@
   .add { border-style: dashed; height: 40px; }
   .sub { margin-top: 8px; }
   .center { grid-area: center; display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; }
-  .stage { display: grid; place-items: center; padding: 24px; min-height: 0; overflow: auto; border: 2px dashed transparent; }
+  .stage { position: relative; min-height: 0; border: 2px dashed transparent; }
   .stage.dragging { border-color: var(--accent); }
-  .stage.zoomed { place-items: start center; }
-  .frame { position: relative; display: grid; max-width: 100%; max-height: 100%; }
-  .stage.zoomed .frame { max-width: none; max-height: none; }
-  canvas { display: block; max-width: 100%; max-height: calc(100vh - 360px); width: auto; height: auto; border-radius: 12px; background: #000; cursor: move; touch-action: none; }
-  .stage.zoomed canvas { width: 100%; max-height: none; }
+  .frame { position: absolute; inset: 16px; container-type: size; display: grid; place-items: safe center; overflow: auto; }
+  .fit { position: relative; aspect-ratio: var(--ar); width: calc(min(100cqw, 100cqh * var(--ar)) * var(--z)); }
+  canvas { display: block; width: 100%; height: 100%; border-radius: 12px; background: #000; cursor: pointer; touch-action: none; }
+  canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .badge { position: absolute; top: 12px; left: 12px; z-index: 1; background: rgb(15 15 15 / .8); font-size: 12px; padding: 4px 10px; border-radius: 999px; pointer-events: none; }
-  .empty { display: grid; place-items: center; width: 100%; height: 100%; min-height: 200px; border: 1px dashed var(--border); border-radius: 12px; cursor: pointer; color: var(--muted); text-align: center; padding: 16px; }
-  .transport { display: grid; gap: 10px; padding: 12px 20px 16px; border-top: 1px solid var(--border-soft); }
+  .empty { position: absolute; inset: 16px; display: grid; place-items: center; border: 1px dashed var(--border); border-radius: 12px; cursor: pointer; color: var(--muted); text-align: center; padding: 16px; }
+  .transport { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--border-soft); }
+  .zoomctl { margin-left: auto; }
   .round { width: 40px; height: 40px; border-radius: 50%; padding: 0; }
   .round.play { width: 48px; height: 48px; background: var(--text); color: var(--bg); border-color: var(--text); font-size: 16px; }
   .tcode { margin-left: 8px; font-size: 13px; white-space: nowrap; }
@@ -588,14 +948,14 @@
 
   @media (max-width: 1100px) {
     .app, .app.no-assets {
-      height: auto; min-height: 100vh;
+      height: auto; min-height: calc(100dvh / var(--ui-zoom));
       grid-template-columns: minmax(0, 1fr);
       grid-template-areas: 'top' 'center' 'text' 'style' 'assets' 'tl';
     }
     .top { flex-wrap: wrap; position: sticky; top: 0; z-index: 2; background: var(--bg); }
     .assets, .text, .style { border: 0; border-top: 1px solid var(--border-soft); }
     .text .scroll { max-height: 60vh; }
-    canvas { max-height: 60vh; }
+    .stage { height: 62vh; }
   }
   @media (max-width: 560px) {
     .top, .timeline-area { padding-left: 16px; padding-right: 16px; }

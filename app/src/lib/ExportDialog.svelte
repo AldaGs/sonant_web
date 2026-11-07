@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { exportVideo, outputSize, type Aspect, type Res, type Quality } from './export';
+  import { exportVideo, outputSize, type Aspect, type Res, type Quality, type ExportSource } from './export';
   import type { Caption } from './captions';
   import type { Segment } from './cuts';
   import type { Style } from './render';
   import { t } from './i18n.svelte';
 
-  let { file, segments, captions, style, srcW, srcH }: {
-    file: File; segments: Segment[]; captions: Caption[]; style: Style; srcW: number; srcH: number;
+  let { source, name, segments, captions, style, srcW, srcH }: {
+    source: () => ExportSource; name: string; segments: Segment[]; captions: Caption[]; style: Style; srcW: number; srcH: number;
   } = $props();
 
   let dialog = $state<HTMLDialogElement>();
@@ -39,11 +39,11 @@
     const t0 = performance.now();
     try {
       // Snapshot so edits during export don't change what's being rendered.
-      const blob = await exportVideo(file, $state.snapshot(segments), $state.snapshot(captions), $state.snapshot(style),
+      const blob = await exportVideo(source(), $state.snapshot(segments), $state.snapshot(captions), $state.snapshot(style),
         { res, aspect, fps, quality }, (p) => (progress = p), abort.signal);
       result = {
         url: URL.createObjectURL(blob),
-        name: file.name.replace(/\.[^.]+$/, '') + '-captioned.mp4',
+        name: (name || 'sonant') + '-captioned.mp4',
         mb: (blob.size / 1e6).toFixed(1),
         secs: ((performance.now() - t0) / 1000).toFixed(1),
       };
