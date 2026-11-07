@@ -34,7 +34,7 @@
   import { wav } from './lib/denoise';
   import { findHighlights, shortOf, DEFAULT_HL, type Highlight } from './lib/highlights';
   import { cleanAudio, cleanKey, DENOISE_LEVELS } from './lib/denoise';
-  import { zoomMoments, autoZoomAt, scalePlace, shakePlace, zoomShake, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
+  import { zoomMoments, autoZoomPlace, zoomKey, shakePlace, zoomShake, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
@@ -447,6 +447,42 @@
     selectedAudio = added[0].id;
     announce(t('voAdded', { n: added.length }));
   }
+  // ---- Auto-zoom aim: find the person in the frame at each zoom and zoom towards them ----
+  let aimBusy = $state(false);
+  async function aimZooms() {
+    if (!autoZoom) return;
+    aimBusy = true;
+    const starts = clipStarts(clips, durations), aim: Record<string, [number, number]> = { ...autoZoom.aim };
+    const els = new Map<string, HTMLVideoElement>();
+    try {
+      for (const m of zooms) {
+        const at = clipAt(clips, durations, m.start + 0.2);
+        if (!at || !m.key || kindOf(clips[at.index].assetId) !== 'video') continue;
+        const id = clips[at.index].assetId;
+        let v = els.get(id);
+        if (!v) {
+          v = document.createElement('video');
+          v.muted = true;
+          v.src = previewUrl(id);
+          await new Promise((r, j) => ((v!.onloadeddata = r), (v!.onerror = j)));
+          els.set(id, v);
+        }
+        v.currentTime = m.start + 0.2 - starts[at.index];
+        await new Promise((r) => (v!.onseeked = r));
+        const c = await subjectCenter(v, v.videoWidth, v.videoHeight).catch(() => null);
+        // Aim a little above the body's centre: that's where the face is.
+        if (c) aim[m.key] = [c.x, Math.max(0, c.y - 0.12)];
+      }
+      autoZoom.aim = aim;
+      if (!Object.keys(aim).length) error = 'noPerson';
+    } catch {
+      error = 'noPerson';
+    } finally {
+      for (const v of els.values()) v.removeAttribute('src');
+      aimBusy = false;
+    }
+  }
+
   // ---- Stabilization: measure the camera's shake on small greyscale frames, then shift it out ----
   let stabPct = $state<number | null>(null);
   async function stabilize(i: number) {
@@ -860,7 +896,7 @@
       capBox = null;
       let below: Placed[] = [];
       const anyBehind = overlaysAt(overlays, player.o).some((o) => o.behind);
-      drawFrame(ctx, f, f ? fw : w, f ? fh : h, f ? shakePlace(scalePlace(zoomPlace(stabPlace(coverPlace(w, h, fw, fh, fx?.focus), w, h, fx?.stab, tNow), w, h, fx, tNow - (strip?.start ?? 0)), w, h, autoZoomAt(zooms, autoZoom?.scale ?? 1, tNow)), w, h, Math.max(fx?.shake ?? 0, autoZoom?.shake ? zoomShake(zooms, tNow) : 0), tNow) : [0, 0, w, h], fx, !!cap,
+      drawFrame(ctx, f, f ? fw : w, f ? fh : h, f ? shakePlace(autoZoomPlace(zoomPlace(stabPlace(coverPlace(w, h, fw, fh, fx?.focus), w, h, fx?.stab, tNow), w, h, fx, tNow - (strip?.start ?? 0)), w, h, zooms, autoZoom?.scale ?? 1, tNow), w, h, Math.max(fx?.shake ?? 0, autoZoom?.shake ? zoomShake(zooms, tNow) : 0), tNow) : [0, 0, w, h], fx, !!cap,
         () => {
           placed = [...below, ...drawLayers(ctx, tNow, false)];
           capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
@@ -1763,6 +1799,10 @@
                 <input type="range" min="1" max="8" step="0.5" bind:value={autoZoom.gap} /></label>
               <label class="chk"><input type="checkbox" bind:checked={autoZoom.sentences} /> {t('azSentences')}</label>
               <label class="chk"><input type="checkbox" bind:checked={autoZoom.shake} /> {t('azShake')}</label>
+              <button class="sm" onclick={aimZooms} disabled={aimBusy || !zooms.length} title={t('azAimTip')}><Icon name="person" size={16} /> {aimBusy ? t('azAiming') : t('azAim')}</button>
+              {#if autoZoom.aim && Object.keys(autoZoom.aim).length}<button class="sm" onclick={() => autoZoom && (autoZoom.aim = undefined)}>{t('azCentre')}</button>{/if}
+              {#if autoZoom.edits && Object.keys(autoZoom.edits).length}<button class="sm" onclick={() => autoZoom && (autoZoom.edits = undefined)} title={t('azResetTip')}>{t('azReset')}</button>{/if}
+              <span class="muted small">{t('azEditHint')}</span>
               <span class="muted small">{zooms.length ? t('azCount').replace('{n}', String(zooms.length)) : t('azNone')}</span>
             {/if}
           </div>
@@ -2225,6 +2265,7 @@
     <Timeline {segments} {time} {clips} {durations} {names} {thumbs} {peaks} {duration} {captions} {audios}
       bind:zoom={tlZoom} bind:selected bind:selectedAudio selectedCapIds={selectedSet} onselectcap={selectCap}
       animLabel={t('allCaptions', { name: animName })}
+      zooms={zooms} onzoom={(k, s) => autoZoom && (autoZoom.edits = { ...autoZoom.edits, [k]: s })}
       out={outClock} onseek={(o) => seekOut(o)} onseeksrc={seek} snap={snapOn} range={marks} pending={pendingCuts} beats={beatMap}
       {overlays} bind:selectedOverlay
       onoverlay={(id, patch) => setOverlay(id, patch, false)}

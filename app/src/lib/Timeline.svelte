@@ -13,10 +13,12 @@
     segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = $bindable(1),
     selected = $bindable(-1), selectedCapIds = new Set<string>(), selectedAudio = $bindable(''), onselectcap,
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
-    pending = [], beats, out,
+    pending = [], beats, out, zooms = [], onzoom,
     overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
   }: {
     out?: number; // output time of the playhead (from the player clock)
+    zooms?: import('./autozoom').ZoomMoment[]; // auto-zoom moments, sequence time
+    onzoom?: (key: string, start: number | null) => void; // move (sequence time) or remove (null) a zoom, live
     beats?: Map<string, number[]>; // assetId → beat times in the file (music)
     pending?: [number, number][]; // clean-up preview: ranges that would be cut, sequence time
     overlays?: Overlay[]; // layers over the video, output time
@@ -61,6 +63,12 @@
     return at ? names.get(clips[at.index].assetId) ?? '' : '';
   };
 
+  // Auto-zoom chips: drag to move a zoom, Delete / double-click to remove it.
+  function moveZoom(e: PointerEvent, z: import('./autozoom').ZoomMoment) {
+    const o = toOutput(segments, z.start);
+    if (o === null || !onzoom || !z.key) return;
+    drag(e, (d) => onzoom!(z.key!, toSource(segments, Math.max(0, Math.min(total - 0.05, o + d)))));
+  }
   function moveAudio(e: PointerEvent, item: AudioItem) {
     selectedAudio = item.id;
     const a = item.at, len = audLen(item), pts = outPoints(item.id);
@@ -496,6 +504,14 @@
       <div class="row"><canvas bind:this={wave} class="wave"></canvas></div>
 
       <div class="row">
+        {#each zooms as z (z.key)}
+          {@const zo = toOutput(segments, z.start)}
+          {#if zo !== null && z.key}
+            <button class="zchip" style:left={pct(zo)} title={t('zoomChipTip')} aria-label={t('a11y.zoom', { a: fmtT(zo) })}
+              onpointerdown={(e) => moveZoom(e, z)} onclick={(e) => e.stopPropagation()} ondblclick={(e) => (e.stopPropagation(), onzoom?.(z.key!, null))}
+              onkeydown={(e) => (e.key === 'Delete' || e.key === 'Backspace') && (e.preventDefault(), e.stopPropagation(), onzoom?.(z.key!, null))}>◎</button>
+          {/if}
+        {/each}
         {#each outCaps as c, i (c.id)}
           <button class="cap" class:sel={selectedCapIds.has(c.id)}
             style:left={pct(startOf(c))} style:width={pct(Math.max(0.05, endOf(c) - startOf(c)))}
@@ -607,6 +623,8 @@
   .edge.l { left: 0; border-radius: 6px 0 0 6px; } .edge.r { right: 0; border-radius: 0 6px 6px 0; }
   .cap:hover .edge, .cap.sel .edge { background: rgb(200 245 96 / .55); }
   .aud:hover .edge, .aud.sel .edge { background: rgb(106 184 255 / .55); }
+  .zchip { position: absolute; top: -9px; z-index: 3; transform: translateX(-50%); width: 18px; height: 18px; padding: 0; border-radius: 50%;
+    font-size: 12px; line-height: 16px; background: var(--accent, #c8f560); color: #111; border: 1px solid #0006; cursor: ew-resize; }
   .pend { position: absolute; top: 20px; bottom: 0; pointer-events: none; z-index: 1;
     background: repeating-linear-gradient(45deg, rgb(255 107 107 / .35) 0 4px, rgb(255 107 107 / .12) 4px 8px); border-left: 1px solid #ff6b6b; border-right: 1px solid #ff6b6b; }
   .guide { position: absolute; top: 0; bottom: 0; width: 1px; background: #ffd84d; pointer-events: none; z-index: 4; box-shadow: 0 0 4px #ffd84d; }

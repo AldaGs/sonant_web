@@ -41,3 +41,22 @@ assert.ok(sp[0] <= 0 && sp[1] <= 0 && sp[0] + sp[2] >= 100 && sp[1] + sp[3] >= 1
 assert.deepEqual(shakePlace([1, 2, 3, 4], 10, 10, 0, 1), [1, 2, 3, 4]);
 assert.ok(zoomShake(m, 1.01) > 0.8 && zoomShake(m, 1.5) === 0 && zoomShake(m, 0.5) === 0);
 console.log('shake ok');
+
+// hand edits: remove one, move one; aims
+import { zoomKey, zoomAimAt, autoZoomPlace } from './autozoom.ts';
+const base = zoomMoments(caps, { gap: 2.5, sentences: false });
+const k1 = zoomKey(1), k2 = zoomKey(5.5);
+assert.deepEqual(base.map((z) => z.key), [k1, k2]);
+assert.deepEqual(zoomMoments(caps, { gap: 2.5, sentences: false, edits: { [k1]: null } }).map((z) => z.start), [5.5]);
+const moved = zoomMoments(caps, { gap: 2.5, sentences: false, edits: { [k2]: 4 } });
+assert.deepEqual(moved.map((z) => [z.key, z.start]), [[k1, 1], [k2, 4]]);
+assert.ok(Math.abs((moved[1].end - moved[1].start) - (base[1].end - base[1].start)) < 1e-9); // same length
+const aimed = zoomMoments(caps, { gap: 2.5, sentences: false, aim: { [k1]: [0.8, 0.3] } });
+assert.deepEqual(zoomAimAt(aimed, 1.5), [0.8, 0.3]);
+assert.equal(zoomAimAt(aimed, 5.6), null);
+// zooming towards a point near the edge keeps the frame covered
+const zp = autoZoomPlace([0, 0, 100, 100], 100, 100, aimed, 1.2, 1.5);
+assert.ok(Math.abs(zp[2] - 120) < 1e-9 && zp[0] <= 0 && zp[1] <= 0 && zp[0] + zp[2] >= 100 && zp[1] + zp[3] >= 100);
+assert.ok(zp[0] < -10); // shifted towards the right-hand aim (centre zoom would give -10)
+assert.deepEqual(autoZoomPlace([0, 0, 100, 100], 100, 100, aimed, 1.2, 0.2), [0, 0, 100, 100]); // no zoom then
+console.log('zoom edits ok');

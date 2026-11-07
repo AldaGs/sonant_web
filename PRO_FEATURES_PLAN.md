@@ -20,7 +20,8 @@ Builds on Phase 0.
 - ✅ It stacks on top of the strip punch-in and focus point, and it's the same in preview and export. Moments are in sequence time, so cutting a word drops its zoom.
 - ✅ Captions tab: **Auto-zoom on key words**, with strength (+5–35%), minimum gap (1–8s), "also at sentence starts" and a zoom count. Saved with the project.
 - ✅ Tests: `node src/lib/autozoom.test.ts`.
-- Later: show the zooms on the timeline, and let a single zoom be removed or nudged. Zoom toward the speaker's face (reuse the segmenter) instead of the frame centre.
+- ✅ (follow-up) Zooms show as **◎ chips** on the captions row of the timeline. Drag to move one, double-click or Delete to remove it, and **Undo zoom edits** brings them back. Edits are stored by the word they were made for, so they survive re-running the detection.
+- ✅ (follow-up) **Aim at the person**: the segmenter finds the person at each zoom, and the zoom heads a little above their centre (the face) instead of the frame centre. The frame stays covered at the edges. **Zoom to centre** clears it. Untested here because the segmenter's CDN is blocked in the sandbox; chips and edits were tested in a browser.
 
 ## Phase 2: Chroma key, blend modes, masks ✅
 All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and export match.
