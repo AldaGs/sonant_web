@@ -31,6 +31,7 @@ export type Overlay = {
   blend?: Blend; // how the layer mixes with what's under it (default normal)
   key?: ChromaKey; // media only: green screen
   mask?: Mask; // media only: shape mask
+  maskKf?: MaskKey[]; // mask animation: size / angle / position / feather keyed over the layer's time (sorted by t)
   bar?: ProgressBar; // text layer drawn as a progress bar instead of text
 };
 // A bar that fills across the frame over the layer's time. h: thickness, fraction of frame height.
@@ -136,6 +137,32 @@ export function setKey(kf: Keyframe[] = [], t: number, tf: Transform): Keyframe[
   const i = kf.findIndex((k) => Math.abs(k.t - t) <= KEY_TOL);
   return (i >= 0 ? kf.with(i, { ...key, t: kf[i].t }) : [...kf, key]).sort((x, y) => x.t - y.t);
 }
+// ---- Mask keyframes (t: seconds from the layer's start). Shape and invert always come from o.mask. ----
+export type MaskKey = { t: number; w: number; h: number; angle: number; pos: number; feather: number };
+const MASK_NUM = ['w', 'h', 'angle', 'pos', 'feather'] as const;
+export function maskAt(o: Overlay, t: number): Mask | undefined {
+  const m = o.mask, k = o.maskKf;
+  if (!m || !k?.length) return m;
+  const r = t - o.at;
+  let a = k[0], b = k[0];
+  if (r >= k[k.length - 1].t) a = b = k[k.length - 1];
+  else if (r > k[0].t) for (let i = 1; i < k.length; i++) if (r < k[i].t) { a = k[i - 1]; b = k[i]; break; }
+  const u = b.t > a.t ? smooth((r - a.t) / (b.t - a.t)) : 0;
+  const out = { ...m };
+  for (const p of MASK_NUM) out[p] = a[p] + (b[p] - a[p]) * u;
+  return out;
+}
+export function setMaskKey(kf: MaskKey[] = [], t: number, m: Mask): MaskKey[] {
+  const key: MaskKey = { t, w: m.w, h: m.h, angle: m.angle, pos: m.pos, feather: m.feather };
+  const i = kf.findIndex((k) => Math.abs(k.t - t) <= KEY_TOL);
+  return (i >= 0 ? kf.with(i, { ...key, t: kf[i].t }) : [...kf, key]).sort((x, y) => x.t - y.t);
+}
+// Reveal presets over the first `d` seconds of the layer: a wipe (linear) or a growing spotlight (ellipse).
+export function maskReveal(kind: 'wipe' | 'spot', d = 0.6): { mask: Mask; maskKf: MaskKey[] } {
+  const base: Mask = kind === 'wipe' ? { shape: 'linear', w: 1, h: 1, angle: 180, pos: 1.1, feather: 0.08 } : { shape: 'ellipse', w: 0.02, h: 0.02, angle: 0, pos: 0.5, feather: 0.1 };
+  const end = kind === 'wipe' ? { ...base, pos: -0.1 } /* left to right */ : { ...base, w: 1.6, h: 1.6 };
+  return { mask: base, maskKf: [setMaskKey([], 0, base)[0], setMaskKey([], d, end)[0]] };
+}
 export const keyAt = (kf: Keyframe[] | undefined, t: number) => kf?.find((k) => Math.abs(k.t - t) <= KEY_TOL);
 export const dropKey = (kf: Keyframe[], t: number) => kf.filter((k) => Math.abs(k.t - t) > KEY_TOL);
 // Punch-in preset: grow 20% over half a second from wherever the playhead is.
@@ -215,7 +242,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number
     ctx.translate(p.cx, p.cy);
     ctx.rotate((tf.rotation * Math.PI) / 180);
     if (tf.flipX) ctx.scale(-1, 1);
-    const fx = processed(src, p.src[0], p.src[1], p.src[2], p.src[3], p.w, p.h, o.key, o.mask, o.key ? keyOpts() : undefined);
+    const fx = processed(src, p.src[0], p.src[1], p.src[2], p.src[3], p.w, p.h, o.key, maskAt(o, t), o.key ? keyOpts() : undefined);
     if (fx) ctx.drawImage(fx, -p.w / 2, -p.h / 2, p.w, p.h);
     else ctx.drawImage(src, p.src[0], p.src[1], p.src[2], p.src[3], -p.w / 2, -p.h / 2, p.w, p.h);
     placed = { id: o.id, cx: p.cx, cy: p.cy, w: p.w, h: p.h, rot: tf.rotation };

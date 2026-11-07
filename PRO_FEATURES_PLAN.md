@@ -32,7 +32,7 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - ✅ **Masks** on media layers: ellipse, rectangle or linear, with size/angle/position, feather and invert.
 - ✅ Layer inspector: a Blend menu, plus "Chroma key" and "Mask" sections. Saved and undoable like other layer edits.
 - ✅ Tests: `node src/lib/layerfx.test.ts`. I also ran a browser check of the canvas masks and key.
-- Later: masks that follow keyframes.
+- ✅ (follow-up) Masks are drawn in the layer's own space, so they already follow its position, size and rotation keyframes. **Mask keyframes** animate the mask itself: ◆ Mask key adds or removes a key at the playhead. With keys present, slider changes go into the key at the playhead, and **Clear mask keys** removes them. Presets: **Wipe reveal** (left to right) and **Spotlight reveal** (growing circle), each over 0.6s (`maskAt`, `setMaskKey`, `maskReveal` in `overlay.ts`).
 
 ## Phase 2b: Performance settings, key eyedropper, green screen on strips ✅
 - ✅ **Performance** dialog (⚙ in the editor header). It's per device and stored in localStorage (`lib/perf.ts`).

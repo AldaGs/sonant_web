@@ -36,6 +36,7 @@
   import { cleanAudio, cleanKey, DENOISE_LEVELS } from './lib/denoise';
   import { zoomMoments, autoZoomPlace, zoomKey, shakePlace, zoomShake, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
+  import { maskAt, setMaskKey, maskReveal } from './lib/overlay';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
@@ -2145,14 +2146,25 @@
               onchange={(e) => { const v = e.currentTarget.value; setOverlay(o.id, { mask: v === 'none' ? undefined : { ...DEFAULT_MASK, ...o.mask, shape: v as 'rect' } }); doneEditing(); }}>
               {#each ['none', 'ellipse', 'rect', 'linear'] as m (m)}<option value={m}>{t('mk.' + m)}</option>{/each}
             </select>
+            <div class="lrow">
+              <button class="sm" onclick={() => (setOverlay(o.id, maskReveal('wipe')), doneEditing())} title={t('mkWipeTip')}>{t('mkWipe')}</button>
+              <button class="sm" onclick={() => (setOverlay(o.id, maskReveal('spot')), doneEditing())} title={t('mkSpotTip')}>{t('mkSpot')}</button>
+            </div>
             {#if o.mask}
-              {@const m = o.mask}
+              {@const m = maskAt(o, outNow())!}
+              {@const lt = layerT(o)}
+              <div class="lrow">
+                <button class="sm" class:on={!!o.maskKf?.some((k) => Math.abs(k.t - lt) <= 1 / 60)} title={t('mkKeyTip')}
+                  onclick={() => { const has = o.maskKf?.find((k) => Math.abs(k.t - lt) <= 1 / 60); setOverlay(o.id, { maskKf: has ? o.maskKf!.filter((k) => k !== has) : setMaskKey(o.maskKf, lt, m) }); doneEditing(); }}>◆ {t('mkKey')}</button>
+                {#if o.maskKf?.length}<button class="sm" onclick={() => (setOverlay(o.id, { mask: m, maskKf: undefined }), doneEditing())}>{t('mkClearKeys', { n: o.maskKf.length })}</button>{/if}
+              </div>
               {#each (m.shape === 'linear' ? [['mkAngle', 'angle', -180, 180, 1], ['mkPos', 'pos', 0, 1, 0.01]] : [['mkW', 'w', 0.05, 1, 0.01], ['mkH', 'h', 0.05, 1, 0.01]]).concat([['mkFeather', 'feather', 0, 0.5, 0.01]]) as [label, f, lo, hi, st] (f)}
                 <label class="vol">{t(label as string)} <span class="mono small">{f === 'angle' ? `${m.angle}°` : `${Math.round(m[f as 'w'] * 100)}%`}</span>
-                  <input type="range" min={lo} max={hi} step={st} value={m[f as 'w']} oninput={(e) => setOverlay(o.id, { mask: { ...m, [f as string]: +e.currentTarget.value } })} onchange={doneEditing} />
+                  <input type="range" min={lo} max={hi} step={st} value={m[f as 'w']} onchange={doneEditing}
+                    oninput={(e) => { const nm = { ...m, [f as string]: +e.currentTarget.value }; setOverlay(o.id, o.maskKf?.length ? { maskKf: setMaskKey(o.maskKf, lt, nm) } : { mask: nm }); }} />
                 </label>
               {/each}
-              <label class="chk"><input type="checkbox" checked={!!m.invert} onchange={(e) => (setOverlay(o.id, { mask: { ...m, invert: e.currentTarget.checked || undefined } }), doneEditing())} /> {t('mkInvert')}</label>
+              <label class="chk"><input type="checkbox" checked={!!o.mask.invert} onchange={(e) => (setOverlay(o.id, { mask: { ...o.mask!, invert: e.currentTarget.checked || undefined } }), doneEditing())} /> {t('mkInvert')}</label>
             {/if}
           </details>
         {/if}
