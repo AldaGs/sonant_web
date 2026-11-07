@@ -44,6 +44,7 @@ import download from '@material-symbols/svg-400/rounded/download.svg?raw';
 import video_library from '@material-symbols/svg-400/rounded/video_library.svg?raw';
 import description from '@material-symbols/svg-400/rounded/description.svg?raw';
 import closed_caption from '@material-symbols/svg-400/rounded/closed_caption.svg?raw';
+import palette from '@material-symbols/svg-400/rounded/palette.svg?raw';
 import text_fields from '@material-symbols/svg-400/rounded/text_fields.svg?raw';
 import colorize from '@material-symbols/svg-400/rounded/colorize.svg?raw';
 import block from '@material-symbols/svg-400/rounded/block.svg?raw';
@@ -105,6 +106,7 @@ export const ICONS = {
   description: m(description),
   closed_caption: m(closed_caption),
   text_fields: m(text_fields),
+  palette: m(palette),
   colorize: m(colorize),
   block: m(block),
   format_line_spacing: m(format_line_spacing),

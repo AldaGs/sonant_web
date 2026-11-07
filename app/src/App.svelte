@@ -953,13 +953,30 @@
 
   // ---- Layout state ----
   let tab = $state<'transcript' | 'captions'>('transcript');
-  let assetsOpen = $state(true);
+  // Desktop panel visibility, remembered per project.
+  const layoutKey = `sonant.layout.${projectId}`;
+  const savedLayout = (() => { try { return JSON.parse(localStorage.getItem(layoutKey) ?? '{}'); } catch { return {}; } })();
+  let assetsOpen = $state<boolean>(savedLayout.assets ?? true);
+  let textOpen = $state<boolean>(savedLayout.text ?? true);
+  let styleOpen = $state<boolean>(savedLayout.style ?? true);
+  $effect(() => {
+    const v = JSON.stringify({ assets: assetsOpen, text: textOpen, style: styleOpen });
+    try { localStorage.setItem(layoutKey, v); } catch { /* storage unavailable */ }
+  });
+  const gridCols = $derived([assetsOpen && '270px', textOpen && '340px', 'minmax(0, 1fr)', styleOpen && '340px'].filter(Boolean).join(' '));
+  const gridAreas = $derived.by(() => {
+    const mid = [assetsOpen && 'assets', textOpen && 'text', 'center', styleOpen && 'style'].filter(Boolean) as string[];
+    return [mid.map(() => 'top'), mid, mid.map(() => 'tl')].map((r) => `'${r.join(' ')}'`).join(' ');
+  });
   // Phone layout: panels open one at a time as bottom sheets from the tool dock.
-  let sheet = $state<'assets' | 'text' | 'style' | null>(null);
-  function openSheet(s: 'assets' | 'text' | 'style', t?: 'transcript' | 'captions') {
+  let sheet = $state<'assets' | 'text' | 'style' | 'color' | null>(null);
+  function openSheet(s: 'assets' | 'text' | 'style' | 'color', t?: 'transcript' | 'captions') {
     if (t) tab = t;
     sheet = sheet === s && (!t || tab === t) ? null : s;
   }
+  // Phone: a video strip or video/image layer is selected → color & video styles get their own sheet.
+  const hasVideoSel = $derived((selected >= 0 && !!segments[selected] && !selOverlay) || (!!selOverlay && selOverlay.kind !== 'text'));
+  $effect(() => { if (sheet === 'color' && !hasVideoSel) sheet = null; });
   let zoom = $state(1); // 1 = fit to the stage
   let filter = $state<'all' | 'video' | 'audio' | 'image'>('all');
   const shown = $derived(assets.filter((a) => filter === 'all' || a.kind === filter));
@@ -1159,7 +1176,8 @@
 
 <svelte:window onkeydown={keys} />
 
-<div class="app" class:no-assets={!assetsOpen} class:sheet-open={sheet !== null}>
+<div class="app" class:hide-text={!textOpen} class:hide-style={!styleOpen} class:sheet-open={sheet !== null}
+  style:--cols={gridCols} style:--areas={gridAreas}>
   <header class="top">
     <div class="brand">
       <!-- Sonant sound-ring mark (icon/sonant-mark.svg) -->
@@ -1190,6 +1208,14 @@
       <button class="desk" class:on={assetsOpen} onclick={() => (assetsOpen = !assetsOpen)} aria-pressed={assetsOpen} title={t('toggleAssets')}>
         <Icon name="view_sidebar" />
         {t('assets')}
+      </button>
+      <button class="desk" class:on={textOpen} onclick={() => (textOpen = !textOpen)} aria-pressed={textOpen} title={t('toggleText')}>
+        <Icon name="description" />
+        {t('text')}
+      </button>
+      <button class="desk" class:on={styleOpen} onclick={() => (styleOpen = !styleOpen)} aria-pressed={styleOpen} title={t('toggleStyle')}>
+        <Icon name="text_fields" />
+        {t('style')}
       </button>
       <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length || !firstVideo}><Icon name="ios_share" size={16} /> {t('ex.title')}</button>
     </div>
@@ -1419,9 +1445,9 @@
     </div>
   </section>
 
-  <aside class="style panel" class:shown={sheet === 'style'}>
+  <aside class="style panel" class:shown={sheet === 'style' || sheet === 'color'} class:color-only={sheet === 'color'}>
     <div class="grab" aria-hidden="true"></div>
-    <div class="sheet-bar"><h2>{t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button></div>
+    <div class="sheet-bar"><h2>{sheet === 'color' ? t('grading') : t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button></div>
     <details class="tpl">
       <summary>{t('templates')}</summary>
       <div class="tpl-list">
@@ -1490,7 +1516,7 @@
       {@const cur = tfAt(o, outTime)}
       {@const onKey = !!keyAt(o.kf, outTime - o.at)}
       <!-- Layer inspector: live edits are one undo step each (snapshot on first input, closed on change). -->
-      <section class="layer" aria-label={t('layer')} onchange={doneEditing} onpointerup={doneEditing}>
+      <section class="layer" class:vlayer={o.kind !== 'text'} aria-label={t('layer')} onchange={doneEditing} onpointerup={doneEditing}>
         <div class="lhead">
           <h3>{o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
           <button class="sm icon" onclick={() => (selectedOverlay = '')} aria-label={t('ex.close')}><Icon name="close" /></button>
@@ -1681,6 +1707,12 @@
       <Icon name="text_fields" size={24} />
       <span>{t('style')}</span>
     </button>
+    {#if hasVideoSel}
+      <button class:on={sheet === 'color'} onclick={() => openSheet('color')}>
+        <Icon name="palette" size={24} />
+        <span>{t('grading')}</span>
+      </button>
+    {/if}
     <button onclick={() => saveToFile()} disabled={!assets.length}>
       <Icon name="download" size={24} />
       <span>{fileStatus ? t(fileStatus) : t('saveFile')}</span>
@@ -1727,11 +1759,13 @@
 <style>
   .app {
     height: calc(100dvh / var(--ui-zoom)); display: grid;
-    grid-template-columns: 270px 340px minmax(0, 1fr) 340px;
+    grid-template-columns: var(--cols);
     grid-template-rows: auto minmax(0, 1fr) auto;
-    grid-template-areas: 'top top top top' 'assets text center style' 'tl tl tl tl';
+    grid-template-areas: var(--areas);
   }
-  .app.no-assets { grid-template-columns: 340px minmax(0, 1fr) 340px; grid-template-areas: 'top top top' 'text center style' 'tl tl tl'; }
+  @media (min-width: 761px) {
+    .app.hide-text .text, .app.hide-style .style { display: none; }
+  }
   .top { grid-area: top; display: flex; align-items: center; justify-content: space-between; gap: 12px;
     padding: 12px 20px; border-bottom: 1px solid var(--border-soft); }
   .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -1832,9 +1866,10 @@
   .style { grid-area: style; border-left: 1px solid var(--border-soft); overflow: auto; }
   .timeline-area { grid-area: tl; border-top: 1px solid var(--border-soft); padding: 12px 20px 16px; display: grid; gap: 10px; }
   .thead { display: flex; justify-content: space-between; align-items: center; }
+  .thead button.on { border-color: var(--accent); color: var(--accent); background: rgb(200 245 96 / .08); }
 
   @media (max-width: 1100px) {
-    .app, .app.no-assets {
+    .app {
       height: auto; min-height: calc(100dvh / var(--ui-zoom));
       grid-template-columns: minmax(0, 1fr);
       grid-template-areas: 'top' 'center' 'text' 'style' 'assets' 'tl';
@@ -1855,7 +1890,7 @@
 
   /* Phone: preview + transport + timeline fill the screen; panels open as bottom sheets from a tool dock. */
   @media (max-width: 760px) {
-    .app, .app.no-assets {
+    .app {
       height: calc(100dvh / var(--ui-zoom)); min-height: 0;
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: auto minmax(0, 1fr) auto auto;
@@ -1894,6 +1929,9 @@
       padding-bottom: env(safe-area-inset-bottom); animation: up .22s ease-out;
     }
     .assets.shown, .text.shown, .style.shown { display: flex; }
+    /* Color sheet: only strip grading and video/image layer styles; the style sheet keeps the rest. */
+    .style.color-only > :not(.grab, .sheet-bar, .strip, .vlayer) { display: none; }
+    .style:not(.color-only) > :is(.strip, .vlayer) { display: none; }
     .text .scroll { max-height: none; flex: 1; min-height: 0; }
     .style { overflow: auto; }
     .grab { display: block; flex: none; width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 8px auto 0; }
