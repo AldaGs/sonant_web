@@ -12,7 +12,7 @@ import { duckGain, normalizeGain } from './audio.ts';
 import { DUCK_LEVEL, clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
 
 export type Aspect = 'source' | '16:9' | '9:16' | '1:1' | '4:5';
-export type Res = 'source' | 1080 | 720 | 540 | 480;
+export type Res = 'source' | 2160 | 1080 | 720 | 540 | 480;
 export type Quality = 'draft' | 'standard' | 'high';
 // loudness: normalize the mix to −14 LUFS (TikTok/YouTube/Spotify target). voice: clean up the clips' own sound
 // (rumble filter + gentle compression), for speech recorded on a phone.

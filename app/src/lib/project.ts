@@ -3,7 +3,7 @@ import type { Segment } from './cuts';
 
 // Media the user imported. Files live in IndexedDB under `asset:<id>`.
 // beats/bpm: detected beat times (file time) for music, once the user asks for them.
-export type Asset = { id: string; name: string; kind: 'video' | 'audio' | 'image'; duration: number; width?: number; height?: number; beats?: number[]; bpm?: number };
+export type Asset = { id: string; name: string; kind: 'video' | 'audio' | 'image'; duration: number; width?: number; height?: number; beats?: number[]; bpm?: number; proxy?: boolean };
 // A video clip on the video track. Clips play back to back; together they form the "sequence".
 // Sequence time is what segments, captions and words are measured in.
 export type Clip = { id: string; assetId: string };

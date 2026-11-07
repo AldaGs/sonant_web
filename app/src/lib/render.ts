@@ -87,6 +87,8 @@ export const PRESETS: Record<string, Style> = {
   Editorial: { ...base, family: 'DM Serif Display', weight: 400, italic: true, size: 0.07, color: '#fff8ec', highlight: '#ffd27a', stroke: '#000000', outline: 0.06, uppercase: false, animation: 'fade', animTarget: 'all', duration: 500, y: 0.78 },
   Tall: { ...base, family: 'Anton', weight: 400, size: 0.085, color: '#ffffff', highlight: '#ff4d6d', stroke: '#111111', uppercase: true, animation: 'bounce', y: 0.72 },
   Marker: { ...base, family: 'Permanent Marker', weight: 400, size: 0.07, color: '#fff6d6', highlight: '#ff9f1c', stroke: '#2b1a00', uppercase: false, animation: 'pop', easing: 'back', y: 0.7 },
+  // Accessibility: big, plain, on a solid box, no motion (WCAG-friendly contrast on any footage).
+  'High contrast': { ...base, family: 'Inter', weight: 800, size: 0.075, color: '#ffffff', highlight: '#ffe600', stroke: '#000000', outline: 0, box: '#000000', boxAlpha: 1, radius: 0.15, uppercase: false, animation: 'none', y: 0.8 },
   // New CapCut-inspired presets
   'Zoom burst': { ...base, family: 'Montserrat', weight: 900, size: 0.072, color: '#ffffff', highlight: '#ff6b35', stroke: '#000000', outline: 0.16, uppercase: true, animation: 'zoom-in', duration: 350, easing: 'ease-out', y: 0.75 },
   'Flip reveal': { ...base, family: 'Inter', weight: 800, size: 0.062, color: '#ffffff', highlight: '#a855f7', stroke: '#1a0030', outline: 0.14, uppercase: true, animation: 'flip', duration: 380, easing: 'ease-in-out', y: 0.78 },

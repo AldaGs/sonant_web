@@ -50,11 +50,11 @@ Status from a code review (Nov 2026). ✅ done · 🟡 partly done · ⬜ not st
 19. ✅ **Templates**: three built-ins (Hook title, Lower third, Follow CTA) and **Save current as template** (caption style + text layers; layers near the end stay pinned to the end). Shared across projects in the browser.
 
 ## Phase E: Accessibility and polish
-20. **Caption accessibility preset** (high contrast, minimum size) and a **platform safe-area overlay** (TikTok, Reels, Shorts UI).
-21. **Screen reader and keyboard access**: roving focus on timeline items, `aria-label`s everywhere, visible focus ring, and 44px touch targets on mobile.
-22. **Version history**: keep the last N autosaves per project with restore.
-23. **Export presets**: TikTok, Reels, Shorts, YouTube 1080p and 4K (aspect, fps, bitrate, loudness).
-24. **Proxy media** for fast scrubbing on long or 4K files: a low-resolution, all-keyframe copy made with WebCodecs on import, used only for preview.
+20. ✅ **High contrast** caption preset (large, solid box, no motion), a warning under the size field for text too small for phones, and **safe zones** for TikTok / Reels / Shorts in the preview. Zones turn red and a status warns when the caption sits under the app's UI. The preview overlay is never exported.
+21. ✅ **Keyboard and screen readers**: strips are focusable buttons (Enter selects). Focused captions, layers and music move with ←/→ (Shift: 1s), one undo step per press. Every timeline item has a spoken label with its times, and a live region announces split / delete / undo / redo / marks / toggles. Visible focus ring on everything, ~40px touch targets on touch screens, and `prefers-reduced-motion` respected for the UI.
+22. ✅ **Version history**: a snapshot every ~2 minutes of editing (last 30, without the transcription cache), a **History** dialog with what each version had, and **Restore**, which first saves the current state as a version. Deleting a project deletes its history.
+23. ✅ **Export presets**: TikTok, Instagram Reels, YouTube Shorts, Instagram feed (4:5), YouTube 1080p, YouTube 4K. Each sets shape, resolution, fps, quality and loudness, with a note when the output is larger than the footage.
+24. ✅ **Proxy media**: a 540p copy with a keyframe every 0.5s, made in the background for footage over 1080p or longer than 3 minutes, or on demand with ⚡ on any video. The preview uses it, and export always reads the original. Stored with the project in the browser.
 
 ## Suggested order
 A (1–4) → D15 → B (6–9) → C11, C12 → E20, E23 → B10 → C13, C14 → D16–19 → E21, E22, E24.

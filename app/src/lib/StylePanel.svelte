@@ -270,6 +270,7 @@
         <em>px</em>
       </span>
     </label>
+    {#if effectiveStyle.size < 0.045}<p class="note warn" role="status">{t('smallText')}</p>{/if}
     <div class="prow"><span>{t('spacing')}</span>
       <span class="pair">
         <span class="fld icon" title={t('lineHeight')}>
@@ -479,6 +480,7 @@
   .fld.none { justify-content: flex-start; color: var(--text); font-size: 13px; cursor: pointer; }
   .checker { width: 18px; height: 18px; border-radius: 4px; flex: none;
     background: repeating-conic-gradient(#3a3a3a 0 25%, #1e1e1e 0 50%) 0 0 / 8px 8px; }
+  .note.warn { color: #ffb86b; }
   .note { margin: -2px 0 0 92px; font-size: 12px; color: var(--accent); }
   .note.bad { color: #ffb86b; }
   .seg { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }

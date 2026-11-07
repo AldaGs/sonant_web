@@ -11,8 +11,10 @@
   import { Transitioner, TRANSITIONS, TRANS_DUR } from './lib/transitions';
   import { Grader, COLOR_PRESETS, parseCube, type Color, type Lut } from './lib/grade';
   import { coverPlace, median } from './lib/reframe';
+  import { SAFE_ZONES, drawSafeZones, overlapsZone, type Platform } from './lib/safezones';
   import { outputSize, type Aspect } from './lib/export';
   import { subjectCenter } from './lib/segment';
+  import { wantsProxy, makeProxy, loadProxy, saveProxy, deleteProxy } from './lib/proxy';
   import { cleanup, cleanupRanges } from './lib/cleanup.svelte';
   import { speechRanges } from './lib/audio';
   import { beatsOfFile } from './lib/beats';
@@ -28,7 +30,7 @@
   import ExportDialog from './lib/ExportDialog.svelte';
   import StylePanel from './lib/StylePanel.svelte';
   import TranscriptView from './lib/TranscriptView.svelte';
-  import { loadDoc, saveDoc, saveProjectFile, deleteAssetIfUnused, type ProjectDoc, type ProjectMeta } from './lib/projects';
+  import { loadDoc, saveDoc, saveProjectFile, deleteAssetIfUnused, addVersion, listVersions, type ProjectDoc, type ProjectMeta, type Version } from './lib/projects';
 
   // The editor works on one project at a time; the home page (#/) lists them all.
   let { projectId }: { projectId: string } = $props();
@@ -155,11 +157,17 @@
   }
   function undo() {
     const s = past.at(-1);
-    if (s) ((future = [snap(), ...future]), (past = past.slice(0, -1)), restore(s));
+    if (s) ((future = [snap(), ...future]), (past = past.slice(0, -1)), restore(s), announce(t('a11y.undone')));
   }
   function redo() {
     const s = future[0];
-    if (s) ((past = [...past, snap()]), (future = future.slice(1)), restore(s));
+    if (s) ((past = [...past, snap()]), (future = future.slice(1)), restore(s), announce(t('a11y.redone')));
+  }
+  // Screen-reader announcements for actions that only change the picture or the timeline.
+  let liveMsg = $state('');
+  function announce(m: string) {
+    liveMsg = '';
+    queueMicrotask(() => (liveMsg = m));
   }
   const setCaps = (c: Caption[]) => (commit(), (captions = c));
   // Kept segments never cross a clip boundary (so clips can be reordered and exported piece by piece).
@@ -184,6 +192,32 @@
   let ready = false; // no autosave until the saved project has been restored
   let savedFonts: SavedFont[] = [];
 
+  // ---- Proxies: small fast-seeking copies for the preview (export uses the originals) ----
+  let proxyUrls = $state<Record<string, string>>({});
+  let proxyPct = $state<Record<string, number>>({}); // assetId → progress while building
+  const previewUrl = (id: string) => proxyUrls[id] ?? urls[id];
+  async function buildProxy(a: Asset) {
+    const f = files.get(a.id);
+    if (!f || a.id in proxyPct) return;
+    proxyPct[a.id] = 0;
+    try {
+      const blob = await makeProxy(f, (p) => (proxyPct[a.id] = p));
+      await saveProxy(a.id, blob).catch(() => {}); // over quota: still used this session
+      proxyUrls[a.id] = URL.createObjectURL(blob);
+      assets = assets.map((x) => (x.id === a.id ? { ...x, proxy: true } : x));
+    } catch {
+      notice = 'err.proxy';
+    } finally {
+      delete proxyPct[a.id];
+    }
+  }
+  async function dropProxy(a: Asset) {
+    if (proxyUrls[a.id]) URL.revokeObjectURL(proxyUrls[a.id]);
+    delete proxyUrls[a.id];
+    assets = assets.map((x) => (x.id === a.id ? { ...x, proxy: undefined } : x));
+    await deleteProxy(a.id);
+  }
+
   // Make a file usable: object URL, thumbnails, waveform.
   function register(a: Asset, f: File) {
     files.set(a.id, f);
@@ -196,6 +230,7 @@
       return;
     }
     if (a.kind === 'video') thumbnails(url, a.duration).then((th) => (thumbs[a.id] = th)).catch(() => {});
+    if (a.proxy) loadProxy(a.id).then((b) => b && (proxyUrls[a.id] = URL.createObjectURL(b)));
     audioPeaks(f).then((p) => (peaks[a.id] = p)).catch(() => {}); // no audio track: no waveform
   }
 
@@ -260,6 +295,7 @@
       if (th) ((meta.thumb = th), (lastThumb = Date.now()));
     }
     await saveDoc(projectId, doc, meta);
+    addVersion(projectId, doc).catch(() => {}); // a snapshot every ~2 minutes of editing
   }
   $effect(() => {
     $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr });
@@ -270,6 +306,32 @@
     const id = setTimeout(() => saveNow().catch(() => {}).finally(() => (saving = false)), 400);
     return () => clearTimeout(id);
   });
+
+  // ---- Version history ----
+  let histDialog = $state<HTMLDialogElement>();
+  let versions = $state<Version[]>([]);
+  async function openHistory() {
+    versions = (await listVersions(projectId)).toReversed();
+    histDialog?.showModal();
+  }
+  async function restoreVersion(v: Version) {
+    // Keep the current state as a version first, so restoring can itself be undone from here.
+    await addVersion(projectId, { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), aspect: canvasAspect } as Doc, { force: true, label: t('beforeRestore') });
+    commit();
+    const d = v.doc;
+    const have = new Set(assets.map((a) => a.id)); // media deleted since then can't come back
+    clips = (d.clips ?? []).filter((c) => have.has(c.assetId));
+    audios = (d.audios ?? []).filter((a) => have.has(a.assetId));
+    overlays = (d.overlays ?? []).filter((o) => !o.assetId || have.has(o.assetId));
+    clipVolume = d.clipVolume ?? 1;
+    restoreDoc({ ...d, assets } as Doc);
+    histDialog?.close();
+    announce(t('versionRestored'));
+  }
+  const ago = (ms: number) => {
+    const m = Math.round((Date.now() - ms) / 60000);
+    return m < 1 ? t('justNow') : m < 60 ? t('minAgo', { n: m }) : new Date(ms).toLocaleString(ui.lang);
+  };
 
   // Save the project as a .sonant file (Ctrl/⌘+S). Chrome/Edge keep writing to the same file afterwards.
   let fileStatus = $state('');
@@ -298,6 +360,7 @@
       assets = [...assets, r.asset];
       register(r.asset, r.f);
       if (!name) name = r.f.name.replace(/\.[^.]+$/, '');
+      if (wantsProxy(r.asset)) buildProxy(r.asset); // big or long footage: fast preview copy in the background
       if (r.asset.kind === 'video') addClip(r.asset.id);
       else if (r.asset.kind === 'image') addOverlay(r.asset, at);
       else addAudio(r.asset.id, at);
@@ -544,6 +607,9 @@
       const sel = placed.find((p) => p.id === selectedOverlay);
       if (sel) drawLayerBox(ctx, sel, cv.width / (cv.getBoundingClientRect().width || cv.width));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
+      // Platform UI zones (preview only): captions under the app's buttons/description get a warning.
+      capInZone = !!(safe && capBox && overlapsZone(safe, capBox, w, h));
+      if (safe) drawSafeZones(ctx, safe, capInZone);
       if (capBox && (paused || hover || drag?.onBox)) drawDragBox(ctx, capBox, cv.width / (cv.getBoundingClientRect().width || cv.width));
       id = requestAnimationFrame(tick);
     };
@@ -559,6 +625,8 @@
   // ---- Overlay layers on the preview ----
   let placed: Placed[] = []; // layers drawn this frame, bottom first (for hit tests)
   const trans = new Transitioner();
+  let safe = $state<Platform | ''>('');
+  let capInZone = $state(false);
   const grader = new Grader();
 
   // ---- Colour: per-strip grade; LUT files are kept per project (data under lut:<id>) ----
@@ -980,11 +1048,11 @@
   const animName = $derived(t('anim.' + currentAnim));
   const saveState = $derived(saving ? t('saving') : t('saved'));
 
-  const cutHere = () => setSegs(splitAt(segments, time));
+  const cutHere = () => (setSegs(splitAt(segments, time)), announce(t('a11y.split', { t: tc(outTime) })));
   // Effects of the selected strip (captions behind the person, background swap).
   const selFx = $derived(selected >= 0 && segments[selected] ? (segments[selected].fx ?? {}) : null);
   const setFx = (p: Partial<Fx>) => selected >= 0 && setSegs(segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, ...p } }));
-  const deleteSelected = () => selected >= 0 && (setSegs(remove(segments, selected)), (selected = -1));
+  const deleteSelected = () => selected >= 0 && (setSegs(remove(segments, selected)), (selected = -1), announce(t('a11y.deleted')), true);
   function removeAudioItem() {
     if (!selectedAudio) return false;
     commit();
@@ -1027,6 +1095,7 @@
     if (a === null || b === null) return false;
     setSegs(cutRange(segments, Math.min(a, b), Math.max(a, b)));
     marks = [null, null];
+    announce(t('a11y.rangeCut'));
     return true;
   }
 
@@ -1056,11 +1125,11 @@
     else if (e.key.toLowerCase() === 'k') (player.pause(), (paused = true));
     else if (e.key.toLowerCase() === 'l') (player.play(), (paused = !player.playing));
     else if (e.key.toLowerCase() === 'j') seek(time - (e.shiftKey ? 5 : 1));
-    else if (e.key.toLowerCase() === 'i') marks = [time, marks[1]];
-    else if (e.key.toLowerCase() === 'o') marks = [marks[0], time];
+    else if (e.key.toLowerCase() === 'i') ((marks = [time, marks[1]]), announce(t('a11y.markIn', { t: tc(outTime) })));
+    else if (e.key.toLowerCase() === 'o') ((marks = [marks[0], time]), announce(t('a11y.markOut', { t: tc(outTime) })));
     else if (e.key.toLowerCase() === 'x') cutMarks();
-    else if (e.key.toLowerCase() === 'n') snapOn = !snapOn;
-    else if (e.key.toLowerCase() === 'a') autoSelect = !autoSelect;
+    else if (e.key.toLowerCase() === 'n') ((snapOn = !snapOn), announce(t(snapOn ? 'a11y.on' : 'a11y.off', { what: t('snap') })));
+    else if (e.key.toLowerCase() === 'a') ((autoSelect = !autoSelect), announce(t(autoSelect ? 'a11y.on' : 'a11y.off', { what: t('autoSelect') })));
     else if (e.key.toLowerCase() === 't') addText();
   }
 
@@ -1110,6 +1179,7 @@
         {t('projects')}
       </a>
       <button class="desk" onclick={() => saveToFile()} disabled={!assets.length} title={t('saveFileTip')}>{fileStatus ? t(fileStatus) : t('saveFile')}</button>
+      <button class="desk" onclick={openHistory} disabled={!assets.length} title={t('historyTip')}>{t('history')}</button>
       <button class="desk" class:on={assetsOpen} onclick={() => (assetsOpen = !assetsOpen)} aria-pressed={assetsOpen} title={t('toggleAssets')}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
         {t('assets')}
@@ -1143,9 +1213,12 @@
               {:else if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
               {:else}<span class="muted">{a.kind === 'audio' ? '♪ ' + t('filter.audio') : t('filter.video')}</span>{/if}
               {#if a.kind !== 'image'}<span class="dur mono">{fmt(a.duration)}</span>{/if}
+              {#if a.id in proxyPct}<span class="proxybar" style:width="{proxyPct[a.id] * 100}%" title={t('proxyBuilding')}></span>{/if}
               <span class="acts">
                 <button class="sm icon" onclick={() => addToTimeline(a)} aria-label={t('addToTimeline', { name: a.name })} title={t('addToTimeline', { name: a.name })}>+</button>
                 {#if a.kind === 'video'}
+                  <button class="sm icon" class:on={!!a.proxy} aria-pressed={!!a.proxy} disabled={a.id in proxyPct}
+                    onclick={() => (a.proxy ? dropProxy(a) : buildProxy(a))} title={a.proxy ? t('proxyOn') : t('proxyMake')} aria-label={a.proxy ? t('proxyOn') : t('proxyMake')}>⚡</button>
                   <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}>⧉</button>
                 {/if}
                 <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}>✕</button>
@@ -1274,11 +1347,11 @@
     <!-- Hidden media elements the player drives; the canvas shows the result. -->
     {#each videoIds as id (id)}
       <!-- svelte-ignore a11y_media_has_caption -->
-      <video src={urls[id]} use:media={['v', id]} preload="auto" playsinline hidden></video>
+      <video src={previewUrl(id)} use:media={['v', id]} preload="auto" playsinline hidden></video>
     {/each}
     {#each overlays.filter((o) => o.kind === 'video') as o (o.id)}
       <!-- svelte-ignore a11y_media_has_caption -->
-      <video src={urls[o.assetId ?? '']} use:media={['o', o.id]} preload="auto" playsinline hidden></video>
+      <video src={previewUrl(o.assetId ?? '')} use:media={['o', o.id]} preload="auto" playsinline hidden></video>
     {/each}
     {#each audios as item (item.id)}
       <audio src={urls[item.assetId]} use:media={['a', item.id]} preload="auto"></audio>
@@ -1316,9 +1389,14 @@
         <button class="round" onclick={() => seek(time - 5)} disabled={!hasMedia} aria-label={t('back')}>«</button>
         <button class="round play" onclick={toggle} disabled={!hasMedia} aria-label={paused ? t('play') : t('pause')}>{paused ? '▶' : '❚❚'}</button>
         <button class="round" onclick={() => seek(time + 5)} disabled={!hasMedia} aria-label={t('forward')}>»</button>
+        {#if capInZone}<span class="zonewarn" role="status">{t('capInZone', { app: t('safe.' + safe) })}</span>{/if}
         <span class="mono tcode">{tc(outTime)} <span class="muted">/ {tc(outDuration(segments))}</span></span>
       </div>
       <div class="row zoomctl">
+        <select class="ratio" bind:value={safe} aria-label={t('safeZones')} title={t('safeZonesTip')}>
+          <option value="">{t('safeOff')}</option>
+          {#each Object.keys(SAFE_ZONES) as k}<option value={k}>{t('safe.' + k)}</option>{/each}
+        </select>
         <select class="ratio" bind:value={canvasAspect} aria-label={t('canvasRatio')} title={t('canvasRatio')}>
           <option value="source">{t('ex.original')}</option>
           <option value="9:16">9:16</option>
@@ -1604,6 +1682,21 @@
 </div>
 
 {#if hasMedia}
+  <div class="sr-only" aria-live="polite" role="status">{liveMsg}</div>
+  <dialog class="hist" bind:this={histDialog} aria-label={t('history')}>
+    <div class="lhead"><h3>{t('history')}</h3><button class="sm icon" onclick={() => histDialog?.close()} aria-label={t('ex.close')}>✕</button></div>
+    <p class="muted small">{t('historyHint')}</p>
+    {#if !versions.length}<p class="muted">{t('noVersions')}</p>{/if}
+    <ol>
+      {#each versions as v (v.time)}
+        <li>
+          <span><b>{ago(v.time)}</b>{#if v.label} · <em>{v.label}</em>{/if}<br />
+            <span class="muted small">{t('versionInfo', { caps: v.doc.captions?.length ?? 0, strips: v.doc.segments?.length ?? 0, layers: v.doc.overlays?.length ?? 0, secs: Math.round((v.doc.segments ?? []).reduce((a, s) => a + s.end - s.start, 0)) })}</span></span>
+          <button class="sm" onclick={() => restoreVersion(v)}>{t('restore')}</button>
+        </li>
+      {/each}
+    </ol>
+  </dialog>
   {#if showKeys}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="keys-bg" onclick={() => (showKeys = false)}>
@@ -1819,6 +1912,14 @@
   .tpl[open] summary { margin-bottom: 4px; }
   .tpl-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .tpl-item { display: flex; gap: 2px; }
+  .hist { width: min(460px, calc(100vw - 32px)); max-height: 80vh; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .hist::backdrop { background: rgb(0 0 0 / .55); }
+  .hist .lhead { display: flex; justify-content: space-between; align-items: center; }
+  .hist h3 { margin: 0; }
+  .hist ol { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+  .hist li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; background: var(--card); border-radius: 8px; font-size: 13px; }
+  .proxybar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .2s; }
+  .zonewarn { font-size: 12px; color: #ffb86b; }
   .ratio { height: 30px; font-size: 12px; }
   .trbox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
   .trbox select { height: 32px; font-size: 12px; }

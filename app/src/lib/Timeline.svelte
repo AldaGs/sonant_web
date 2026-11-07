@@ -98,6 +98,15 @@
     const b = beats?.get(a.assetId) ?? [], off = a.offset ?? 0, len = audLen(a);
     return b.flatMap((x) => (x >= off && x < off + len ? [a.at + x - off] : []));
   };
+  // Keyboard: with a timeline item focused, ←/→ move it by 0.1s (Shift: 1s); one undo step per press.
+  function keyMove(e: KeyboardEvent, move: (d: number) => void) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    e.stopPropagation();
+    oncommit();
+    move((e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 1 : 0.1));
+  }
+  const fmtT = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
   const audLen = (a: AudioItem) => itemLen(a, durations.get(a.assetId) ?? 0);
   // Overlapping audio items stack into lanes; the Music & VO row grows to fit them.
   const lanes = $derived(audioLanes(audios, (id) => durations.get(id) ?? 0));
@@ -330,7 +339,9 @@
           <button class="ov" class:sel={o.id === selectedOverlay} class:txt={o.kind === 'text'} style:left={pct(o.at)}
             style:top="{(ovLanes.get(o.id) ?? 0) * 26}px" style:width={pct(Math.max(0.05, Math.min(o.len, total - o.at)))}
             title={ovLabel(o)} aria-pressed={o.id === selectedOverlay}
-            onpointerdown={(e) => moveOverlay(e, o)} onclick={(e) => e.stopPropagation()}>
+            onpointerdown={(e) => moveOverlay(e, o)} onclick={(e) => e.stopPropagation()}
+            onkeydown={(e) => keyMove(e, (d) => onoverlay(o.id, { at: Math.max(0, o.at + d) }))}
+            aria-label={t('a11y.item', { name: ovLabel(o), a: fmtT(o.at) })}>
             {#each o.kf ?? [] as k}<span class="kd" style:left="{(k.t / o.len) * 100}%" aria-hidden="true">◆</span>{/each}
             <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span>{ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
         {/each}
@@ -338,8 +349,9 @@
 
       <div class="row">
         {#each segments as s, i}
-          <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events (segment select is mouse-only; keyboard users split/delete via shortcuts) -->
-          <div class="seg" class:sel={i === selected} class:lift={s.fx?.lift} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
+          <div class="seg" class:sel={i === selected} role="button" tabindex="0" aria-pressed={i === selected}
+            aria-label={t('a11y.strip', { n: i + 1, name: clipName(s), a: fmtT(segPos[i].start), b: fmtT(segPos[i].start + segPos[i].len) })}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selected = i; } }} class:lift={s.fx?.lift} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
             onclick={() => (selected = i)} title={clipName(s)}>
             <div class="thumbs">
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
@@ -363,7 +375,10 @@
           <button class="cap" class:sel={selectedCapIds.has(c.id)}
             style:left={pct(startOf(c))} style:width={pct(Math.max(0.05, endOf(c) - startOf(c)))}
             title={c.words.map((w) => w.text).join(' ')}
-            onpointerdown={(e) => moveCap(e, c.id)}
+            onpointerdown={(e) => moveCap(e, c.id)} onkeydown={(e) => keyMove(e, (d) => {
+              const src = sourceById.get(c.id);
+              if (src) onmovecap(c.id, Math.max(0, startOf(src) + d), Math.min(duration, endOf(src) + d));
+            })} aria-label={t('a11y.cap', { n: i + 1, a: fmtT(startOf(c)), b: fmtT(endOf(c)), text: c.words.map((w) => w.text).join(' ') })}
             onclick={(e) => { e.stopPropagation(); onselectcap(c.id, e); }}>
             <span class="edge l" aria-hidden="true" onpointerdown={(e) => capEdge(e, c.id, 'start')}></span>{t('lineN', { n: i + 1 })}<span class="edge r" aria-hidden="true" onpointerdown={(e) => capEdge(e, c.id, 'end')}></span></button>
         {/each}
@@ -386,7 +401,9 @@
           <button class="aud" class:sel={item.id === selectedAudio} style:left={pct(item.at)}
             style:top="{(lanes.get(item.id) ?? 0) * 28}px" style:width={pct(Math.min(audLen(item), total - item.at))}
             title={names.get(item.assetId)} aria-pressed={item.id === selectedAudio}
-            onpointerdown={(e) => moveAudio(e, item)} onclick={(e) => e.stopPropagation()}>
+            onpointerdown={(e) => moveAudio(e, item)} onclick={(e) => e.stopPropagation()}
+            onkeydown={(e) => keyMove(e, (d) => onaudio(item.id, { at: Math.max(0, item.at + d) }))}
+            aria-label={t('a11y.item', { name: names.get(item.assetId) ?? '', a: fmtT(item.at) })}>
             {#each beatsOf(item) as b}<span class="beat" style:left="{((b - item.at) / audLen(item)) * 100}%" aria-hidden="true"></span>{/each}
             <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span>♪ {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
         {/each}
