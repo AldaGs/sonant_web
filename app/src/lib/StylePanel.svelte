@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { PRESETS, resolveStyle, type Style, type Animation, type AnimTarget, type Easing } from './render';
+  import { PRESETS, ANIM_MODES, resolveStyle, type Style, type Animation, type AnimTarget, type Easing } from './render';
   import type { Font } from './fonts';
   import type { Caption } from './captions';
   import { captionText } from './captions';
@@ -99,7 +99,7 @@
 
   // A preset sets the look; the current animation, timing, target and position are kept.
   function applyPreset(p: Style) {
-    const { x: _x, y: _y, animation: _a, animTarget: _at, duration: _d, easing: _e, ...look } = p;
+    const { x: _x, y: _y, animation: _a, animTarget: _at, animMode: _m, duration: _d, easing: _e, ...look } = p;
     write(look);
   }
 
@@ -220,6 +220,17 @@
 
 <section class="block">
   <h3>{t('timing')}</h3>
+  <div class="seg" role="radiogroup" aria-label={t('animMode')}>
+    {#each ANIM_MODES as m}
+      <button type="button" role="radio" aria-checked={(effectiveStyle.animMode ?? 'in') === m}
+        class:on={(effectiveStyle.animMode ?? 'in') === m}
+        disabled={effectiveStyle.animation === 'none'}
+        title={t('animModeDesc.' + m)}
+        onclick={() => updateField('animMode', m)}>
+        {t('mode.' + m)}
+      </button>
+    {/each}
+  </div>
   <div class="two">
     <label class="field">{t('durationMs')}
       <input type="number" min="50" max="3000" step="10" value={effectiveStyle.duration}

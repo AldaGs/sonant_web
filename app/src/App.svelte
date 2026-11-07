@@ -524,6 +524,12 @@
   // ---- Layout state ----
   let tab = $state<'transcript' | 'captions'>('transcript');
   let assetsOpen = $state(true);
+  // Phone layout: panels open one at a time as bottom sheets from the tool dock.
+  let sheet = $state<'assets' | 'text' | 'style' | null>(null);
+  function openSheet(s: 'assets' | 'text' | 'style', t?: 'transcript' | 'captions') {
+    if (t) tab = t;
+    sheet = sheet === s && (!t || tab === t) ? null : s;
+  }
   let zoom = $state(1); // 1 = fit to the stage
   let filter = $state<'all' | 'video' | 'audio'>('all');
   const shown = $derived(assets.filter((a) => filter === 'all' || a.kind === filter));
@@ -597,7 +603,7 @@
 
 <svelte:window onkeydown={keys} />
 
-<div class="app" class:no-assets={!assetsOpen}>
+<div class="app" class:no-assets={!assetsOpen} class:sheet-open={sheet !== null}>
   <header class="top">
     <div class="brand">
       <!-- Sonant sound-ring mark (icon/sonant-mark.svg) -->
@@ -614,16 +620,17 @@
       {#if assets.length}<span class="pill">{saveState}</span>{/if}
     </div>
     <div class="actions">
-      <select class="lang" value={ui.lang} onchange={(e) => setLang(e.currentTarget.value as 'en' | 'es')} aria-label="Interface language / Idioma">
+      <select class="lang desk" value={ui.lang} onchange={(e) => setLang(e.currentTarget.value as 'en' | 'es')} aria-label="Interface language / Idioma">
         <option value="en">EN</option>
         <option value="es">ES</option>
       </select>
-      <a class="btn" href="#/" title={t('allProjects')}>
+      <a class="btn mob-close icon" href="#/" title={t('allProjects')} aria-label={t('allProjects')}>✕</a>
+      <a class="btn desk" href="#/" title={t('allProjects')}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
         {t('projects')}
       </a>
-      <button onclick={() => saveToFile()} disabled={!assets.length} title={t('saveFileTip')}>{fileStatus ? t(fileStatus) : t('saveFile')}</button>
-      <button class:on={assetsOpen} onclick={() => (assetsOpen = !assetsOpen)} aria-pressed={assetsOpen} title={t('toggleAssets')}>
+      <button class="desk" onclick={() => saveToFile()} disabled={!assets.length} title={t('saveFileTip')}>{fileStatus ? t(fileStatus) : t('saveFile')}</button>
+      <button class="desk" class:on={assetsOpen} onclick={() => (assetsOpen = !assetsOpen)} aria-pressed={assetsOpen} title={t('toggleAssets')}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
         {t('assets')}
       </button>
@@ -631,11 +638,12 @@
     </div>
   </header>
 
-  {#if assetsOpen}
-    <aside class="assets panel">
+  {#if assetsOpen || sheet === 'assets'}
+    <aside class="assets panel" class:shown={sheet === 'assets'}>
+      <div class="grab" aria-hidden="true"></div>
       <div class="phead">
         <h2>{t('assets')}</h2>
-        <button class="icon sm" onclick={() => (assetsOpen = false)} aria-label={t('collapse')}>‹</button>
+        <button class="icon sm" onclick={() => { if (sheet) sheet = null; else assetsOpen = false; }} aria-label={t('collapse')}>‹</button>
       </div>
       <label class="import">
         {t('importMedia')}
@@ -685,10 +693,12 @@
     </aside>
   {/if}
 
-  <section class="text panel">
+  <section class="text panel" class:shown={sheet === 'text'}>
+    <div class="grab" aria-hidden="true"></div>
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected={tab === 'transcript'} class:on={tab === 'transcript'} onclick={() => (tab = 'transcript')}>{t('transcript')}</button>
       <button role="tab" aria-selected={tab === 'captions'} class:on={tab === 'captions'} onclick={() => (tab = 'captions')}>{t('captions')}</button>
+      <button class="icon sm sheet-x" onclick={() => (sheet = null)} aria-label={t('ex.close')}>✕</button>
     </div>
     <div class="scroll">
       {#if notice}<p class="notice">{t(notice)}</p>{/if}
@@ -813,7 +823,9 @@
     </div>
   </section>
 
-  <aside class="style panel">
+  <aside class="style panel" class:shown={sheet === 'style'}>
+    <div class="grab" aria-hidden="true"></div>
+    <div class="sheet-bar"><h2>{t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}>✕</button></div>
     <StylePanel
       bind:style
       {selectedCap}
@@ -878,6 +890,33 @@
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
       onaudio={(id, patch) => setAudio(id, patch)} />
   </section>
+
+  {#if sheet}
+    <button class="scrim" onclick={() => (sheet = null)} aria-label={t('ex.close')} tabindex="-1"></button>
+  {/if}
+
+  <nav class="dock" aria-label={t('tools')}>
+    <button class:on={sheet === 'assets'} onclick={() => openSheet('assets')}>
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m10 9 5 3-5 3z" /></svg>
+      <span>{t('assets')}</span>
+    </button>
+    <button class:on={sheet === 'text' && tab === 'transcript'} onclick={() => openSheet('text', 'transcript')}>
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 11h16M4 16h10" /></svg>
+      <span>{t('transcript')}</span>
+    </button>
+    <button class:on={sheet === 'text' && tab === 'captions'} onclick={() => openSheet('text', 'captions')}>
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M10 10a2 2 0 1 0 0 4M17 10a2 2 0 1 0 0 4" /></svg>
+      <span>{t('captions')}</span>
+    </button>
+    <button class:on={sheet === 'style'} onclick={() => openSheet('style')}>
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 20 10 4h2l6 16M7 14h8" /></svg>
+      <span>{t('style')}</span>
+    </button>
+    <button onclick={() => saveToFile()} disabled={!assets.length}>
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14" /></svg>
+      <span>{fileStatus ? t(fileStatus) : t('saveFile')}</span>
+    </button>
+  </nav>
 </div>
 
 {#if hasMedia}
@@ -1001,4 +1040,61 @@
     .pname { width: 14ch; }
     .thead { flex-wrap: wrap; gap: 8px; }
   }
+
+  /* Desktop-only / phone-only chrome */
+  .mob-close, .dock, .scrim, .grab, .sheet-x, .sheet-bar { display: none; }
+
+  /* Phone: preview + transport + timeline fill the screen; panels open as bottom sheets from a tool dock. */
+  @media (max-width: 760px) {
+    .app, .app.no-assets {
+      height: calc(100dvh / var(--ui-zoom)); min-height: 0;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr) auto auto;
+      grid-template-areas: 'top' 'center' 'tl' 'dock';
+    }
+    .top { position: static; flex-wrap: nowrap; padding: 8px 12px; border: 0; }
+    .top .brand { order: 1; flex: 1; justify-content: center; }
+    .top .actions { display: contents; }
+    .mob-close { display: inline-flex; order: 0; border: 0; font-size: 20px; text-decoration: none; }
+    .top .primary { order: 2; border-radius: 12px; }
+    .desk, .brand svg, .logo, .slash, .pill { display: none; }
+    .pname { width: 100%; max-width: 22ch; text-align: center; font-size: 16px; }
+
+    .stage { height: auto; }
+    .frame, .empty { inset: 8px 12px; }
+    .badge { display: none; }
+    .transport { padding: 6px 12px; border: 0; flex-wrap: nowrap; }
+    .zoomctl { display: none; }
+    .round { border: 0; }
+
+    .timeline-area { padding: 8px 12px; border-top: 1px solid var(--border-soft); max-height: 38dvh; overflow: auto; }
+    .thead h2 { display: none; }
+    .thead .row { justify-content: flex-start; flex-wrap: nowrap; overflow-x: auto; width: 100%; scrollbar-width: none; }
+    .thead .row > * { flex: none; }
+
+    .dock { grid-area: dock; display: flex; overflow-x: auto; scrollbar-width: none; gap: 4px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border-soft); background: var(--bg); }
+    .dock button { flex: 1 0 72px; height: auto; flex-direction: column; gap: 4px; padding: 6px 4px; border: 0; color: var(--muted); font-size: 12px; }
+    .dock button span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+    .dock button.on { color: var(--accent); }
+
+    /* Bottom sheets */
+    .assets, .text, .style {
+      display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; max-height: 72dvh;
+      border: 0; border-radius: 18px 18px 0 0; box-shadow: 0 -8px 30px rgb(0 0 0 / .5);
+      padding-bottom: env(safe-area-inset-bottom); animation: up .22s ease-out;
+    }
+    .assets.shown, .text.shown, .style.shown { display: flex; }
+    .text .scroll { max-height: none; flex: 1; min-height: 0; }
+    .style { overflow: auto; }
+    .grab { display: block; flex: none; width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 8px auto 0; }
+    .assets .grab { margin-top: -8px; }
+    .tabs { align-items: center; }
+    .sheet-x { display: inline-flex; margin-left: auto; border: 0; }
+    .sheet-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px 0; }
+    .sheet-bar button { border: 0; }
+    .scrim { display: block; position: fixed; inset: 0; z-index: 19; background: rgb(0 0 0 / .45); border: 0; border-radius: 0; height: auto; padding: 0; }
+    .tools, .acts { display: flex; }
+  }
+  @keyframes up { from { transform: translateY(100%); } }
 </style>

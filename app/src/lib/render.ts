@@ -25,6 +25,11 @@ export type Animation =
 
 export type AnimTarget = 'character' | 'word' | 'line' | 'all';
 export type AnimationTarget = AnimTarget;
+// When the animation plays: entering, leaving at the caption's end, or both. Between them the text holds still to be read.
+export type AnimMode = 'in' | 'out' | 'in-out';
+export const ANIM_MODES: AnimMode[] = ['in', 'out', 'in-out'];
+// Entry/exit animations (as opposed to emphasis effects like karaoke or pill that follow the spoken word).
+const ENTRY = new Set<Animation>(['fade', 'pop', 'typewriter', 'elastic', 'slide-up', 'slide-in', 'glitch', 'zoom-in', 'flip', 'drop', 'shake', 'spin', 'blur-in', 'rise', 'swipe-up']);
 
 export type Easing = 'linear' | 'ease-out' | 'ease-in-out' | 'back' | 'spring' | 'quart-out';
 
@@ -41,7 +46,8 @@ export type Style = {
   uppercase: boolean;
   animation: Animation;
   animTarget: AnimTarget; // whether animation affects per character, word, line, or all
-  duration: number; // ms, length of the in-animation
+  duration: number; // ms, length of the in (and/or out) animation
+  animMode: AnimMode;
   easing: Easing;
   x: number; // 0..1 center
   y: number;
@@ -54,7 +60,7 @@ export type Style = {
 export type Align = 'left' | 'center' | 'right';
 
 const base = {
-  italic: false, outline: 0.16, box: '', animTarget: 'word' as AnimTarget, duration: 320, easing: 'ease-out' as Easing, x: 0.5,
+  italic: false, outline: 0.16, box: '', animTarget: 'word' as AnimTarget, animMode: 'in' as AnimMode, duration: 320, easing: 'ease-out' as Easing, x: 0.5,
   align: 'center' as Align, lineHeight: 1.2, letterSpacing: 0, opacity: 1, radius: 0.22,
 };
 
@@ -110,7 +116,18 @@ export const EASINGS: Record<Easing, (p: number) => number> = {
   'quart-out': (p) => 1 - (1 - p) ** 4,
 };
 
-type Anim = Pick<Style, 'animation' | 'duration' | 'easing'> & { animTarget?: AnimTarget };
+type Anim = Pick<Style, 'animation' | 'duration' | 'easing'> & { animTarget?: AnimTarget; animMode?: AnimMode };
+
+// Progress 0..1 of an entry animation for a unit that appears at `start` and must be gone by `outEnd`.
+// 'in' plays once from start; 'out' plays in reverse just before outEnd; 'in-out' does both,
+// shortening each half if the unit is on screen for less than two durations.
+export function modeProgress(start: number, outEnd: number, t: number, d: number, mode: AnimMode = 'in'): number {
+  if (mode === 'in') return clamp((t - start) / d);
+  const de = Math.max(0.01, Math.min(d, (outEnd - start) / (mode === 'in-out' ? 2 : 1)));
+  if (t >= outEnd) return 0;
+  if (t >= outEnd - de) return clamp((outEnd - t) / de);
+  return mode === 'out' ? 1 : clamp((t - start) / de);
+}
 
 export type WordState = {
   visible: boolean;
@@ -138,10 +155,22 @@ export function computeAnimState(
   t: number,
   a: Anim,
   textLength: number = 1,
+  outEnd: number = end,
 ): WordState {
   const anim = a.animation;
-  const d = Math.max(0.01, a.duration / 1000);
+  let d = Math.max(0.01, a.duration / 1000);
   const ease = EASINGS[a.easing] ?? EASINGS['ease-out'];
+  // Out / in-out: map t onto the in-animation's clock — held at its end while the text is read,
+  // then played backwards so the unit leaves exactly at outEnd.
+  const mode = a.animMode ?? 'in';
+  let gone = false;
+  if (mode !== 'in' && ENTRY.has(anim)) {
+    d = Math.max(0.01, Math.min(d, (outEnd - start) / (mode === 'in-out' ? 2 : 1)));
+    if (t >= outEnd) gone = true;
+    else if (t >= outEnd - d) t = start + (outEnd - t);
+    else if (mode === 'out') t = start + d;
+    if (anim !== 'typewriter') end = Math.max(end, start + d);
+  }
   const active = anim !== 'none' && anim !== 'fade' && t >= start && t < end;
   const spoken = t >= start;
 
@@ -233,6 +262,7 @@ export function computeAnimState(
     // First half: collapse scaleX to 0; second half: expand back to 1
     scaleX = p < 0.5 ? 1 - p * 2 : (p - 0.5) * 2;
     alpha = p < 0.5 ? 1 - p : p;
+    if (gone) visible = false;
     return { visible, active, highlighted: active, scale, scaleX, scaleY, dx, dy, rotation, alpha, chars, glowBlur, pill, blur, skewX, clipY };
   } else if (anim === 'drop') {
     // CapCut "Drop": falls from above with a gravity bounce.
@@ -278,6 +308,7 @@ export function computeAnimState(
     alpha = clamp(p);
   }
 
+  if (gone) visible = false;
   scaleX = scaleX !== 1 ? scaleX : scale;
   scaleY = scaleY !== 1 ? scaleY : scale;
 
@@ -298,6 +329,7 @@ export function wordState(
   t: number,
   a: Anim,
   range?: { start: number; end: number },
+  outEnd?: number,
 ): WordState {
   const target = a.animTarget ?? (a.animation === 'fade' ? 'all' : 'word');
   let start = w.start;
@@ -308,7 +340,7 @@ export function wordState(
   } else if (target === 'all') {
     start = capStart;
   }
-  return computeAnimState(start, end, t, a, w.text.length);
+  return computeAnimState(start, end, t, a, w.text.length, outEnd);
 }
 
 // Wrap words into lines no wider than maxW.
@@ -353,13 +385,20 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
   const capEnd = c.words[c.words.length - 1].end;
   const target: AnimTarget = s.animTarget ?? (s.animation === 'fade' ? 'all' : 'word');
   const d = Math.max(0.01, s.duration / 1000);
+  const mode: AnimMode = s.animMode ?? 'in';
+  // Exit times: units leave one after another (in reading order) so the last one is gone at capEnd.
+  const nUnits = target === 'all' ? 1 : target === 'line' ? lines.length
+    : target === 'word' ? c.words.length : texts.reduce((n, x) => n + [...x].length, 0);
+  const gap = nUnits > 1 ? Math.min(d / 2, (0.3 * (capEnd - capStart)) / (nUnits - 1)) : 0;
+  const outEndOf = (unit: number) => capEnd - (nUnits - 1 - unit) * gap;
+  let charIndex = 0;
 
   // Precompute whole-caption typewriter progress if target === 'all'
   let allWordChars: number[] | null = null;
   if (s.animation === 'typewriter' && target === 'all') {
     const totalChars = texts.reduce((acc, str) => acc + str.length, 0);
     const span = Math.min(d, Math.max(0.05, capEnd - capStart));
-    const typedChars = t < capStart ? 0 : Math.ceil(totalChars * clamp((t - capStart) / span));
+    const typedChars = t < capStart ? 0 : Math.ceil(totalChars * modeProgress(capStart, capEnd, t, span, mode));
     let soFar = 0;
     allWordChars = texts.map((txt) => {
       const cnt = Math.min(txt.length, Math.max(0, typedChars - soFar));
@@ -368,7 +407,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
     });
   }
 
-  for (const line of lines) {
+  for (const [li, line] of lines.entries()) {
     const lw = line.reduce((a, i) => a + widths[i], 0) + space * (line.length - 1);
     const align = s.align ?? 'center';
     let x = align === 'left' ? s.x * W - maxW / 2 : align === 'right' ? s.x * W + maxW / 2 - lw : s.x * W - lw / 2;
@@ -381,7 +420,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
     if (s.animation === 'typewriter' && target === 'line') {
       const lineChars = line.reduce((acc, i) => acc + texts[i].length, 0);
       const span = Math.min(d, Math.max(0.05, lineEnd - lineStart));
-      const typedChars = t < lineStart ? 0 : Math.ceil(lineChars * clamp((t - lineStart) / span));
+      const typedChars = t < lineStart && mode === 'in' ? 0 : Math.ceil(lineChars * modeProgress(mode === 'out' ? capStart : lineStart, outEndOf(li), t, span, mode));
       let soFar = 0;
       lineWordChars = new Map<number, number>();
       for (const i of line) {
@@ -399,7 +438,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
           : undefined;
 
     const states = line.map((i) => {
-      const st = wordState(c.words[i], capStart, t, s, range);
+      const st = wordState(c.words[i], capStart, t, s, range, outEndOf(target === 'all' ? 0 : target === 'line' ? li : i));
       if (allWordChars) {
         const cnt = allWordChars[i];
         return { ...st, visible: cnt > 0, chars: cnt };
@@ -435,12 +474,13 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
         }
         const w = c.words[i];
         const wordDur = Math.max(0.01, w.end - w.start);
-        const charSpan = wordDur / numChars;
+        // Stagger letters within the animation duration (not the whole word), so they settle and can be read.
+        const charSpan = Math.min(wordDur, d) / numChars;
 
         chars.forEach((ch, j) => {
           const charStart = w.start + j * charSpan;
           const charEnd = charStart + charSpan;
-          const cst = computeAnimState(charStart, charEnd, t, s, 1);
+          const cst = computeAnimState(charStart, charEnd, t, s, 1, outEndOf(charIndex + j));
           if (!cst.visible) return;
 
           const prefix = chars.slice(0, j).join('');
@@ -490,6 +530,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
           ctx.restore();
         });
 
+        charIndex += numChars;
         x += wordW + space;
       });
     } else {
