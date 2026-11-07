@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import { exportVideo, outputSize, type Aspect, type Res, type Quality, type ExportSource } from './export';
   import type { Caption } from './captions';
   import type { Segment } from './cuts';
@@ -95,7 +96,7 @@
 <dialog bind:this={dialog} oncancel={(e) => running && e.preventDefault()} aria-labelledby="ex-title">
   <div class="head">
     <h3 id="ex-title">{t('ex.title')}</h3>
-    <button class="icon sm" onclick={() => dialog?.close()} disabled={running} aria-label={t('ex.close')}>✕</button>
+    <button class="icon sm" onclick={() => dialog?.close()} disabled={running} aria-label={t('ex.close')}><Icon name="close" /></button>
   </div>
 
   <fieldset disabled={running}>

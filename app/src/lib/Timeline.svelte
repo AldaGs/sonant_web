@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
+  import type { IconName } from './icons';
   import { outDuration, outLen, toOutput, toSource, captionsForOutput, type Segment } from './cuts';
   import { startOf, endOf, type Caption } from './captions';
   import type { Thumb } from './thumbs';
@@ -91,7 +93,8 @@
   }
   const ovLanes = $derived(stackLanes(overlays));
   const ovCount = $derived(Math.max(1, ...[...ovLanes.values()].map((l) => l + 1)));
-  const ovLabel = (o: Overlay) => (o.kind === 'text' ? 'T ' + (o.text ?? '') : (o.kind === 'image' ? '▣ ' : '⧉ ') + (names.get(o.assetId ?? '') ?? ''));
+  const ovLabel = (o: Overlay) => (o.kind === 'text' ? o.text ?? '' : names.get(o.assetId ?? '') ?? '');
+  const ovIcon = (o: Overlay) => (o.kind === 'text' ? 'title' : o.kind === 'image' ? 'image' : 'picture_in_picture_alt') as IconName;
 
   // Beat times of an audio item in output time (only the part that plays).
   const beatsOf = (a: AudioItem) => {
@@ -342,8 +345,8 @@
             onpointerdown={(e) => moveOverlay(e, o)} onclick={(e) => e.stopPropagation()}
             onkeydown={(e) => keyMove(e, (d) => onoverlay(o.id, { at: Math.max(0, o.at + d) }))}
             aria-label={t('a11y.item', { name: ovLabel(o), a: fmtT(o.at) })}>
-            {#each o.kf ?? [] as k}<span class="kd" style:left="{(k.t / o.len) * 100}%" aria-hidden="true">◆</span>{/each}
-            <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span>{ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
+            {#each o.kf ?? [] as k}<span class="kd" style:left="{(k.t / o.len) * 100}%" aria-hidden="true"><Icon name="diamond" size={10} /></span>{/each}
+            <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span><Icon name={ovIcon(o)} size={13} /> {ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
         {/each}
       </div>
 
@@ -356,8 +359,8 @@
             <div class="thumbs">
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>
-            {#if s.fx?.trans && i > 0}<span class="trn" title={t('trans.' + s.fx.trans)} aria-hidden="true">⧖</span>{/if}
-            <span class="cname">{s.fx?.lift ? t('gap') : s.fx?.hold ? '❄ ' + s.fx.hold + 's' : clipName(s)}{s.fx?.zoom ? ' ⤢' : ''}{s.fx?.speed ? ` ${s.fx.speed}×` : ''}</span>
+            {#if s.fx?.trans && i > 0}<span class="trn" title={t('trans.' + s.fx.trans)} aria-hidden="true"><Icon name="transition_fade" size={13} /></span>{/if}
+            <span class="cname">{#if s.fx?.hold}<Icon name="ac_unit" size={12} /> {s.fx.hold}s{:else}{s.fx?.lift ? t('gap') : clipName(s)}{/if}{#if s.fx?.zoom} <Icon name="zoom_in" size={12} />{/if}{s.fx?.speed ? ` ${s.fx.speed}×` : ''}</span>
             {#if i === selected}
               <div class="handle l" role="slider" tabindex="-1" aria-label={t('trimStart')} aria-valuenow={s.start}
                 onpointerdown={(e) => edge(e, i, 'start')}></div>
@@ -405,7 +408,7 @@
             onkeydown={(e) => keyMove(e, (d) => onaudio(item.id, { at: Math.max(0, item.at + d) }))}
             aria-label={t('a11y.item', { name: names.get(item.assetId) ?? '', a: fmtT(item.at) })}>
             {#each beatsOf(item) as b}<span class="beat" style:left="{((b - item.at) / audLen(item)) * 100}%" aria-hidden="true"></span>{/each}
-            <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span>♪ {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
+            <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span><Icon name="music_note" size={13} /> {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
         {/each}
       </div>
 

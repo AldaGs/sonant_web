@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import { onMount } from 'svelte';
   import { t, ui, setLang } from './i18n.svelte';
   import {
@@ -115,7 +116,7 @@
           {t('openProjectFile')}
           <input type="file" accept=".sonant" hidden disabled={busy} onchange={(e) => openFile(e.currentTarget.files?.[0])} />
         </label>
-        <button class="primary" onclick={newProject}>+ {t('newProject')}</button>
+        <button class="primary" onclick={newProject}><Icon name="add" /> {t('newProject')}</button>
       </div>
     </div>
     {#if error}<p class="error">{t(error)}</p>{/if}
@@ -123,7 +124,7 @@
     {#if loaded && !projects.length}
       <div class="empty">
         <p>{t('noProjects')}</p>
-        <button class="primary" onclick={newProject}>+ {t('newProject')}</button>
+        <button class="primary" onclick={newProject}><Icon name="add" /> {t('newProject')}</button>
       </div>
     {:else}
       <ul class="grid">
@@ -148,7 +149,7 @@
             </div>
             <div class="more">
               <button class="sm icon" aria-label={t('projectActions', { name: p.name || t('untitled') })} aria-expanded={menu === p.id}
-                onclick={(e) => { e.stopPropagation(); menu = menu === p.id ? null : p.id; }}>⋯</button>
+                onclick={(e) => { e.stopPropagation(); menu = menu === p.id ? null : p.id; }}><Icon name="more_horiz" /></button>
               {#if menu === p.id}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
                 <div class="menu" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>

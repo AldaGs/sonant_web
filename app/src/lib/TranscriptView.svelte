@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import type { Caption, Word } from './captions';
   import { isCut, type Segment } from './cuts';
   import { isFiller, search } from './transcript';
@@ -124,7 +125,7 @@
 
 <div class="tools">
   <div class="search">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+    <span class="sic"><Icon name="search" /></span>
     <input type="search" bind:value={query} placeholder={t('searchTranscript')} aria-label={t('searchTranscript')}
       onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), nextHit(e.shiftKey ? -1 : 1))} />
     {#if query.trim()}
@@ -175,7 +176,7 @@
         <option value={speakers.length}>{t('newSpeaker')}</option>
       </select>
       <button class="sm" onclick={toggleSelection}>{selAllCut ? t('restoreSel') : t('cutSel')}</button>
-      <button class="sm icon" onclick={() => (anchor = focus = -1)} aria-label={t('clearSel')}>✕</button>
+      <button class="sm icon" onclick={() => (anchor = focus = -1)} aria-label={t('clearSel')}><Icon name="close" /></button>
     </div>
   {/if}
 </div>
@@ -200,7 +201,7 @@
       <p>
         {#each p as i}<span id="w{i}" role="option" aria-selected={hasSel && i >= lo && i <= hi} data-i={i} class="w" class:cut={cut[i]}
             class:cur={i === current} class:sel={hasSel && i >= lo && i <= hi}
-            class:hit={hitSet.has(i)} class:filler={isFiller(words[i])} class:will={willCut.has(words[i].start)}>{words[i].text}</span>{' '}{#if pauseAfter.has(i)}<span class="pause" aria-hidden="true">⏸ {pauseAfter.get(i)!.toFixed(1)}s</span>{' '}{/if}{/each}
+            class:hit={hitSet.has(i)} class:filler={isFiller(words[i])} class:will={willCut.has(words[i].start)}>{words[i].text}</span>{' '}{#if pauseAfter.has(i)}<span class="pause" aria-hidden="true"><Icon name="pause" size={12} /> {pauseAfter.get(i)!.toFixed(1)}s</span>{' '}{/if}{/each}
       </p>
     </div>
   {/each}
@@ -209,7 +210,7 @@
 <style>
   .tools { display: grid; gap: 10px; }
   .search { position: relative; display: flex; align-items: center; }
-  .search svg { position: absolute; left: 12px; color: var(--muted); pointer-events: none; }
+  .search .sic { position: absolute; left: 12px; color: var(--muted); pointer-events: none; display: flex; }
   .search input { width: 100%; height: 42px; padding-left: 38px; padding-right: 48px; }
   .count { position: absolute; right: 12px; font-size: 12px; color: var(--muted); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }

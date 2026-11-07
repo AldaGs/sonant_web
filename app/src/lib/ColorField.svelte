@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import 'vanilla-colorful/hex-color-picker.js';
   import { t } from './i18n.svelte';
 
@@ -9,7 +10,7 @@
     label: string;
     oninput: (hex: string) => void; // live, while dragging
     onchange: (hex: string) => void; // final value of a gesture
-    onclear?: () => void; // shows a ✕ (e.g. "no fill")
+    onclear?: () => void; // shows a clear button (e.g. "no fill")
   } = $props();
 
   const PALETTE = ['#FFFFFF', '#000000', '#C8F560', '#FFE600', '#FF3366', '#33CCFF', '#FF9F1C', '#7C5CFF'];
@@ -92,7 +93,7 @@
       onclick={() => (open ? close() : (open = true))}></button>
     <input class="hex" value={value.toUpperCase()} aria-label={label} spellcheck="false"
       onchange={(e) => pick(norm(e.currentTarget.value.trim()))} />
-    {#if onclear}<button class="x" title={t('removeFill')} aria-label={t('removeFill')} onclick={onclear}>✕</button>{/if}
+    {#if onclear}<button class="x" title={t('removeFill')} aria-label={t('removeFill')} onclick={onclear}><Icon name="close" size={14} /></button>{/if}
   </div>
 
   {#if open}
@@ -104,7 +105,7 @@
           onchange={(e) => pick(norm(e.currentTarget.value.trim()))} />
         {#if hasEyedropper}
           <button class="eye" onclick={eyedrop} title={t('eyedropper')} aria-label={t('eyedropper')}>
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.5 13.5 5.5M9 4l3 3-6.5 6.5H3v-2.5z" /></svg>
+            <Icon name="colorize" size={16} />
           </button>
         {/if}
       </div>
@@ -146,7 +147,6 @@
   .hex.big { height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); font-size: 13px; }
   .hex.big:focus-visible { border-color: var(--accent); }
   .eye { width: 30px; height: 30px; padding: 0; border-radius: 6px; }
-  .eye svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
   .sws { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .sws button { width: 20px; height: 20px; padding: 0; border-radius: 5px; border: 1px solid rgb(255 255 255 / .18); }
   .sws button.on { outline: 2px solid var(--accent); outline-offset: 1px; }

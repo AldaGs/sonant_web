@@ -27,6 +27,7 @@
   import * as store from './lib/store';
   import { t, ui, setLang } from './lib/i18n.svelte';
   import Timeline from './lib/Timeline.svelte';
+  import Icon from './lib/Icon.svelte';
   import ExportDialog from './lib/ExportDialog.svelte';
   import StylePanel from './lib/StylePanel.svelte';
   import TranscriptView from './lib/TranscriptView.svelte';
@@ -1173,18 +1174,18 @@
         <option value="en">EN</option>
         <option value="es">ES</option>
       </select>
-      <a class="btn mob-close icon" href="#/" title={t('allProjects')} aria-label={t('allProjects')}>✕</a>
+      <a class="btn mob-close icon" href="#/" title={t('allProjects')} aria-label={t('allProjects')}><Icon name="close" /></a>
       <a class="btn desk" href="#/" title={t('allProjects')}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
+        <Icon name="grid_view" />
         {t('projects')}
       </a>
-      <button class="desk" onclick={() => saveToFile()} disabled={!assets.length} title={t('saveFileTip')}>{fileStatus ? t(fileStatus) : t('saveFile')}</button>
-      <button class="desk" onclick={openHistory} disabled={!assets.length} title={t('historyTip')}>{t('history')}</button>
+      <button class="desk" onclick={() => saveToFile()} disabled={!assets.length} title={t('saveFileTip')}><Icon name="save" size={16} /> {fileStatus ? t(fileStatus) : t('saveFile')}</button>
+      <button class="desk" onclick={openHistory} disabled={!assets.length} title={t('historyTip')}><Icon name="history" size={16} /> {t('history')}</button>
       <button class="desk" class:on={assetsOpen} onclick={() => (assetsOpen = !assetsOpen)} aria-pressed={assetsOpen} title={t('toggleAssets')}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
+        <Icon name="view_sidebar" />
         {t('assets')}
       </button>
-      <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length || !firstVideo}>{t('ex.title')}</button>
+      <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length || !firstVideo}><Icon name="ios_share" size={16} /> {t('ex.title')}</button>
     </div>
   </header>
 
@@ -1193,10 +1194,10 @@
       <div class="grab" aria-hidden="true"></div>
       <div class="phead">
         <h2>{t('assets')}</h2>
-        <button class="icon sm" onclick={() => { if (sheet) sheet = null; else assetsOpen = false; }} aria-label={t('collapse')}>‹</button>
+        <button class="icon sm" onclick={() => { if (sheet) sheet = null; else assetsOpen = false; }} aria-label={t('collapse')}><Icon name="chevron_left" /></button>
       </div>
       <label class="import">
-        {t('importMedia')}
+        <Icon name="upload" /> {t('importMedia')}
         <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
       </label>
       <div class="filters" role="group" aria-label={t('assets')}>
@@ -1211,17 +1212,17 @@
             <div class="thumb" class:used={used.has(a.id)}>
               {#if a.kind === 'image' && urls[a.id]}<img src={urls[a.id]} alt="" />
               {:else if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
-              {:else}<span class="muted">{a.kind === 'audio' ? '♪ ' + t('filter.audio') : t('filter.video')}</span>{/if}
+              {:else}<span class="muted ph">{#if a.kind === 'audio'}<Icon name="music_note" size={20} />{/if}{a.kind === 'audio' ? t('filter.audio') : t('filter.video')}</span>{/if}
               {#if a.kind !== 'image'}<span class="dur mono">{fmt(a.duration)}</span>{/if}
               {#if a.id in proxyPct}<span class="proxybar" style:width="{proxyPct[a.id] * 100}%" title={t('proxyBuilding')}></span>{/if}
               <span class="acts">
                 <button class="sm icon" onclick={() => addToTimeline(a)} aria-label={t('addToTimeline', { name: a.name })} title={t('addToTimeline', { name: a.name })}>+</button>
                 {#if a.kind === 'video'}
                   <button class="sm icon" class:on={!!a.proxy} aria-pressed={!!a.proxy} disabled={a.id in proxyPct}
-                    onclick={() => (a.proxy ? dropProxy(a) : buildProxy(a))} title={a.proxy ? t('proxyOn') : t('proxyMake')} aria-label={a.proxy ? t('proxyOn') : t('proxyMake')}>⚡</button>
-                  <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}>⧉</button>
+                    onclick={() => (a.proxy ? dropProxy(a) : buildProxy(a))} title={a.proxy ? t('proxyOn') : t('proxyMake')} aria-label={a.proxy ? t('proxyOn') : t('proxyMake')}><Icon name="bolt" /></button>
+                  <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}><Icon name="picture_in_picture_alt" /></button>
                 {/if}
-                <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}>✕</button>
+                <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}><Icon name="close" /></button>
               </span>
             </div>
             <span class="aname" title={a.name}>{a.name}</span>
@@ -1237,9 +1238,9 @@
             <li>
               <span class="mono muted small">{i + 1}</span>
               <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
-              <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}>↑</button>
-              <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}>↓</button>
-              <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}>✕</button>
+              <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}><Icon name="arrow_upward" /></button>
+              <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}><Icon name="arrow_downward" /></button>
+              <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}><Icon name="close" /></button>
             </li>
           {/each}
         </ol>
@@ -1255,7 +1256,7 @@
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected={tab === 'transcript'} class:on={tab === 'transcript'} onclick={() => (tab = 'transcript')}>{t('transcript')}</button>
       <button role="tab" aria-selected={tab === 'captions'} class:on={tab === 'captions'} onclick={() => (tab = 'captions')}>{t('captions')}</button>
-      <button class="icon sm sheet-x" onclick={() => (sheet = null)} aria-label={t('ex.close')}>✕</button>
+      <button class="icon sm sheet-x" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button>
     </div>
     <div class="scroll">
       {#if notice}<p class="notice">{t(notice)}</p>{/if}
@@ -1319,19 +1320,19 @@
                     onchange={(e) => update(i, { ...c, tr: e.currentTarget.value.trim() || undefined })}></textarea>
                 {/if}
                 {#if c.style?.animation}
-                  <span class="cap-anim-tag" title={t('animBadge', { name: t('anim.' + c.style.animation) })}>⚡ {t('anim.' + c.style.animation)}</span>
+                  <span class="cap-anim-tag" title={t('animBadge', { name: t('anim.' + c.style.animation) })}><Icon name="animation" size={13} /> {t('anim.' + c.style.animation)}</span>
                 {/if}
               </div>
               <span class="tools">
-                <button class="sm icon" title={t('playHere')} aria-label={t('playHere')} onclick={() => seek(startOf(c))}>▶</button>
-                <button class="sm icon" title={t('splitCap')} aria-label={t('splitCap')} disabled={c.words.length < 2} onclick={() => setCaps(split(captions, i))}>✂</button>
-                <button class="sm icon" title={t('mergeNext')} aria-label={t('mergeNext')} disabled={i === captions.length - 1} onclick={() => setCaps(mergeNext(captions, i))}>⤓</button>
-                <button class="sm icon" title={t('del')} aria-label={t('del')} onclick={() => setCaps(captions.toSpliced(i, 1))}>✕</button>
+                <button class="sm icon" title={t('playHere')} aria-label={t('playHere')} onclick={() => seek(startOf(c))}><Icon name="play_arrow" /></button>
+                <button class="sm icon" title={t('splitCap')} aria-label={t('splitCap')} disabled={c.words.length < 2} onclick={() => setCaps(split(captions, i))}><Icon name="content_cut" /></button>
+                <button class="sm icon" title={t('mergeNext')} aria-label={t('mergeNext')} disabled={i === captions.length - 1} onclick={() => setCaps(mergeNext(captions, i))}><Icon name="merge" /></button>
+                <button class="sm icon" title={t('del')} aria-label={t('del')} onclick={() => setCaps(captions.toSpliced(i, 1))}><Icon name="close" /></button>
               </span>
             </li>
           {/each}
         </ol>
-        <button class="add" onclick={addLine} disabled={!hasMedia}>{t('addLine')}</button>
+        <button class="add" onclick={addLine} disabled={!hasMedia}><Icon name="add" /> {t('addLine')}</button>
         {#if captions.length}
           <h3 class="sub">{t('subtitleFiles')}</h3>
           <div class="row">
@@ -1386,9 +1387,9 @@
     </div>
     <div class="transport">
       <div class="row">
-        <button class="round" onclick={() => seek(time - 5)} disabled={!hasMedia} aria-label={t('back')}>«</button>
-        <button class="round play" onclick={toggle} disabled={!hasMedia} aria-label={paused ? t('play') : t('pause')}>{paused ? '▶' : '❚❚'}</button>
-        <button class="round" onclick={() => seek(time + 5)} disabled={!hasMedia} aria-label={t('forward')}>»</button>
+        <button class="round" onclick={() => seek(time - 5)} disabled={!hasMedia} aria-label={t('back')}><Icon name="replay_5" size={22} /></button>
+        <button class="round play" onclick={toggle} disabled={!hasMedia} aria-label={paused ? t('play') : t('pause')}><Icon name={paused ? 'play_arrow' : 'pause'} size={28} /></button>
+        <button class="round" onclick={() => seek(time + 5)} disabled={!hasMedia} aria-label={t('forward')}><Icon name="forward_5" size={22} /></button>
         {#if capInZone}<span class="zonewarn" role="status">{t('capInZone', { app: t('safe.' + safe) })}</span>{/if}
         <span class="mono tcode">{tc(outTime)} <span class="muted">/ {tc(outDuration(segments))}</span></span>
       </div>
@@ -1404,17 +1405,17 @@
           <option value="4:5">4:5</option>
           <option value="16:9">16:9</option>
         </select>
-        <button class="sm icon" onclick={() => (zoom = Math.max(0.5, zoom - 0.25))} aria-label={t('zoomOut')}>−</button>
+        <button class="sm icon" onclick={() => (zoom = Math.max(0.5, zoom - 0.25))} aria-label={t('zoomOut')}><Icon name="zoom_out" /></button>
         <span class="mono small zl">{zoom === 1 ? t('fit') : `${Math.round(zoom * 100)}%`}</span>
-        <button class="sm icon" onclick={() => (zoom = Math.min(3, zoom + 0.25))} aria-label={t('zoomIn')}>+</button>
-        <button class="sm" class:on={zoom === 1} onclick={() => (zoom = 1)} aria-pressed={zoom === 1}>⛶ {t('fit')}</button>
+        <button class="sm icon" onclick={() => (zoom = Math.min(3, zoom + 0.25))} aria-label={t('zoomIn')}><Icon name="zoom_in" /></button>
+        <button class="sm" class:on={zoom === 1} onclick={() => (zoom = 1)} aria-pressed={zoom === 1}><Icon name="fit_screen" /> {t('fit')}</button>
       </div>
     </div>
   </section>
 
   <aside class="style panel" class:shown={sheet === 'style'}>
     <div class="grab" aria-hidden="true"></div>
-    <div class="sheet-bar"><h2>{t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}>✕</button></div>
+    <div class="sheet-bar"><h2>{t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button></div>
     <details class="tpl">
       <summary>{t('templates')}</summary>
       <div class="tpl-list">
@@ -1422,11 +1423,11 @@
           <div class="tpl-item">
             <button class="sm" onclick={() => applyTemplate(tp)} disabled={!hasMedia}
               title={t('applyTemplateTip', { n: tp.layers.length })}>{tp.builtin ? t('tpl.' + tp.id) : tp.name}</button>
-            {#if !tp.builtin}<button class="sm icon" onclick={() => deleteTemplate(tp)} aria-label={t('del')}>✕</button>{/if}
+            {#if !tp.builtin}<button class="sm icon" onclick={() => deleteTemplate(tp)} aria-label={t('del')}><Icon name="close" /></button>{/if}
           </div>
         {/each}
       </div>
-      <button class="sm" onclick={saveTemplate} disabled={!hasMedia} title={t('saveTemplateTip')}>＋ {t('saveTemplate')}</button>
+      <button class="sm" onclick={saveTemplate} disabled={!hasMedia} title={t('saveTemplateTip')}><Icon name="add" /> {t('saveTemplate')}</button>
     </details>
     {#if selected >= 0 && segments[selected] && !selOverlay}
       {@const c = selColor}
@@ -1470,7 +1471,7 @@
             <input type="range" min="0" max="1" step="0.01" value={fc.y} oninput={(e) => setFocus({ ...fc, y: +e.currentTarget.value })} />
           </label>
           <div class="lrow">
-            <button class="sm" onclick={() => autoReframe(selected)} disabled={reframing}>{reframing ? t('detecting') : '◎ ' + t('autoReframe')}</button>
+            <button class="sm" onclick={() => autoReframe(selected)} disabled={reframing}>{#if !reframing}<Icon name="center_focus_strong" />{/if} {reframing ? t('detecting') : t('autoReframe')}</button>
             <button class="sm" onclick={autoReframeAll} disabled={reframing}>{t('autoReframeAll')}</button>
             <button class="sm" onclick={() => (setFocus(undefined), (colorEditing = false))}>{t('center')}</button>
           </div>
@@ -1486,7 +1487,7 @@
       <section class="layer" aria-label={t('layer')} onchange={doneEditing} onpointerup={doneEditing}>
         <div class="lhead">
           <h3>{o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
-          <button class="sm icon" onclick={() => (selectedOverlay = '')} aria-label={t('ex.close')}>✕</button>
+          <button class="sm icon" onclick={() => (selectedOverlay = '')} aria-label={t('ex.close')}><Icon name="close" /></button>
         </div>
         {#if o.kind === 'text'}
           <label class="vol">{t('text')}
@@ -1503,11 +1504,11 @@
           </div>
         {/if}
         <div class="keyrow" role="group" aria-label={t('keyframes')}>
-          <button class="sm icon" onclick={() => jumpKey(o, -1)} disabled={!o.kf?.length} title={t('prevKey')} aria-label={t('prevKey')}>◂</button>
+          <button class="sm icon" onclick={() => jumpKey(o, -1)} disabled={!o.kf?.length} title={t('prevKey')} aria-label={t('prevKey')}><Icon name="chevron_left" /></button>
           <button class="sm key" class:on={onKey} aria-pressed={onKey} onclick={() => toggleKey(o)}
-            title={onKey ? t('removeKey') : t('addKey')}>◆ {onKey ? t('removeKey') : t('addKey')}</button>
-          <button class="sm icon" onclick={() => jumpKey(o, 1)} disabled={!o.kf?.length} title={t('nextKey')} aria-label={t('nextKey')}>▸</button>
-          <button class="sm" onclick={() => punchIn(o)} title={t('punchLayerTip')}>⤢ {t('punchIn')}</button>
+            title={onKey ? t('removeKey') : t('addKey')}><Icon name="diamond" size={16} /> {onKey ? t('removeKey') : t('addKey')}</button>
+          <button class="sm icon" onclick={() => jumpKey(o, 1)} disabled={!o.kf?.length} title={t('nextKey')} aria-label={t('nextKey')}><Icon name="chevron_right" /></button>
+          <button class="sm" onclick={() => punchIn(o)} title={t('punchLayerTip')}><Icon name="zoom_in" /> {t('punchIn')}</button>
           {#if o.kf?.length}<button class="sm" onclick={() => clearKeys(o)}>{t('clearKeys')}</button>{/if}
         </div>
         {#if o.kf?.length}<p class="muted small keyhint">{t('keyHint', { n: o.kf.length })}</p>{/if}
@@ -1537,10 +1538,10 @@
           </label>
         {/if}
         <div class="lrow">
-          <button class="sm" class:on={o.tf.flipX} aria-pressed={!!o.tf.flipX} onclick={() => (setTf(o.id, { flipX: !o.tf.flipX }), doneEditing())}>⇋ {t('flip')}</button>
+          <button class="sm" class:on={o.tf.flipX} aria-pressed={!!o.tf.flipX} onclick={() => (setTf(o.id, { flipX: !o.tf.flipX }), doneEditing())}><Icon name="flip" /> {t('flip')}</button>
           <button class="sm" onclick={() => (setTf(o.id, { x: 0.5, y: 0.5, rotation: 0, crop: undefined, flipX: false, opacity: 1 }), doneEditing())}>{t('resetLayer')}</button>
-          <button class="sm icon" onclick={() => restack(1)} disabled={overlays.at(-1)?.id === o.id} title={t('bringForward')} aria-label={t('bringForward')}>⤒</button>
-          <button class="sm icon" onclick={() => restack(-1)} disabled={overlays[0]?.id === o.id} title={t('sendBackward')} aria-label={t('sendBackward')}>⤓</button>
+          <button class="sm icon" onclick={() => restack(1)} disabled={overlays.at(-1)?.id === o.id} title={t('bringForward')} aria-label={t('bringForward')}><Icon name="flip_to_front" /></button>
+          <button class="sm icon" onclick={() => restack(-1)} disabled={overlays[0]?.id === o.id} title={t('sendBackward')} aria-label={t('sendBackward')}><Icon name="flip_to_back" /></button>
           <button class="sm" onclick={removeOverlay}>{t('del')}</button>
         </div>
       </section>
@@ -1568,14 +1569,14 @@
       <h2>{t('timelineH')}</h2>
       <div class="row">
         {#if selAudio}
-          <span class="aname small selname">♪ {names.get(selAudio.assetId)}</span>
+          <span class="aname small selname"><Icon name="music_note" size={16} /> {names.get(selAudio.assetId)}</span>
           <label class="vol inline">{t('volume')}
             <input type="range" min="0" max="1" step="0.05" value={selAudio.volume}
               oninput={(e) => setAudio(selAudio.id, { volume: +e.currentTarget.value })} />
           </label>
           {@const ba = assets.find((a) => a.id === selAudio.assetId)}
           {#if ba?.beats?.length}
-            <span class="small mono" title={t('beatsFound', { n: ba.beats.length })}>♩ {ba.bpm} BPM</span>
+            <span class="small mono" title={t('beatsFound', { n: ba.beats.length })}><Icon name="graphic_eq" size={16} /> {ba.bpm} BPM</span>
             <button class="sm" onclick={() => cutOnBeats(selAudio)} title={t('cutBeatsTip')}>{t('cutBeats')}</button>
             <button class="sm" onclick={() => cutOnBeats(selAudio, 2)}>{t('cutBeats2')}</button>
           {:else}
@@ -1608,11 +1609,11 @@
             </label>
           {/if}
           <button class="sm" class:on={!!selFx.zoom} aria-pressed={!!selFx.zoom} title={t('punchTip')}
-            onclick={() => setFx(selFx.zoom ? { zoom: undefined, zoomIn: undefined } : { zoom: PUNCH_IN, zoomIn: true })}>⤢ {t('punchIn')}</button>
+            onclick={() => setFx(selFx.zoom ? { zoom: undefined, zoomIn: undefined } : { zoom: PUNCH_IN, zoomIn: true })}><Icon name="zoom_in" /> {t('punchIn')}</button>
           <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
             onclick={() => setFx({ lift: !selFx.lift || undefined })}>{t('lift')}</button>
           <button class="sm icon" class:on={selFx.behind} aria-pressed={!!selFx.behind} title={t('textBehind')} aria-label={t('textBehind')}
-            onclick={() => setFx({ behind: !selFx.behind })}>👤</button>
+            onclick={() => setFx({ behind: !selFx.behind })}><Icon name="person" /></button>
           <label class="vol">{t('background')}
             <select value={selFx.bg ?? ''} onchange={(e) => setFx({ bg: (e.currentTarget.value || undefined) as Fx['bg'] })}>
               <option value="">{t('bgOriginal')}</option>
@@ -1626,19 +1627,19 @@
           {/if}
           <span class="divider"></span>
         {/if}
-        <button class="sm" onclick={addText} disabled={!hasMedia} title={t('addTextTip')}>T+ {t('addText')}</button>
-        <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}>❄ {t('freeze')}</button>
-        <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}>{t('splitAt')}</button>
+        <button class="sm" onclick={addText} disabled={!hasMedia} title={t('addTextTip')}><Icon name="title" /> {t('addText')}</button>
+        <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
+        <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}><Icon name="content_cut" /> {t('splitAt')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
         <button class="sm icon" class:on={snapOn} aria-pressed={snapOn} title={t('snapTip')} aria-label={t('snap')}
-          onclick={() => (snapOn = !snapOn)}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 3v8a6 6 0 0 0 12 0V3"/><path d="M6 7h4M14 7h4"/></svg></button>
+          onclick={() => (snapOn = !snapOn)}><Icon name="magnet" /></button>
         <button class="sm icon" class:on={autoSelect} aria-pressed={autoSelect} title={t('autoSelectTip')} aria-label={t('autoSelect')}
-          onclick={() => (autoSelect = !autoSelect)}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v4M12 18v4"/><path d="M5 9l3 3-3 3"/><path d="M19 9l-3 3 3 3"/></svg></button>
-        <button class="sm icon" onclick={undo} disabled={!past.length} title={t('undo')} aria-label={t('undo')}>↶</button>
-        <button class="sm icon" onclick={redo} disabled={!future.length} title={t('redo')} aria-label={t('redo')}>↷</button>
-        <button class="sm icon" onclick={() => (tlZoom = Math.max(1, tlZoom / 1.5))} disabled={tlZoom <= 1} aria-label={t('zoomOut')}>−</button>
-        <button class="sm icon" onclick={() => (tlZoom = Math.min(16, tlZoom * 1.5))} aria-label={t('zoomIn')}>+</button>
-        <button class="sm icon" onclick={() => (showKeys = true)} title={t('keysTitle') + ' (?)'} aria-label={t('keysTitle')}>?</button>
+          onclick={() => (autoSelect = !autoSelect)}><Icon name="ads_click" /></button>
+        <button class="sm icon" onclick={undo} disabled={!past.length} title={t('undo')} aria-label={t('undo')}><Icon name="undo" /></button>
+        <button class="sm icon" onclick={redo} disabled={!future.length} title={t('redo')} aria-label={t('redo')}><Icon name="redo" /></button>
+        <button class="sm icon" onclick={() => (tlZoom = Math.max(1, tlZoom / 1.5))} disabled={tlZoom <= 1} aria-label={t('zoomOut')}><Icon name="zoom_out" /></button>
+        <button class="sm icon" onclick={() => (tlZoom = Math.min(16, tlZoom * 1.5))} aria-label={t('zoomIn')}><Icon name="zoom_in" /></button>
+        <button class="sm icon" onclick={() => (showKeys = true)} title={t('keysTitle') + ' (?)'} aria-label={t('keysTitle')}><Icon name="keyboard" /></button>
       </div>
     </div>
     <Timeline {segments} {time} {clips} {durations} {names} {thumbs} {peaks} {duration} {captions} {audios}
@@ -1659,23 +1660,23 @@
 
   <nav class="dock" aria-label={t('tools')}>
     <button class:on={sheet === 'assets'} onclick={() => openSheet('assets')}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m10 9 5 3-5 3z" /></svg>
+      <Icon name="video_library" size={24} />
       <span>{t('assets')}</span>
     </button>
     <button class:on={sheet === 'text' && tab === 'transcript'} onclick={() => openSheet('text', 'transcript')}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 11h16M4 16h10" /></svg>
+      <Icon name="description" size={24} />
       <span>{t('transcript')}</span>
     </button>
     <button class:on={sheet === 'text' && tab === 'captions'} onclick={() => openSheet('text', 'captions')}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M10 10a2 2 0 1 0 0 4M17 10a2 2 0 1 0 0 4" /></svg>
+      <Icon name="closed_caption" size={24} />
       <span>{t('captions')}</span>
     </button>
     <button class:on={sheet === 'style'} onclick={() => openSheet('style')}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 20 10 4h2l6 16M7 14h8" /></svg>
+      <Icon name="text_fields" size={24} />
       <span>{t('style')}</span>
     </button>
     <button onclick={() => saveToFile()} disabled={!assets.length}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14" /></svg>
+      <Icon name="download" size={24} />
       <span>{fileStatus ? t(fileStatus) : t('saveFile')}</span>
     </button>
   </nav>
@@ -1684,7 +1685,7 @@
 {#if hasMedia}
   <div class="sr-only" aria-live="polite" role="status">{liveMsg}</div>
   <dialog class="hist" bind:this={histDialog} aria-label={t('history')}>
-    <div class="lhead"><h3>{t('history')}</h3><button class="sm icon" onclick={() => histDialog?.close()} aria-label={t('ex.close')}>✕</button></div>
+    <div class="lhead"><h3>{t('history')}</h3><button class="sm icon" onclick={() => histDialog?.close()} aria-label={t('ex.close')}><Icon name="close" /></button></div>
     <p class="muted small">{t('historyHint')}</p>
     {#if !versions.length}<p class="muted">{t('noVersions')}</p>{/if}
     <ol>
@@ -1739,11 +1740,12 @@
   .panel { background: var(--panel); min-height: 0; display: flex; flex-direction: column; }
   .assets { grid-area: assets; border-right: 1px solid var(--border-soft); padding: 16px; gap: 12px; overflow: auto; }
   .phead { display: flex; justify-content: space-between; align-items: center; }
-  .import { display: flex; align-items: center; justify-content: center; height: 42px; border: 1px dashed var(--border);
+  .import { display: flex; align-items: center; justify-content: center; gap: 6px; height: 42px; border: 1px dashed var(--border);
     border-radius: 10px; cursor: pointer; }
   .import:hover { border-color: var(--accent); }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .asset { display: grid; gap: 4px; min-width: 0; }
+  .ph { display: inline-flex; align-items: center; gap: 4px; }
   .thumb { position: relative; aspect-ratio: 16 / 11; background: var(--tab-on); border-radius: 8px; overflow: hidden;
     display: grid; place-items: center; outline: 2px solid var(--accent); }
   .thumb img { width: 100%; height: 100%; object-fit: cover; }
