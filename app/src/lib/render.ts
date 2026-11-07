@@ -21,7 +21,8 @@ export type Animation =
   | 'spin'
   | 'blur-in'
   | 'rise'
-  | 'swipe-up';
+  | 'swipe-up'
+  | 'highlight';
 
 export type AnimTarget = 'character' | 'word' | 'line' | 'all';
 export type AnimationTarget = AnimTarget;
@@ -56,12 +57,20 @@ export type Style = {
   letterSpacing: number; // em (fraction of font size); 0 = normal
   opacity: number; // 0..1, whole caption
   radius: number; // background box corner radius, fraction of font size
+  boxAlpha: number; // 0..1, background box opacity
+  shadow: string; // drop shadow color; '' = none
+  shadowBlur: number; // fraction of font size
+  shadowX: number; // offset, fraction of font size
+  shadowY: number;
+  glow: string; // outer glow color; '' = none
+  glowSize: number; // fraction of font size
 };
 export type Align = 'left' | 'center' | 'right';
 
 const base = {
   italic: false, outline: 0.16, box: '', animTarget: 'word' as AnimTarget, animMode: 'in' as AnimMode, duration: 320, easing: 'ease-out' as Easing, x: 0.5,
   align: 'center' as Align, lineHeight: 1.2, letterSpacing: 0, opacity: 1, radius: 0.22,
+  boxAlpha: 0.88, shadow: '', shadowBlur: 0.12, shadowX: 0.04, shadowY: 0.06, glow: '', glowSize: 0.3,
 };
 
 // Presets: Classic + CapCut / TikTok viral styles
@@ -86,6 +95,7 @@ export const PRESETS: Record<string, Style> = {
   'Spin in': { ...base, family: 'Bebas Neue', weight: 400, size: 0.084, color: '#ffffff', highlight: '#38d9f5', stroke: '#001f27', outline: 0.12, uppercase: true, animation: 'spin', duration: 400, easing: 'spring', y: 0.75 },
   'Focus blur': { ...base, family: 'DM Serif Display', weight: 400, italic: true, size: 0.068, color: '#f0f4ff', highlight: '#818cf8', stroke: '#0a0a1a', outline: 0.06, uppercase: false, animation: 'blur-in', duration: 450, easing: 'quart-out', y: 0.78 },
   'Float up': { ...base, family: 'Montserrat', weight: 700, size: 0.062, color: '#ffffff', highlight: '#34d399', stroke: '#001a0f', outline: 0.12, uppercase: false, animation: 'rise', duration: 400, easing: 'back', y: 0.76 },
+  Highlighter: { ...base, family: 'Montserrat', weight: 800, size: 0.062, color: '#111111', highlight: '#ffe600', stroke: '#000000', outline: 0, uppercase: false, animation: 'highlight', duration: 260, easing: 'quart-out', y: 0.78, shadow: '#000000' },
   'Swipe reveal': { ...base, family: 'Inter', weight: 800, size: 0.058, color: '#ffffff', highlight: '#fb923c', stroke: '#1a0800', outline: 0.14, uppercase: true, animation: 'swipe-up', duration: 320, easing: 'quart-out', y: 0.8 },
 };
 export const DEFAULT_STYLE = PRESETS['Viral pop'];
@@ -146,6 +156,7 @@ export type WordState = {
   blur: number;      // px blur for blur-in
   skewX: number;     // radians skew on X axis
   clipY: number;     // 0..1 — fraction of the word height revealed from bottom (swipe-up)
+  hlGrow: number;    // 0..1 — width of the highlight bar behind the word (highlight); 0 = none
 };
 
 // Animation state for any target unit (caption, line, word, or character).
@@ -188,6 +199,7 @@ export function computeAnimState(
   let blur = 0;
   let skewX = 0;
   let clipY = 1; // 1 = fully visible, 0 = hidden
+  let hlGrow = 0;
 
   if (anim === 'fade') {
     const p = ease(clamp((t - start) / d));
@@ -263,7 +275,7 @@ export function computeAnimState(
     scaleX = p < 0.5 ? 1 - p * 2 : (p - 0.5) * 2;
     alpha = p < 0.5 ? 1 - p : p;
     if (gone) visible = false;
-    return { visible, active, highlighted: active, scale, scaleX, scaleY, dx, dy, rotation, alpha, chars, glowBlur, pill, blur, skewX, clipY };
+    return { visible, active, highlighted: active, scale, scaleX, scaleY, dx, dy, rotation, alpha, chars, glowBlur, pill, blur, skewX, clipY, hlGrow };
   } else if (anim === 'drop') {
     // CapCut "Drop": falls from above with a gravity bounce.
     visible = spoken;
@@ -300,6 +312,10 @@ export function computeAnimState(
     const p = EASINGS.back(clamp((t - start) / d));
     dy = (1 - p) * 0.7;
     alpha = clamp(clamp((t - start) / d) * 1.4);
+  } else if (anim === 'highlight') {
+    // Highlighter: text always shown; a bar grows left-to-right behind the spoken word.
+    visible = true;
+    if (active) hlGrow = ease(clamp((t - start) / Math.min(d, Math.max(0.05, end - start))));
   } else if (anim === 'swipe-up') {
     // CapCut "Swipe": reveals the word from bottom like a wipe, clipping from below.
     visible = spoken;
@@ -315,11 +331,11 @@ export function computeAnimState(
   const highlighted =
     anim === 'karaoke'
       ? spoken
-      : anim === 'none' || anim === 'fade'
+      : anim === 'none' || anim === 'fade' || anim === 'highlight'
         ? false
         : active;
 
-  return { visible, active, highlighted, scale, scaleX, scaleY, dx, dy, rotation, alpha, chars, glowBlur, pill, blur, skewX, clipY };
+  return { visible, active, highlighted, scale, scaleX, scaleY, dx, dy, rotation, alpha, chars, glowBlur, pill, blur, skewX, clipY, hlGrow };
 }
 
 // Per-word animation state at time t (seconds). Pure, so preview and export match.
@@ -454,7 +470,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
     if (s.box && (states.some((st) => st.visible) || (target === 'character' && t >= lineStart))) {
       const padX = px * 0.35, padY = px * 0.22;
       ctx.save();
-      ctx.globalAlpha = 0.88 * op * Math.min(...states.map((st) => st.alpha));
+      ctx.globalAlpha = (s.boxAlpha ?? 0.88) * op * Math.min(...states.map((st) => st.alpha));
       ctx.fillStyle = s.box;
       ctx.beginPath();
       ctx.roundRect(x - padX, y + states[0].dy * px - px / 2 - padY, lw + padX * 2, px + padY * 2, px * (s.radius ?? 0.22));
@@ -502,6 +518,8 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
           ctx.scale(cst.scaleX, cst.scaleY);
           if (cst.blur > 0) ctx.filter = `blur(${cst.blur.toFixed(1)}px)`;
 
+          if (cst.hlGrow > 0) drawHighlight(ctx, -charW / 2, charW, px, cst.hlGrow, s.highlight);
+
           // Character-level pill background
           if (cst.pill) {
             ctx.save();
@@ -513,20 +531,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
             ctx.restore();
           }
 
-          if (cst.glowBlur > 0) {
-            ctx.shadowColor = s.highlight;
-            ctx.shadowBlur = cst.glowBlur;
-          }
-
-          if (s.outline > 0) {
-            ctx.lineWidth = px * s.outline;
-            ctx.strokeStyle = s.stroke;
-            ctx.strokeText(ch, -charW / 2, 0);
-          }
-
-          const textColor = cst.pill ? (s.box || '#111111') : (cst.highlighted ? s.highlight : s.color);
-          ctx.fillStyle = textColor;
-          ctx.fillText(ch, -charW / 2, 0);
+          drawText(ctx, s, px, ch, -charW / 2, cst.pill ? (s.box || '#111111') : (cst.highlighted ? s.highlight : s.color), cst.glowBlur);
           ctx.restore();
         });
 
@@ -553,6 +558,9 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
           ctx.scale(st.scaleX, st.scaleY);
           if (st.blur > 0) ctx.filter = `blur(${st.blur.toFixed(1)}px)`;
 
+          // Highlighter bar growing behind the word
+          if (st.hlGrow > 0) drawHighlight(ctx, -wordW / 2, wordW, px, st.hlGrow, s.highlight);
+
           // Word-level pill background (CapCut viral pill style)
           if (st.pill) {
             ctx.save();
@@ -564,22 +572,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
             ctx.restore();
           }
 
-          // Glow blur for neon pulse
-          if (st.glowBlur > 0) {
-            ctx.shadowColor = s.highlight;
-            ctx.shadowBlur = st.glowBlur;
-          }
-
-          if (s.outline > 0) {
-            ctx.lineWidth = px * s.outline;
-            ctx.strokeStyle = s.stroke;
-            ctx.strokeText(text, -wordW / 2, 0);
-          }
-
-          // Contrast text on active pill
-          const textColor = st.pill ? (s.box || '#111111') : (st.highlighted ? s.highlight : s.color);
-          ctx.fillStyle = textColor;
-          ctx.fillText(text, -wordW / 2, 0);
+          drawText(ctx, s, px, text, -wordW / 2, st.pill ? (s.box || '#111111') : (st.highlighted ? s.highlight : s.color), st.glowBlur);
           ctx.restore();
         }
         x += widths[i] + space;
@@ -588,6 +581,50 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
     y += lh;
   }
   return bounds;
+}
+
+function drawHighlight(ctx: CanvasRenderingContext2D, x0: number, w: number, px: number, grow: number, color: string) {
+  const padX = px * 0.12, padY = px * 0.08;
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(x0 - padX, -px / 2 - padY, (w + padX * 2) * grow, px + padY * 2, px * 0.08);
+  ctx.fill();
+  ctx.restore();
+}
+
+// Outline + fill, with optional glow and drop shadow layered underneath (they stack: canvas
+// has one shadow per draw, so each effect gets its own pass).
+function drawText(ctx: CanvasRenderingContext2D, s: Style, px: number, text: string, x: number, color: string, animGlow: number) {
+  const paint = () => {
+    if (s.outline > 0) {
+      ctx.lineWidth = px * s.outline;
+      ctx.strokeStyle = s.stroke;
+      ctx.strokeText(text, x, 0);
+    }
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, 0);
+  };
+  // Shadow offsets are in canvas pixels and unaffected by the transform, so scale them by it.
+  const m = ctx.getTransform?.();
+  const k = m ? Math.hypot(m.a, m.b) || 1 : 1;
+  const pass = (c: string, blur: number, ox: number, oy: number) => {
+    ctx.save();
+    ctx.shadowColor = c;
+    ctx.shadowBlur = blur * k;
+    ctx.shadowOffsetX = ox * k;
+    ctx.shadowOffsetY = oy * k;
+    paint();
+    ctx.restore();
+  };
+  if (s.shadow) pass(s.shadow, (s.shadowBlur ?? 0.12) * px, (s.shadowX ?? 0) * px, (s.shadowY ?? 0) * px);
+  if (s.glow) {
+    const g = (s.glowSize ?? 0.3) * px;
+    pass(s.glow, g, 0, 0);
+    pass(s.glow, g / 2, 0, 0);
+  }
+  if (animGlow > 0) pass(s.highlight, animGlow, 0, 0);
+  else paint();
 }
 
 // Is point (px, py) inside box b grown by `grow` on every side?

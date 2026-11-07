@@ -1002,6 +1002,14 @@
   .tools { position: absolute; top: 6px; right: 6px; display: none; gap: 2px; background: var(--card); }
   .caps li:hover .tools, .caps li:focus-within .tools { display: flex; }
   .tools button { width: 26px; height: 26px; font-size: 11px; }
+  /* Touch / narrow screens: no hover, and floating tools would cover the text being edited —
+     put them in their own row under the caption instead. */
+  @media (hover: none), (max-width: 760px) {
+    .tools { position: static; grid-column: 1 / -1; justify-content: flex-end; gap: 6px; background: none; }
+    .caps li:hover .tools { display: none; }
+    .caps li.sel-cap .tools, .caps li:focus-within .tools { display: flex; }
+    .tools button { width: 36px; height: 32px; font-size: 13px; }
+  }
   .add { border-style: dashed; height: 40px; }
   .sub { margin-top: 8px; }
   .center { grid-area: center; display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; }
