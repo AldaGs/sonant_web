@@ -1,17 +1,15 @@
 <script lang="ts">
-  import { acceptExt } from './lib/platform';
   import { onMount, untrack } from 'svelte';
   import { transcribe } from './lib/transcribe';
   import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Caption, type Word } from './lib/captions';
   import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
-  import { zoomPlace, segAt, PUNCH_IN, freezeAt, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, isCut, keptCaptions, type Segment, type Fx } from './lib/cuts';
+  import { zoomPlace, segAt, freezeAt, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, isCut, keptCaptions, type Segment, type Fx } from './lib/cuts';
   import { drawFrame } from './lib/segment';
   import { itemLen, clipAt, clipLen, resizeClip, STILL_LEN, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
-  import { Transitioner, TRANSITIONS, TRANS_DUR } from './lib/transitions';
-  import ColorGrader from './lib/ColorGrader.svelte';
-  import { Grader, COLOR_PRESETS, COLOR_LOOKS, EFFECTS, parseCube, type Color, type Lut } from './lib/grade';
+  import { Transitioner, TRANS_DUR } from './lib/transitions';
+  import { Grader, parseCube, type Color, type Lut } from './lib/grade';
   import { coverPlace, median } from './lib/reframe';
   import { SAFE_ZONES, drawSafeZones, overlapsZone, type Platform } from './lib/safezones';
   import { outputSize, type Aspect } from './lib/export';
@@ -26,18 +24,21 @@
   import { BLENDS, DEFAULT_MASK, DEFAULT_KEY, keyBypass, type Blend, type ChromaKey } from './lib/layerfx';
   import KeyControls from './lib/KeyControls.svelte';
   import PerfDialog from './lib/PerfDialog.svelte';
-  import VoiceoverPanel from './lib/VoiceoverPanel.svelte';
+  import MediaPanel from './lib/MediaPanel.svelte';
+  import AudioPanel from './lib/AudioPanel.svelte';
+  import AIToolsPanel from './lib/AIToolsPanel.svelte';
+  import ClipInspector from './lib/ClipInspector.svelte';
   import { embed, cluster, smooth, spanOf, applySpeakers, units, splitBySpeaker, type Unit } from './lib/diarize';
   import { decodeAudio } from './lib/transcribe';
   import { gpuFor } from './lib/perf';
   import { decodeFileAudio } from './lib/audiodecode';
   import { shiftOf, planStab, stabPlace, grey, STAB_FPS, STAB_W } from './lib/stabilize';
   import { makeReversed } from './lib/reverse';
-  import { applyVoiceFx, VOICE_FX, type VoiceFx } from './lib/voicefx';
+  import { applyVoiceFx, type VoiceFx } from './lib/voicefx';
   import { wav } from './lib/denoise';
   import { findHighlights, shortOf, DEFAULT_HL, type Highlight } from './lib/highlights';
-  import { cleanAudio, cleanKey, DENOISE_LEVELS } from './lib/denoise';
-  import { zoomMoments, autoZoomPlace, zoomKey, shakePlace, zoomShake, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
+  import { cleanAudio, cleanKey } from './lib/denoise';
+  import { zoomMoments, autoZoomPlace, zoomKey, shakePlace, zoomShake, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
   import { maskAt, setMaskKey, maskReveal } from './lib/overlay';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
@@ -681,6 +682,11 @@
   const findClips = () => ((highlights = findHighlights(keptCaptions(captions, segments), $state.snapshot(hlOpts), loudness)), (shortsMade = {}));
   let hlReframe = $state(true); // keep the person in the 9:16 frame on each new short
   let hlBusy = $state('');
+  const setHlLen = (min: number, max: number) => ((hlOpts.min = min), (hlOpts.max = max), findClips());
+  async function makeAllShorts() {
+    for (const [i, h] of (highlights ?? []).entries()) if (!shortsMade[h.start]) { hlBusy = t('hlMaking', { n: i + 1 }); await makeShort(h, i + 1); }
+    hlBusy = '';
+  }
   function previewClip(h: Highlight) {
     seek(h.start);
     if (!player.playing) toggle();
@@ -1424,8 +1430,6 @@
     sheet = same ? null : s;
   }
   let zoom = $state(1); // 1 = fit to the stage
-  let filter = $state<'all' | 'video' | 'audio' | 'image'>('all');
-  const shown = $derived(assets.filter((a) => filter === 'all' || a.kind === filter));
   const used = $derived(new Set([...clips.map((c) => c.assetId), ...audios.map((a) => a.assetId)]));
   const selAudio = $derived(audios.find((a) => a.id === selectedAudio));
   // Selecting music on the timeline brings up its settings in the Audio tab.
@@ -1728,195 +1732,16 @@
         <button class="icon sm" onclick={() => { if (sheet) sheet = null; else assetsOpen = false; }} aria-label={t('collapse')}><Icon name="chevron_left" /></button>
       </div>
       {#if leftTab === 'media'}
-        <label class="import">
-          <Icon name="upload" /> {t('importMedia')}
-          <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
-        </label>
-        <div class="filters" role="group" aria-label={t('assets')}>
-          {#each ['all', 'video', 'audio', 'image'] as const as f}
-            <button class:on={filter === f} aria-pressed={filter === f} onclick={() => (filter = f)}>{t('filter.' + f)}</button>
-          {/each}
-        </div>
-        <div class="grid">
-          {#each shown as a (a.id)}
-            <div class="asset" draggable="true" role="listitem"
-              ondragstart={(e) => e.dataTransfer?.setData('text/x-asset', a.id)}>
-              <div class="thumb" class:used={used.has(a.id)}>
-                {#if a.kind === 'image' && urls[a.id]}<img src={urls[a.id]} alt="" />
-                {:else if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
-                {:else}<span class="muted ph">{#if a.kind === 'audio'}<Icon name="music_note" size={20} />{/if}{a.kind === 'audio' ? t('filter.audio') : t('filter.video')}</span>{/if}
-                {#if a.kind !== 'image'}<span class="dur mono">{fmt(a.duration)}</span>{/if}
-                {#if a.id in proxyPct}<span class="proxybar" style:width="{proxyPct[a.id] * 100}%" title={t('proxyBuilding')}></span>{/if}
-                <span class="acts">
-                  <button class="sm icon" onclick={() => addToTimeline(a)} aria-label={t('addToTimeline', { name: a.name })} title={t('addToTimeline', { name: a.name })}>+</button>
-                  {#if a.kind === 'image'}
-                    <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}><Icon name="picture_in_picture_alt" /></button>
-                  {/if}
-                  {#if a.kind === 'video'}
-                    <button class="sm icon" class:on={!!a.proxy} aria-pressed={!!a.proxy} disabled={a.id in proxyPct}
-                      onclick={() => (a.proxy ? dropProxy(a) : buildProxy(a))} title={a.proxy ? t('proxyOn') : t('proxyMake')} aria-label={a.proxy ? t('proxyOn') : t('proxyMake')}><Icon name="bolt" /></button>
-                    <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}><Icon name="picture_in_picture_alt" /></button>
-                  {/if}
-                  <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}><Icon name="close" /></button>
-                </span>
-              </div>
-              <span class="aname" title={a.name}>{a.name}</span>
-            </div>
-          {/each}
-        </div>
-        <p class="muted small">{assets.length ? t('dragToTimeline') : t('assetsHint')}</p>
-
-        {#if clips.length}
-          <h3 class="sub">{t('sequence')}</h3>
-          <ol class="seq">
-            {#each clips as c, i (c.id)}
-              <li>
-                <span class="mono muted small">{i + 1}</span>
-                <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
-                {#if kindOf(c.assetId) === 'image'}
-                  <input class="clen mono" type="number" min="0.5" max="600" step="0.5" value={clipLen(durations, c)}
-                    aria-label={t('clipDuration')} title={t('clipDuration')} onchange={(e) => setClipLen(i, +e.currentTarget.value)} /><span class="muted small">s</span>
-                {/if}
-                <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}><Icon name="arrow_upward" /></button>
-                <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}><Icon name="arrow_downward" /></button>
-                <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}><Icon name="close" /></button>
-              </li>
-            {/each}
-          </ol>
-        {/if}
+        <MediaPanel {assets} {used} {urls} {thumbs} {proxyPct} {clips} {names} {durations} {kindOf} {fmt}
+          {importMedia} {addToTimeline} {addOverlay} {buildProxy} {dropProxy} {removeAsset} {setClips} {setClipLen} />
       {:else if leftTab === 'audio'}
-        {#if selAudio}
-          {@const ba = assets.find((a) => a.id === selAudio.assetId)}
-          <section class="layer music" aria-label={t('musicH')}>
-            <div class="lhead"><h3>{t('musicH')}</h3></div>
-            <div class="lrow">
-              <span class="aname small selname"><Icon name="music_note" size={16} /> {names.get(selAudio.assetId)}</span>
-              <label class="vol inline">{t('volume')}
-                <input type="range" min="0" max="1" step="0.05" value={selAudio.volume}
-                  oninput={(e) => setAudio(selAudio.id, { volume: +e.currentTarget.value })} />
-              </label>
-              {#if ba?.beats?.length}
-                <span class="small mono" title={t('beatsFound', { n: ba.beats.length })}><Icon name="graphic_eq" size={16} /> {ba.bpm} BPM</span>
-                <button class="sm" onclick={() => cutOnBeats(selAudio)} title={t('cutBeatsTip')}>{t('cutBeats')}</button>
-                <button class="sm" onclick={() => cutOnBeats(selAudio, 2)}>{t('cutBeats2')}</button>
-              {:else}
-                <button class="sm" onclick={() => detectBeatsFor(selAudio.assetId)} disabled={beatBusy}>{beatBusy ? t('detecting') : t('detectBeats')}</button>
-              {/if}
-              <label class="vol inline" title={t('vfxTip')}>{t('vfx')}
-                <select value={selAudio.vfx ?? ''} disabled={vfxBusy} onchange={(e) => setVoiceFx(selAudio, e.currentTarget.value as VoiceFx | '')}>
-                  <option value="">{t('vfx.none')}</option>
-                  {#each VOICE_FX as v}<option value={v}>{t('vfx.' + v)}</option>{/each}
-                </select>
-              </label>
-              <label class="vol inline" title={t('dnTip')}>{t('denoise')}
-                <select value={selAudio.dn ?? 0} disabled={vfxBusy} onchange={(e) => renderItem(selAudio, { vfx: selAudio.vfx, dn: +e.currentTarget.value || undefined })}>
-                  {#each DENOISE_LEVELS as l (l)}<option value={l}>{t('dn.' + l)}</option>{/each}
-                </select>
-              </label>
-              {#if vfxBusy}<span class="small muted">{t('vfxBusy')}</span>{/if}
-              <label class="chk" title={t('duckTip')}><input type="checkbox" checked={!!selAudio.duck}
-                onchange={(e) => (commit(), setAudio(selAudio.id, { duck: e.currentTarget.checked || undefined }))} /> {t('duck')}</label>
-              <button class="sm" onclick={removeAudioItem}>{t('removeAudio')}</button>
-            </div>
-          </section>
-        {/if}
-        {#if clips.length}
-          <label class="vol">{t('clipAudio')} <span class="mono small">{Math.round(clipVolume * 100)}%</span>
-            <input type="range" min="0" max="1" step="0.05" bind:value={clipVolume} />
-          </label>
-          <label class="vol" title={t('dnTip')}>{t('denoise')}
-            <select bind:value={denoise}>
-              {#each DENOISE_LEVELS as l (l)}<option value={l}>{t('dn.' + l)}</option>{/each}
-            </select>
-          </label>
-          {#if cleanPct !== null}<p class="muted small" role="status">{t('dnBusy')} {Math.round(cleanPct)}%</p>{/if}
-        {/if}
-      <details class="audio-sil">
-        <summary>{t('audioSilTitle')}</summary>
-        <p class="muted small">{t('audioSilHint')}</p>
-        <label class="sl">{t('audioSilDb')} <span class="mono">{cleanup.db} dB</span>
-          <input type="range" min="-60" max="-15" step="1" bind:value={cleanup.db} /></label>
-        <label class="sl">{t('minPause')} <span class="mono">{cleanup.min.toFixed(1)}s</span>
-          <input type="range" min="0.2" max="2" step="0.1" bind:value={cleanup.min} /></label>
-        <label class="sl">{t('keepPad')} <span class="mono">{cleanup.pad.toFixed(2)}s</span>
-          <input type="range" min="0" max="0.5" step="0.05" bind:value={cleanup.pad} /></label>
-        <button class="sm primary" onclick={cutAudioSilences} disabled={!hasMedia || silBusy || busy}>
-          {silBusy ? t('audioSilBusy') : t('audioSilRun')}</button>
-      </details>
-        <VoiceoverPanel caps={captionsForOutput(displayCaps, segments)} selectedIds={selectedSet} lang={language} disabled={!hasMedia} onadd={addVoiceover} />
+        <AudioPanel {selAudio} {assets} {names} hasClips={clips.length > 0} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
+          {setAudio} {cutOnBeats} {detectBeatsFor} {setVoiceFx} {renderItem} {commit} {removeAudioItem} {cutAudioSilences}
+          voCaps={captionsForOutput(displayCaps, segments)} {selectedSet} {language} {addVoiceover} />
       {:else}
-        <p class="muted small">{t('aiHint')}</p>
-      <details class="hl" ontoggle={(e) => e.currentTarget.open && !highlights && captions.length && findClips()}>
-        <summary><Icon name="auto_awesome_motion" size={16} /> {t('hlTitle')}</summary>
-        {#if !captions.length}
-          <p class="muted small">{t('hlNeedTranscript')}</p>
-        {:else}
-          <p class="muted small">{t('hlHint')}</p>
-          <div class="row">
-            <label class="vol inline">{t('hlLen')}
-              <select value={`${hlOpts.min}-${hlOpts.max}`} onchange={(e) => { const [a, b] = e.currentTarget.value.split('-').map(Number); hlOpts.min = a; hlOpts.max = b; findClips(); }}>
-                {#each ['15-30', '20-45', '30-60'] as r}<option value={r}>{r.replace('-', '–')}s</option>{/each}
-              </select>
-            </label>
-            <button class="sm" onclick={findClips}><Icon name="refresh" size={16} /> {t('hlFind')}</button>
-            <label class="chk" title={t('hlReframeTip')}><input type="checkbox" bind:checked={hlReframe} /> {t('hlReframe')}</label>
-            {#if highlights?.length}
-              <button class="sm" disabled={!!hlBusy} onclick={async () => { for (const [i, h] of (highlights ?? []).entries()) if (!shortsMade[h.start]) { hlBusy = t('hlMaking', { n: i + 1 }); await makeShort(h, i + 1); } hlBusy = ''; }}>
-                <Icon name="add" size={16} /> {t('hlMakeAll')}</button>
-            {/if}
-          </div>
-          {#if hlBusy}<p class="muted small" role="status">{hlBusy}</p>{/if}
-          {#if highlights && !highlights.length}<p class="muted small">{t('hlNone')}</p>{/if}
-          <ol class="hls">
-            {#each highlights ?? [] as h, i (h.start)}
-              <li>
-                <div class="mono small">{fmt(toOutput(segments, h.start) ?? h.start)} · {Math.round(h.end - h.start)}s
-                  {#each h.reasons as r}<span class="chip">{t('hl.' + r)}</span>{/each}</div>
-                <div class="hlt">“{h.title}”</div>
-                <div class="row">
-                  <button class="sm" onclick={() => previewClip(h)}><Icon name="play_arrow" size={16} /> {t('hlPreview')}</button>
-                  {#if shortsMade[h.start]}
-                    <a class="btn sm" href={`#/p/${shortsMade[h.start]}`}><Icon name="open_in_new" size={16} /> {t('hlOpen')}</a>
-                  {:else}
-                    <button class="sm primary" disabled={!!hlBusy} onclick={() => makeShort(h, i + 1)}><Icon name="add" size={16} /> {t('hlMake')}</button>
-                  {/if}
-                </div>
-              </li>
-            {/each}
-          </ol>
-        {/if}
-      </details>
-        {#if captions.length}
-          <h3 class="sub">{t('spkH')}</h3>
-          <div class="spkrow">
-            <button class="sm" onclick={detectSpeakers} disabled={spkBusy || busy} title={t('spkTip')}><Icon name="groups" size={16} /> {t('spkDetect')}</button>
-            <label class="vol inline">{t('spkCount')}
-              <select bind:value={spkCount} disabled={spkBusy}>
-                {#each [0, 2, 3, 4, 5, 6] as n}<option value={n}>{n ? n : t('spkAuto')}</option>{/each}
-              </select>
-            </label>
-            <label class="chk" title={t('spkSplitTip')}><input type="checkbox" bind:checked={spkSplit} disabled={spkBusy} /> {t('spkSplit')}</label>
-            {#if spkBusy}<span class="muted small" role="status">{t(spkStatus || 'st.spkListening')} {spkStatus === 'st.reading' ? '' : Math.round(spkPct) + '%'}</span>
-            {:else if spkMsg}<span class="muted small" role="status">{t(spkMsg, { n: spkPct })}</span>{/if}
-          </div>
-          <h3 class="sub">{t('autoZoom')}</h3>
-          <div class="trbox">
-            <label class="chk"><input type="checkbox" checked={!!autoZoom} onchange={(e) => (autoZoom = e.currentTarget.checked ? { ...DEFAULT_AUTOZOOM } : null)} /> {t('autoZoom')}</label>
-            {#if autoZoom}
-              <label class="sl">{t('azStrength')} <span class="mono">+{Math.round((autoZoom.scale - 1) * 100)}%</span>
-                <input type="range" min="1.05" max="1.35" step="0.05" bind:value={autoZoom.scale} /></label>
-              <label class="sl">{t('azGap')} <span class="mono">{autoZoom.gap}s</span>
-                <input type="range" min="1" max="8" step="0.5" bind:value={autoZoom.gap} /></label>
-              <label class="chk"><input type="checkbox" bind:checked={autoZoom.sentences} /> {t('azSentences')}</label>
-              <label class="chk"><input type="checkbox" bind:checked={autoZoom.shake} /> {t('azShake')}</label>
-              <button class="sm" onclick={aimZooms} disabled={aimBusy || !zooms.length} title={t('azAimTip')}><Icon name="person" size={16} /> {aimBusy ? t('azAiming') : t('azAim')}</button>
-              {#if autoZoom.aim && Object.keys(autoZoom.aim).length}<button class="sm" onclick={() => autoZoom && (autoZoom.aim = undefined)}>{t('azCentre')}</button>{/if}
-              {#if autoZoom.edits && Object.keys(autoZoom.edits).length}<button class="sm" onclick={() => autoZoom && (autoZoom.edits = undefined)} title={t('azResetTip')}>{t('azReset')}</button>{/if}
-              <span class="muted small">{t('azEditHint')}</span>
-              <span class="muted small">{zooms.length ? t('azCount').replace('{n}', String(zooms.length)) : t('azNone')}</span>
-            {/if}
-          </div>
-        {/if}
+        <AIToolsPanel {captions} {segments} {highlights} {hlOpts} bind:hlReframe {hlBusy} {shortsMade} {fmt} {findClips} {setHlLen} {previewClip} {makeShort} {makeAllShorts}
+          {busy} {spkBusy} bind:spkCount bind:spkSplit {spkStatus} {spkPct} {spkMsg} {detectSpeakers}
+          bind:autoZoom {aimBusy} zoomCount={zooms.length} {aimZooms} />
       {/if}
     </aside>
   {/if}
@@ -2090,130 +1915,10 @@
     <div class="grab" aria-hidden="true"></div>
     <div class="sheet-bar"><h2>{t('inspector')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button></div>
     {#if selFx && !selOverlay}
-      <section class="layer clipfx" aria-label={t('clipH')}>
-        <div class="lhead"><h3>{t('clipH')}</h3></div>
-        <div class="lrow">
-        {#if selected > 0}
-          <label class="vol inline">{t('transIn')}
-            <select value={selFx.trans ?? ''} onchange={(e) => setFx({ trans: (e.currentTarget.value || undefined) as Fx['trans'] })}>
-              <option value="">{t('trans.none')}</option>
-              {#each TRANSITIONS as k}<option value={k}>{t('trans.' + k)}</option>{/each}
-            </select>
-          </label>
-        {/if}
-        {#if selFx.hold}
-          <label class="vol inline">{t('freezeLen')}
-            <input type="number" min="0.2" max="10" step="0.1" value={selFx.hold} style="width: 64px"
-              onchange={(e) => setFx({ hold: Math.max(0.2, Math.min(10, +e.currentTarget.value || 1)) })} />
-          </label>
-        {:else}
-          <label class="vol inline">{t('speed')}
-            <select value={selFx.speed ?? 1} onchange={(e) => setFx({ speed: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })}>
-              {#each [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as v}<option value={v}>{v}×</option>{/each}
-            </select>
-          </label>
-        {/if}
-        <button class="sm" class:on={!!selFx.zoom} aria-pressed={!!selFx.zoom} title={t('punchTip')}
-          onclick={() => setFx(selFx.zoom ? { zoom: undefined, zoomIn: undefined } : { zoom: PUNCH_IN, zoomIn: true })}><Icon name="zoom_in" /> {t('punchIn')}</button>
-        <label class="vol inline" title={t('shakeTip')}>{t('shake')}
-          <select value={selFx.shake ?? 0} onchange={(e) => setFx({ shake: +e.currentTarget.value || undefined })}>
-            {#each [0, 0.3, 0.6, 1] as v}<option value={v}>{t('shake.' + v)}</option>{/each}
-          </select>
-        </label>
-        <button class="sm" class:on={!!selFx.rev} aria-pressed={!!selFx.rev} title={t('reverseTip')} disabled={revPct !== null || !!selFx.hold}
-          onclick={() => reverseStrip(selected)}><Icon name="history" size={16} /> {revPct !== null ? `${t('reversing')} ${Math.round(revPct)}%` : t('reverse')}</button>
-        <button class="sm" class:on={!!selFx.stab} aria-pressed={!!selFx.stab} title={t('stabTip')} disabled={stabPct !== null || !!selFx.hold}
-          onclick={() => stabilize(selected)}><Icon name="videocam" size={16} /> {stabPct !== null ? `${t('stabBusy')} ${Math.round(stabPct)}%` : t('stab')}</button>
-        <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
-          onclick={() => setFx({ lift: !selFx.lift || undefined })}>{t('lift')}</button>
-        <button class="sm icon" class:on={selFx.behind} aria-pressed={!!selFx.behind} title={t('textBehind')} aria-label={t('textBehind')}
-          onclick={() => setFx({ behind: !selFx.behind })}><Icon name="person" /></button>
-        <label class="vol">{t('background')}
-          <select value={selFx.bg ?? ''} onchange={(e) => setFx({ bg: (e.currentTarget.value || undefined) as Fx['bg'] })}>
-            <option value="">{t('bgOriginal')}</option>
-            <option value="blur">{t('bgBlur')}</option>
-            <option value="color">{t('bgColor')}</option>
-            <option value="image" disabled={!imageAssets.length}>{t('bgImage')}</option>
-          </select>
-        </label>
-        {#if selFx.bg === 'image'}
-          <select value={selFx.bgImage ?? ''} aria-label={t('bgImage')} onchange={(e) => setFx({ bgImage: e.currentTarget.value || undefined })}>
-            <option value="">{t('bgPick')}</option>
-            {#each imageAssets as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
-          </select>
-        {/if}
-        {#if selFx.bg === 'color'}
-          <input type="color" value={selFx.bgColor ?? '#00b140'} aria-label={t('bgColor')}
-            onchange={(e) => setFx({ bgColor: e.currentTarget.value })} />
-        {/if}
-        <div class="stripkey">
-          <KeyControls key={selFx.key} picking={pickKey === 'strip'} onpick={() => startPick('strip')} set={setStripKey} />
-        </div>
-        </div>
-      </section>
-    {/if}
-    {#if selected >= 0 && segments[selected] && !selOverlay}
-      {@const c = selColor}
-      <section class="layer strip" aria-label={t('stripColor')} onchange={() => (colorEditing = false)} onpointerup={() => (colorEditing = false)}>
-        <div class="lhead"><h3>{t('stripColor')}</h3></div>
-        <div class="mob-only"><ColorGrader color={selColor} {luts} onset={setColor} ondone={() => (colorEditing = false)} /></div>
-        <div class="desk-only grade-fields">
-        <div class="lrow">
-          <button class="sm" class:on={!Object.keys(c).length} onclick={() => (setColor({}, true), (colorEditing = false))}>{t('col.none')}</button>
-          {#each Object.entries(COLOR_PRESETS) as [k, v]}
-            <button class="sm" onclick={() => (setColor({ ...v, lut: c.lut, lutMix: c.lutMix }, true), (colorEditing = false))}>{t('col.' + k)}</button>
-          {/each}
-          {#each Object.entries(COLOR_LOOKS) as [k, v]}
-            <button class="sm" onclick={() => (setColor({ ...v, lut: c.lut, lutMix: c.lutMix }, true), (colorEditing = false))}>{t('col.' + k)}</button>
-          {/each}
-        </div>
-        {#each [['b', 'brightness'], ['c', 'contrast'], ['s', 'saturation'], ['temp', 'temperature']] as [k, label]}
-          {@const v = (c as Record<string, number>)[k] ?? 0}
-          <label class="vol">{t(label)} <span class="mono small">{v > 0 ? '+' : ''}{Math.round(v * 100)}</span>
-            <input type="range" min="-1" max="1" step="0.01" value={v} oninput={(e) => setColor({ [k]: +e.currentTarget.value })}
-              ondblclick={() => (setColor({ [k]: 0 }), (colorEditing = false))} />
-          </label>
-        {/each}
-        {#each EFFECTS as k}
-          {@const v = c[k] ?? 0}
-          <label class="vol">{t('fx.' + k)} <span class="mono small">{Math.round(v * 100)}%</span>
-            <input type="range" min="0" max="1" step="0.01" value={v} oninput={(e) => setColor({ [k]: +e.currentTarget.value || undefined })}
-              ondblclick={() => (setColor({ [k]: undefined }), (colorEditing = false))} />
-          </label>
-        {/each}
-        <div class="lrow">
-          <label class="vol">{t('lut')}
-            <select value={c.lut ?? ''} onchange={(e) => (setColor({ lut: e.currentTarget.value || undefined }), (colorEditing = false))}>
-              <option value="">{t('col.noLut')}</option>
-              {#each luts as l}<option value={l.id}>{l.name}</option>{/each}
-            </select>
-          </label>
-          <label class="btn sm">{t('importLut')}<input type="file" accept={acceptExt(".cube")} hidden onchange={(e) => importLut(e.currentTarget.files?.[0])} /></label>
-        </div>
-        {#if c.lut}
-          <label class="vol">{t('lutMix')} <span class="mono small">{Math.round((c.lutMix ?? 1) * 100)}%</span>
-            <input type="range" min="0" max="1" step="0.01" value={c.lutMix ?? 1} oninput={(e) => setColor({ lutMix: +e.currentTarget.value })} />
-          </label>
-        {/if}
-        </div>
-        <button class="sm" onclick={colorToAll} disabled={segments.length < 2}>{t('colorAll')}</button>
-        {#if reframes}
-          {@const fc = segments[selected].fx?.focus ?? { x: 0.5, y: 0.5 }}
-          <div class="lhead"><h3>{t('reframe')}</h3></div>
-          <label class="vol">{t('focusX')} <span class="mono small">{Math.round(fc.x * 100)}%</span>
-            <input type="range" min="0" max="1" step="0.01" value={fc.x} oninput={(e) => setFocus({ ...fc, x: +e.currentTarget.value })} />
-          </label>
-          <label class="vol">{t('focusY')} <span class="mono small">{Math.round(fc.y * 100)}%</span>
-            <input type="range" min="0" max="1" step="0.01" value={fc.y} oninput={(e) => setFocus({ ...fc, y: +e.currentTarget.value })} />
-          </label>
-          <div class="lrow">
-            <button class="sm" onclick={() => autoReframe(selected)} disabled={reframing}>{#if !reframing}<Icon name="center_focus_strong" />{/if} {reframing ? t('detecting') : t('autoReframe')}</button>
-            <button class="sm" onclick={autoReframeAll} disabled={reframing}>{t('autoReframeAll')}</button>
-            <button class="sm" onclick={() => (setFocus(undefined), (colorEditing = false))}>{t('center')}</button>
-          </div>
-        {/if}
-        {#if !grader.ok}<p class="muted small">{t('noWebgl')}</p>{/if}
-      </section>
+      <ClipInspector {selFx} {selected} {segments} {imageAssets} {revPct} {stabPct} pickingKey={pickKey === 'strip'}
+        {setFx} {reverseStrip} {stabilize} {startPick} {setStripKey}
+        {selColor} {luts} {setColor} oncolordone={() => (colorEditing = false)} {importLut} {colorToAll}
+        {reframes} {setFocus} {autoReframe} {autoReframeAll} {reframing} webgl={grader.ok} />
     {/if}
     {#if selOverlay}
       {@const o = selOverlay}
@@ -2519,38 +2224,7 @@
   .panel { background: var(--panel); min-height: 0; display: flex; flex-direction: column; }
   .assets { grid-area: assets; border-right: 1px solid var(--border-soft); padding: 16px; gap: 12px; overflow: auto; }
   .phead { display: flex; justify-content: space-between; align-items: center; }
-  .import { display: flex; align-items: center; justify-content: center; gap: 6px; height: 42px; border: 1px dashed var(--border);
-    border-radius: 10px; cursor: pointer; }
-  .import:hover { border-color: var(--accent); }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .asset { display: grid; gap: 4px; min-width: 0; }
-  .ph { display: inline-flex; align-items: center; gap: 4px; }
-  .thumb { position: relative; aspect-ratio: 16 / 11; background: var(--tab-on); border-radius: 8px; overflow: hidden;
-    display: grid; place-items: center; outline: 2px solid var(--accent); }
-  .thumb img { width: 100%; height: 100%; object-fit: cover; }
-  .dur { position: absolute; right: 4px; bottom: 4px; background: rgb(0 0 0 / .75); font-size: 11px; padding: 1px 4px; border-radius: 4px; }
-  .aname { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .thumb { outline: none; }
-  .thumb.used { outline: 2px solid var(--accent); }
-  .asset { cursor: grab; }
-  .acts { position: absolute; top: 4px; right: 4px; display: none; gap: 2px; }
-  .asset:hover .acts, .asset:focus-within .acts { display: flex; }
-  .acts button { width: 24px; height: 24px; background: rgb(15 15 15 / .85); }
-  .filters { display: flex; gap: 4px; }
-  .filters button { border: 0; height: 30px; font-size: 13px; color: var(--muted); border-radius: 8px; }
-  .filters button.on { background: var(--tab-on); color: var(--text); }
-  .clen { width: 4.5em; }
-  .seq { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
-  .seq li { display: grid; grid-template-columns: 18px minmax(0, 1fr) repeat(5, auto); gap: 4px; align-items: center;
-    padding: 4px 6px; background: var(--card); border: 1px solid var(--border-soft); border-radius: 8px; }
-  .seq button { width: 26px; height: 26px; }
-  .vol { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
-  .vol input { accent-color: var(--accent); }
-  .vol.inline { display: flex; align-items: center; gap: 6px; }
-  .vol.inline input { width: 90px; }
-  .selname { max-width: 160px; color: var(--speaker-1); }
   .thead .row { flex-wrap: wrap; justify-content: flex-end; }
-  .small { font-size: 12px; }
   .text { grid-area: text; border-right: 1px solid var(--border-soft); }
   .tabs { display: flex; gap: 4px; padding: 12px 16px; }
   .tabs button { border: 0; height: 36px; color: var(--muted); font-weight: 500; border-radius: 8px; }
@@ -2585,7 +2259,6 @@
     .tools button { width: 36px; height: 32px; font-size: 13px; }
   }
   .add { border-style: dashed; height: 40px; }
-  .sub { margin-top: 8px; }
   .center { grid-area: center; display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; }
   .stage { position: relative; min-height: 0; border: 2px dashed transparent; }
   .stage.dragging { border-color: var(--accent); }
@@ -2625,11 +2298,8 @@
   }
 
   /* Desktop-only / phone-only chrome */
-  .mob-only { display: none; }
-  .grade-fields { display: grid; gap: 10px; }
   .ltabs { padding: 0; flex: 1; }
   .ltabs button { flex: 1; padding: 0 6px; white-space: nowrap; font-size: 13px; }
-  .music .aname { flex-basis: 100%; }
   .mob-close, .dock, .scrim, .grab, .sheet-x, .sheet-bar { display: none; }
 
   /* Phone: preview + transport + timeline fill the screen; panels open as bottom sheets from a tool dock. */
@@ -2678,41 +2348,17 @@
       padding-bottom: env(safe-area-inset-bottom); animation: up .22s ease-out;
     }
     .assets.shown, .text.shown, .style.shown { display: flex; }
-    /* Phones grade with the touch grader instead of the slider stack. */
-    .desk-only { display: none; }
-    .mob-only { display: block; }
     .text .scroll { max-height: none; flex: 1; min-height: 0; }
     .style { overflow: auto; }
-    .grab { display: block; flex: none; width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 8px auto 0; }
     .assets .grab { margin-top: -8px; }
+    .grab { display: block; flex: none; width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 8px auto 0; }
     .tabs { align-items: center; }
     .sheet-x { display: inline-flex; margin-left: auto; border: 0; }
     .sheet-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px 0; }
     .sheet-bar button { border: 0; }
     .scrim { display: block; position: fixed; inset: 0; z-index: 19; background: rgb(0 0 0 / .45); border: 0; border-radius: 0; height: auto; padding: 0; }
-    .tools, .acts { display: flex; }
+    .tools { display: flex; }
   }
-  .layer { display: grid; gap: 10px; padding: 12px; margin: 0 0 12px; border: 1px solid #6ab8ff55; border-radius: 10px; background: var(--card); }
-  .layer .lhead { display: flex; justify-content: space-between; align-items: center; }
-  .layer h3 { margin: 0; font-size: 13px; color: #6ab8ff; }
-  .layer textarea { width: 100%; resize: vertical; }
-  .layer .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
-  .layer .keyrow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-  .layer .key.on { color: #ffd84d; border-color: #ffd84d; }
-  .layer .keyhint { margin: -4px 0 0; }
-  .spkrow { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin: 6px 0; }
-  .hl { display: grid; gap: 8px; margin-bottom: 10px; }
-  .hl summary { cursor: pointer; font-weight: 600; display: flex; gap: 6px; align-items: center; }
-  .hl .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: end; }
-  .hls { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-  .hls li { border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: grid; gap: 6px; }
-  .hls .hlt { font-size: 13px; overflow-wrap: anywhere; }
-  .hls .chip { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--tab-on); font-size: 11px; }
-  .stripkey { flex-basis: 100%; max-width: 360px; }
-  .layer .lfx summary { cursor: pointer; font-size: 0.85em; margin: 4px 0; }
-  .layer .lfx { display: grid; gap: 6px; }
-  .layer .crop { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .layer input[type=color] { width: 44px; height: 28px; padding: 0; border: 0; background: none; }
   .tpl { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 10px; display: grid; gap: 8px; }
   .tpl summary { cursor: pointer; font-size: 13px; font-weight: 600; }
   .tpl[open] summary { margin-bottom: 4px; }
@@ -2724,13 +2370,9 @@
   .hist h3 { margin: 0; }
   .hist ol { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
   .hist li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; background: var(--card); border-radius: 8px; font-size: 13px; }
-  .proxybar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .2s; }
   .zonewarn { font-size: 12px; color: #ffb86b; }
   .ratio { height: 30px; font-size: 12px; }
-  .trbox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
-  .trbox select { height: 32px; font-size: 12px; }
   textarea.tr { margin-top: 4px; font-size: 12px; color: #9fd0ff; border-style: dashed; }
-  .chk { display: flex; gap: 6px; align-items: center; font-size: 12px; white-space: nowrap; }
   .keys-bg { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .55); display: grid; place-items: center; padding: 16px; }
   .keys { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; width: min(440px, 100%);
     max-height: 90vh; overflow: auto; display: grid; gap: 12px; }
@@ -2740,8 +2382,4 @@
   .keys kbd { font: 12px ui-monospace, monospace; background: var(--tab-on); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
   .keys > button { justify-self: end; }
   @keyframes up { from { transform: translateY(100%); } }
-  .audio-sil { display: grid; gap: 6px; margin: 8px 0; }
-  .audio-sil summary { cursor: pointer; font-weight: 600; font-size: 13px; }
-  .audio-sil .sl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; color: var(--muted); }
-  .audio-sil .sl input { grid-column: 1 / -1; accent-color: var(--accent); }
 </style>
