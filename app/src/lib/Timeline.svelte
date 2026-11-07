@@ -126,21 +126,13 @@
     mq.addEventListener('change', on);
     return () => mq.removeEventListener('change', on);
   });
-  // True from touchstart until the scroll (including momentum) settles: scroll position drives time.
-  let userScroll = false, settle = 0;
-  function onTouchStart() { userScroll = true; clearTimeout(settle); }
-  function onTouchEnd() { clearTimeout(settle); settle = window.setTimeout(() => (userScroll = false), 200); }
-  function onScroll() {
-    if (!centered || !userScroll || !scroller || !width) return;
-    if (settle) { clearTimeout(settle); settle = window.setTimeout(() => (userScroll = false), 200); }
-    onseek(Math.max(0, Math.min(total, (scroller.scrollLeft / width) * total)));
-  }
-  // Keep the playhead under the centre line while playing / seeking from elsewhere.
-  $effect(() => {
-    if (!centered || !scroller || playhead === null || !width) return;
-    const x = (playhead / total) * width;
-    if (!userScroll && Math.abs(scroller.scrollLeft - x) > 0.5) scroller.scrollLeft = x;
-  });
+  // Centred mode: the tracks are translated so `view` sits under the fixed centre line.
+  // While a finger swipes (or momentum coasts) `swipeT` leads, so the strip never waits on the video seek.
+  let vw = $state(0); // scroller width in px
+  let swipeT = $state<number | null>(null);
+  let coast = 0;
+  const view = $derived(swipeT ?? playhead ?? 0);
+  const shift = $derived(vw / 2 - (view / total) * width);
   let inner = $state<HTMLDivElement>();
   let wave = $state<HTMLCanvasElement>();
   let width = $state(0); // inner width in px
@@ -187,7 +179,7 @@
   // a press that starts on empty track space or the ruler scrubs the playhead.
   function scrub(e: PointerEvent) {
     if (e.button !== 0) return;
-    if (e.pointerType === 'touch' && centered) return;
+    if (e.pointerType === 'touch' && centered) return pan(e);
     if (e.pointerType === 'touch' && (e.target as Element).closest(LAYER)) return pan(e);
     if ((e.target as Element).closest('button')) return;
     getSelection()?.removeAllRanges(); // and don't extend a selection made elsewhere on the page
@@ -215,19 +207,41 @@
   // A tap without movement runs ontap; a pan swallows the click so it doesn't select anything.
   let panAt = 0; // last manual pan, so auto-follow doesn't yank the view away from the finger
   function pan(e: PointerEvent, ontap?: () => void) {
-    const x0 = e.clientX, sl0 = scroller?.scrollLeft ?? 0;
-    let on = false;
+    const x0 = e.clientX, sl0 = scroller?.scrollLeft ?? 0, t0 = view, perPx = total / (width || 1);
+    cancelAnimationFrame(coast);
+    let on = false, lx = x0, lt = performance.now(), vel = 0; // vel in px/ms
+    const clampT = (v: number) => Math.max(0, Math.min(total, v));
     const move = (m: PointerEvent) => {
       if (m.pointerId !== e.pointerId || (!on && Math.abs(m.clientX - x0) < 3)) return;
       on = true;
       panAt = performance.now();
-      if (scroller && !centered) scroller.scrollLeft = sl0 - (m.clientX - x0);
+      if (!centered) { if (scroller) scroller.scrollLeft = sl0 - (m.clientX - x0); return; }
+      const now = performance.now();
+      vel = 0.8 * ((m.clientX - lx) / Math.max(1, now - lt)) + 0.2 * vel;
+      lx = m.clientX; lt = now;
+      swipeT = clampT(t0 - (m.clientX - x0) * perPx);
+      onseek(swipeT);
+    };
+    const release = () => {
+      if (!centered || swipeT === null) return void (swipeT = null);
+      if (performance.now() - lt > 80) vel = 0;
+      let prev = performance.now();
+      const step = (now: number) => {
+        const dt = now - prev; prev = now;
+        vel *= Math.pow(0.995, dt);
+        if (Math.abs(vel) < 0.02 || swipeT === null) { swipeT = null; return; }
+        swipeT = clampT(swipeT - vel * dt * perPx);
+        onseek(swipeT);
+        coast = requestAnimationFrame(step);
+      };
+      coast = requestAnimationFrame(step);
     };
     const end = (u: PointerEvent) => {
       if (u.pointerId !== e.pointerId) return;
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', end);
       removeEventListener('pointercancel', end);
+      if (on) release();
       if (u.type !== 'pointerup') return;
       if (on) eatNextClick();
       else ontap?.();
@@ -381,9 +395,10 @@
     <span>{t('musicTrack')}</span>
   </div>
 
-  <div class="scroller" class:centered bind:this={scroller} onscroll={onScroll} ontouchstart={onTouchStart} ontouchend={onTouchEnd} ontouchcancel={onTouchEnd}>
+  <div class="scroller" class:centered bind:this={scroller} bind:clientWidth={vw}>
+    {#if centered}<div class="centerline" aria-hidden="true"></div>{/if}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="inner" style:--music="{laneCount * 28 - 4}px" style:--ov="{ovCount * 26 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1}
+    <div class="inner" style:--music="{laneCount * 28 - 4}px" style:--ov="{ovCount * 26 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1} style:transform={centered ? `translateX(${shift}px)` : null}
       role="slider" tabindex="0" aria-label={t('timeline')} aria-valuemin={0} aria-valuemax={total} aria-valuenow={playhead ?? 0}
       onclick={seekAt} onpointerdown={scrub}
       onkeydown={(e) => {
@@ -554,14 +569,14 @@
   /* Grab area around the playhead's head, wider than it looks so a finger can catch it. */
   .knob { position: absolute; top: -4px; left: -12px; width: 26px; height: 26px; pointer-events: auto; touch-action: none; cursor: ew-resize; z-index: 3; }
   /* On touch, unselected items pan (in JS) instead of dragging, so let vertical scroll through. */
-  @media (pointer: coarse) { .cap:not(.sel), .aud:not(.sel), .ov:not(.sel), :not(.sel) > .edge { touch-action: pan-x pan-y; } }
+  @media (pointer: coarse) { .cap:not(.sel), .aud:not(.sel), .ov:not(.sel), :not(.sel) > .edge { touch-action: pan-y; } }
   /* Centred playhead: half-width spacers let time 0 and the end both reach the centre line;
      swipes anywhere (tracks, ruler) scroll natively, and scroll position is the playhead time. */
-  .scroller.centered { display: flex; scrollbar-width: none; }
-  .scroller.centered::-webkit-scrollbar { display: none; }
-  .scroller.centered::before, .scroller.centered::after { content: ''; flex: none; width: 50%; }
-  .scroller.centered .inner { flex: none; touch-action: pan-x pan-y pinch-zoom; }
-  .scroller.centered .ruler { touch-action: pan-x pan-y; }
-  .scroller.centered .knob { display: none; }
+  .scroller.centered { position: relative; overflow: hidden; }
+  .scroller.centered .inner { will-change: transform; }
+  .scroller.centered .ruler { touch-action: pan-y; }
+  .scroller.centered .playhead { display: none; }
+  .centerline { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-1px); background: var(--accent); pointer-events: none; z-index: 5; }
+  .centerline::before { content: ''; position: absolute; top: -2px; left: -4px; border: 5px solid transparent; border-top-color: var(--accent); }
   @media (pointer: coarse) { .knob { left: -16px; width: 34px; height: 34px; } }
 </style>

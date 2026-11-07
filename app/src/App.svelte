@@ -1952,7 +1952,9 @@
     .zoomctl { display: none; }
     .round { border: 0; }
 
-    .timeline-area { padding: 8px 12px; border-top: 1px solid var(--border-soft); max-height: 38dvh; overflow: auto; }
+    .timeline-area { padding: 8px 12px; border-top: 1px solid var(--border-soft); max-height: 38dvh; overflow: auto;
+      grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
+    .thead, .thead .row { min-width: 0; }
     /* The tools stay pinned while the timeline scrolls under them, and swiping them never moves it. */
     .thead { position: sticky; top: -8px; z-index: 5; margin-top: -8px; padding-top: 8px; background: var(--bg); }
     .thead h2 { display: none; }
