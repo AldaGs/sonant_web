@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   import { PRESETS, ANIM_MODES, resolveStyle, type Style, type Animation, type AnimTarget, type Easing } from './render';
   import type { Font } from './fonts';
   import type { Caption } from './captions';
@@ -136,7 +137,7 @@
     <div class="scope-header active">
       <div class="scope-title">
         <span class="badge-sel">{selectedCount > 1 ? t('editingCaptions', { n: selectedCount }) : t('editingCaption', { n: capIndex + 1 })}</span>
-        <button class="icon-close" onclick={onclearcapselection} title={t('clearCapStyle')} aria-label={t('clearCapStyle')}>✕</button>
+        <button class="icon-close" onclick={onclearcapselection} title={t('clearCapStyle')} aria-label={t('clearCapStyle')}><Icon name="close" size={16} /></button>
       </div>
       {#if selectedCount > 1}
         <p class="scope-snippet">{t('multiCapHint')}</p>
@@ -270,15 +271,16 @@
         <em>px</em>
       </span>
     </label>
+    {#if effectiveStyle.size < 0.045}<p class="note warn" role="status">{t('smallText')}</p>{/if}
     <div class="prow"><span>{t('spacing')}</span>
       <span class="pair">
         <span class="fld icon" title={t('lineHeight')}>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12M2 13h12M8 5v6M6 6.5 8 4.5l2 2M6 9.5l2 2 2-2" /></svg>
+          <Icon name="format_line_spacing" size={16} />
           <input type="number" min="0.8" max="3" step="0.1" aria-label={t('lineHeight')} value={effectiveStyle.lineHeight}
             onchange={(e) => updateField('lineHeight', +e.currentTarget.value || 1.2)} />
         </span>
         <span class="fld icon" title={t('letterSpacing')}>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3v10M14 3v10M5 11l3-7 3 7M6.2 8.5h3.6" /></svg>
+          <Icon name="format_letter_spacing" size={16} />
           <input type="number" min="-0.1" max="0.5" step="0.01" placeholder={t('normal')} aria-label={t('letterSpacing')}
             value={effectiveStyle.letterSpacing || ''}
             onchange={(e) => updateField('letterSpacing', +e.currentTarget.value || 0)} />
@@ -298,10 +300,10 @@
     </div>
     <div class="prow"><span>{t('align')}</span>
       <span class="seg" role="radiogroup" aria-label={t('align')}>
-        {#each [['left', 'M2 4h12M2 8h8M2 12h11'], ['center', 'M2 4h12M4 8h8M3 12h10'], ['right', 'M2 4h12M6 8h8M3 12h11']] as [a, d]}
+        {#each [['left', 'format_align_left'], ['center', 'format_align_center'], ['right', 'format_align_right']] as const as [a, ic]}
           <button role="radio" aria-checked={effectiveStyle.align === a} class:on={effectiveStyle.align === a}
             title={t('align.' + a)} aria-label={t('align.' + a)} onclick={() => updateField('align', a as Style['align'])}>
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d={d} /></svg>
+            <Icon name={ic} size={16} />
           </button>
         {/each}
       </span>
@@ -354,7 +356,7 @@
         {#each BORDERS as [w, key]}
           {@const on = Math.abs(effectiveStyle.outline - w) < 0.03 || (w === 0.18 && effectiveStyle.outline > 0.18)}
           <button role="radio" aria-checked={on} class:on title={t(key)} aria-label={t(key)} onclick={() => updateField('outline', w)}>
-            {#if w === 0}<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" /><path d="M4 12 12 4" /></svg>
+            {#if w === 0}<Icon name="block" size={16} />
             {:else}<span class="line" style:height="{w * 14}px"></span>{/if}
           </button>
         {/each}
@@ -474,17 +476,18 @@
   .fld:focus-within { border-color: var(--accent); }
   .fld em { font-style: normal; color: var(--muted); font-size: 12px; }
   .fld b { color: var(--muted); font-weight: 500; font-size: 12px; }
-  .fld.icon svg, .seg svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; color: var(--muted); }
+  .fld.icon :global(.ic), .seg :global(.ic) { color: var(--muted); }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .fld.none { justify-content: flex-start; color: var(--text); font-size: 13px; cursor: pointer; }
   .checker { width: 18px; height: 18px; border-radius: 4px; flex: none;
     background: repeating-conic-gradient(#3a3a3a 0 25%, #1e1e1e 0 50%) 0 0 / 8px 8px; }
+  .note.warn { color: #ffb86b; }
   .note { margin: -2px 0 0 92px; font-size: 12px; color: var(--accent); }
   .note.bad { color: #ffb86b; }
   .seg { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
   .seg button { flex: 1; height: 28px; padding: 0 4px; border: 0; border-radius: 6px; font-size: 12px; color: var(--muted); cursor: pointer; transition: background .12s, color .12s; }
   .seg button.on { background: var(--tab-on); color: var(--text); }
-  .seg button.on svg { color: var(--text); }
+  .seg button.on :global(.ic) { color: var(--text); }
   .seg button:disabled { opacity: 0.4; cursor: not-allowed; }
   .seg .line { display: block; width: 16px; min-height: 1px; background: currentColor; border-radius: 1px; }
   .grid9 { display: grid; grid-template-columns: repeat(3, 28px); gap: 4px; padding: 6px; width: max-content;

@@ -5,10 +5,11 @@ import type { Caption, Word } from './captions';
 import type { Segment } from './cuts';
 import type { Style } from './render';
 import type { Asset, AudioItem, Clip } from './project';
+import type { Overlay } from './overlay';
 
 export type ProjectDoc = {
   name: string; captions: Caption[]; segments: Segment[]; style: Style; language: 'english' | 'spanish' | null;
-  speakers?: string[]; assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; words?: Record<string, Word[]>;
+  speakers?: string[]; assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; overlays?: Overlay[]; showTr?: boolean; luts?: { id: string; name: string }[]; aspect?: import('./export').Aspect; words?: Record<string, Word[]>;
 };
 export type ProjectMeta = { id: string; name: string; created: number; updated: number; duration: number; clips: number; thumb?: string };
 
@@ -64,14 +65,30 @@ async function assetsInUse(skip?: string): Promise<Set<string>> {
 
 // Remove a media file from storage unless another project (e.g. a duplicate) still uses it.
 export async function deleteAssetIfUnused(assetId: string, projectId: string) {
-  if (!(await assetsInUse(projectId)).has(assetId)) await store.del('asset:' + assetId);
+  if (!(await assetsInUse(projectId)).has(assetId)) (await store.del('asset:' + assetId), await store.del('proxy:' + assetId));
+}
+
+// ---- Version history: snapshots of the doc (without the transcription cache), newest last ----
+export type Version = { time: number; doc: ProjectDoc; label?: string };
+const HIST = (id: string) => 'hist:' + id;
+export const listVersions = async (id: string) => (await store.get<Version[]>(HIST(id))) ?? [];
+// Keep a snapshot if the last one is older than `gap` ms (or `force`); at most `max` are kept.
+export async function addVersion(id: string, doc: ProjectDoc, { gap = 120_000, max = 30, force = false, label }: { gap?: number; max?: number; force?: boolean; label?: string } = {}) {
+  const list = await listVersions(id);
+  const last = list.at(-1);
+  if (!force && last && Date.now() - last.time < gap) return false;
+  const { words: _w, ...rest } = doc;
+  if (last && JSON.stringify(last.doc) === JSON.stringify(rest)) return false; // nothing changed since
+  await store.set(HIST(id), [...list, { time: Date.now(), doc: rest, ...(label && { label }) }].slice(-max));
+  return true;
 }
 
 export async function deleteProject(id: string) {
   const doc = await loadDoc(id);
   const keep = await assetsInUse(id);
-  await Promise.all((doc?.assets ?? []).filter((a) => !keep.has(a.id)).map((a) => store.del('asset:' + a.id)));
+  await Promise.all((doc?.assets ?? []).filter((a) => !keep.has(a.id)).map((a) => Promise.all([store.del('asset:' + a.id), store.del('proxy:' + a.id)])));
   await store.del('doc:' + id);
+  await store.del(HIST(id));
   await putList((await listProjects()).filter((p) => p.id !== id));
 }
 

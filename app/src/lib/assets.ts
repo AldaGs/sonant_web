@@ -4,7 +4,9 @@ import * as store from './store';
 // Some files arrive without a MIME type (often .mkv, .m4a, .mov); fall back to the extension.
 const AUDIO_EXT = /\.(mp3|wav|m4a|aac|ogg|oga|opus|flac|weba)$/i;
 const VIDEO_EXT = /\.(mp4|m4v|mov|webm|mkv|avi|ogv|3gp)$/i;
-export function mediaKind(f: File): 'video' | 'audio' | null {
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i;
+export function mediaKind(f: File): 'video' | 'audio' | 'image' | null {
+  if (f.type.startsWith('image/') || IMAGE_EXT.test(f.name)) return 'image';
   if (f.type.startsWith('video/')) return 'video';
   if (f.type.startsWith('audio/')) return 'audio';
   return VIDEO_EXT.test(f.name) ? 'video' : AUDIO_EXT.test(f.name) ? 'audio' : null;
@@ -13,6 +15,13 @@ export function mediaKind(f: File): 'video' | 'audio' | null {
 // Read duration/size of a media file. Browser-recorded WebM often reports Infinity until you seek far.
 export async function probe(file: File): Promise<Omit<Asset, 'id' | 'name'>> {
   const kind = mediaKind(file) ?? 'video';
+  if (kind === 'image') {
+    // Images have no length of their own; 5s is how long they stay on screen when added.
+    const bmp = await createImageBitmap(file).catch(() => { throw new Error('err.badMedia'); });
+    const out = { kind, duration: 5, width: bmp.width, height: bmp.height };
+    bmp.close();
+    return out;
+  }
   const el = document.createElement(kind);
   el.preload = 'metadata';
   el.muted = true;

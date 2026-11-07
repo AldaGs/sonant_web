@@ -1,30 +1,42 @@
 import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
-import { keptCaptions, type Segment } from './cuts.ts';
+import { keptCaptions, zoomPlace, outLen, srcIn, type Segment } from './cuts.ts';
+import { stretch } from './stretch.ts';
+import { Transitioner, TRANS_DUR } from './transitions.ts';
+import { Grader, type Lut } from './grade.ts';
+import { coverPlace } from './reframe.ts';
 import { drawCaption, resolveStyle, type Style } from './render.ts';
 import { drawFrame, loadSegmenter } from './segment.ts';
-import { clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
+import { drawOverlay, type Overlay } from './overlay.ts';
+import { duckGain, normalizeGain } from './audio.ts';
+import { DUCK_LEVEL, clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
 
-export type Aspect = 'source' | '16:9' | '9:16' | '1:1';
-export type Res = 'source' | 1080 | 720 | 540 | 480;
+export type Aspect = 'source' | '16:9' | '9:16' | '1:1' | '4:5';
+export type Res = 'source' | 2160 | 1080 | 720 | 540 | 480;
 export type Quality = 'draft' | 'standard' | 'high';
-export type ExportOptions = { res: Res; aspect: Aspect; fps: number; quality: Quality };
+// loudness: normalize the mix to −14 LUFS (TikTok/YouTube/Spotify target). voice: clean up the clips' own sound
+// (rumble filter + gentle compression), for speech recorded on a phone.
+export type ExportOptions = { res: Res; aspect: Aspect; fps: number; quality: Quality; loudness?: boolean; voice?: boolean };
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
 // Output frame size. `res` sets the short side (like "1080p" means 1080 on the short side).
 export function outputSize(srcW: number, srcH: number, res: Res, aspect: Aspect) {
-  const ratio = aspect === 'source' ? srcW / srcH : aspect === '16:9' ? 16 / 9 : aspect === '9:16' ? 9 / 16 : 1;
+  const ratio = aspect === 'source' ? srcW / srcH : aspect === '16:9' ? 16 / 9 : aspect === '9:16' ? 9 / 16 : aspect === '4:5' ? 4 / 5 : 1;
   const short = res === 'source' ? Math.min(srcW, srcH) : res;
   return ratio >= 1 ? { width: even(short * ratio), height: even(short) } : { width: even(short), height: even(short / ratio) };
 }
 
 // Source timestamps of every output frame at a fixed fps, walking the kept segments in order.
+// Speed changes how fast source time moves per output frame; a freeze frame repeats its first frame.
 export function* frameTimes(segs: Segment[], fps: number) {
-  for (const s of segs) for (let t = s.start; t < s.end - 1e-6; t += 1 / fps) yield t;
+  for (const s of segs) {
+    const n = Math.ceil(outLen(s) * fps - 1e-6);
+    for (let i = 0; i < n; i++) yield Math.min(srcIn(s, i / fps), s.end - 1e-4);
+  }
 }
 export const frameCount = (segs: Segment[], fps: number) =>
-  segs.reduce((n, s) => n + Math.ceil((s.end - s.start - 1e-6) * fps), 0);
+  segs.reduce((n, s) => n + Math.ceil(outLen(s) * fps - 1e-6), 0);
 
 // Copy samples [a, z) of `b` into a new buffer.
 function slice(b: AudioBuffer, a: number, z: number): AudioBuffer {
@@ -39,15 +51,19 @@ export type ExportSource = {
   assets: Asset[];
   clips: Clip[];
   audios: AudioItem[];
+  overlays?: Overlay[]; // output time
+  luts?: Lut[];
+  speech?: [number, number][]; // output time ranges where someone talks (music ducks under these)
   clipVolume: number;
 };
 
 // Mix the kept parts of each clip's audio plus the extra audio items into one buffer, `seconds` long.
 // ponytail: renders the whole mix in memory (~23 MB per stereo minute); stream in chunks if long videos hit memory limits
-async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Promise<AudioBuffer | null> {
+async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opts: Partial<ExportOptions> = {}): Promise<AudioBuffer | null> {
   const sr = 48000;
   const durations = new Map(src.assets.map((a) => [a.id, a.duration]));
-  const needed = new Set([...src.clips.map((c) => c.assetId), ...src.audios.map((a) => a.assetId)]);
+  const ovAudio = (src.overlays ?? []).filter((o) => o.kind === 'video' && o.assetId && (o.volume ?? 0) > 0);
+  const needed = new Set([...src.clips.map((c) => c.assetId), ...src.audios.map((a) => a.assetId), ...ovAudio.map((o) => o.assetId!)]);
   const decoder = new AudioContext({ sampleRate: sr });
   const decoded = new Map<string, AudioBuffer>();
   try {
@@ -64,11 +80,25 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Pr
   if (!decoded.size || seconds <= 0) return null;
 
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, length: Math.ceil(seconds * sr), sampleRate: sr });
-  const play = (buf: AudioBuffer, when: number, offset: number, len: number, volume: number) => {
+  // Voice bus: the clips' own sound (and video layers) go through a rumble filter and a gentle compressor.
+  let voice: AudioNode = ctx.destination;
+  if (opts.voice) {
+    const hp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 85, Q: 0.7 });
+    const comp = new DynamicsCompressorNode(ctx, { threshold: -24, knee: 12, ratio: 3, attack: 0.005, release: 0.2 });
+    const makeup = new GainNode(ctx, { gain: 1.4 });
+    hp.connect(comp).connect(makeup).connect(ctx.destination);
+    voice = hp;
+  }
+  // gain: a fixed volume, or a function of output time (ducking), sampled at 50 Hz.
+  const play = (buf: AudioBuffer, when: number, offset: number, len: number, gain: number | ((t: number) => number), to: AudioNode = ctx.destination) => {
     const s = ctx.createBufferSource(), g = ctx.createGain();
     s.buffer = buf;
-    g.gain.value = volume;
-    s.connect(g).connect(ctx.destination);
+    if (typeof gain === 'number') g.gain.value = gain;
+    else {
+      const n = Math.max(2, Math.ceil(len * 50));
+      g.gain.setValueCurveAtTime(Float32Array.from({ length: n }, (_, i) => gain(when + (i / (n - 1)) * len)), when, len);
+    }
+    s.connect(g).connect(to);
     s.start(when, offset, len);
   };
 
@@ -78,17 +108,42 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Pr
   for (const s of splitAtBoundaries(segs, starts)) {
     const at = clipAt(src.clips, durations, (s.start + s.end) / 2);
     const buf = at && decoded.get(src.clips[at.index].assetId);
-    if (buf) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume);
-    out += s.end - s.start;
+    const speed = s.fx?.speed ?? 1;
+    if (buf && !s.fx?.lift && !s.fx?.hold) { // lifted gaps and freeze frames are silent
+      if (speed === 1) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume, voice);
+      else {
+        // Sped-up / slowed-down strips: time-stretched so voices keep their pitch.
+        const a = Math.floor((s.start - starts[at.index]) * buf.sampleRate), z = Math.min(buf.length, Math.ceil((s.end - starts[at.index]) * buf.sampleRate));
+        const ch = stretch(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c).subarray(a, z)), speed);
+        const piece = new AudioBuffer({ length: ch[0].length, numberOfChannels: ch.length, sampleRate: buf.sampleRate });
+        ch.forEach((d, c) => piece.copyToChannel(d as Float32Array<ArrayBuffer>, c));
+        play(piece, out, 0, piece.duration, src.clipVolume, voice);
+      }
+    }
+    out += outLen(s);
   }
   // Extra audio: placed in output time, cut off at the end of the video.
   for (const item of src.audios) {
     const buf = decoded.get(item.assetId);
     if (!buf || item.at >= seconds) continue;
     const len = Math.min(itemLen(item, buf.duration), seconds - item.at);
-    if (len > 0) play(buf, item.at, item.offset ?? 0, len, item.volume);
+    const speech = src.speech ?? [];
+    if (len > 0) play(buf, item.at, item.offset ?? 0, len, item.duck && speech.length ? (t) => item.volume * duckGain(speech, t, DUCK_LEVEL) : item.volume);
   }
-  return ctx.startRendering();
+  // Sound of picture-in-picture layers that aren't muted.
+  for (const o of ovAudio) {
+    const buf = decoded.get(o.assetId!);
+    if (!buf || o.at >= seconds) continue;
+    const len = Math.min(o.len, buf.duration - (o.offset ?? 0), seconds - o.at);
+    if (len > 0) play(buf, o.at, o.offset ?? 0, len, o.volume ?? 0, voice);
+  }
+  const mix = await ctx.startRendering();
+  if (opts.loudness) {
+    const ch = Array.from({ length: mix.numberOfChannels }, (_, c) => mix.getChannelData(c));
+    const g = normalizeGain(ch, sr);
+    if (g !== 1) for (const c of ch) for (let i = 0; i < c.length; i++) c[i] *= g;
+  }
+  return mix;
 }
 
 export async function exportVideo(
@@ -113,7 +168,7 @@ export async function exportVideo(
 
   if (segs.some((s) => s.fx?.behind || s.fx?.bg)) await loadSegmenter(); // every exported frame must be segmented
   const total = frameCount(segs, opts.fps);
-  const mix = await mixAudio(src, segs, total / opts.fps);
+  const mix = await mixAudio(src, segs, total / opts.fps, opts);
   if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
 
   const canvas = new OffscreenCanvas(width, height);
@@ -128,37 +183,85 @@ export async function exportVideo(
 
   const sorted = keptCaptions(captions, segs).sort((a, b) => startOf(a) - startOf(b)); // cut words never appear
 
+  // Layers: images decoded once; each video layer gets one decoder that yields its frames in output order.
+  type Layer = { o: Overlay; img?: ImageBitmap; frames?: AsyncGenerator<{ canvas: HTMLCanvasElement | OffscreenCanvas } | null>; first: number; last: number;
+    cur: CanvasImageSource | null; w: number; h: number };
+  const layers: Layer[] = [];
+  for (const o of src.overlays ?? []) {
+    const first = Math.ceil(o.at * opts.fps - 1e-6), last = Math.ceil((o.at + o.len) * opts.fps - 1e-6) - 1; // output frames it covers
+    const f = o.assetId ? src.files.get(o.assetId) : undefined;
+    if (o.kind === 'text') layers.push({ o, first, last, cur: null, w: 0, h: 0 });
+    else if (o.kind === 'image' && f) {
+      const img = await createImageBitmap(f).catch(() => undefined);
+      if (img) layers.push({ o, img, first, last, cur: img, w: img.width, h: img.height });
+    } else if (o.kind === 'video' && f && last >= first) {
+      const track = await new Input({ source: new BlobSource(f), formats: ALL_FORMATS }).getPrimaryVideoTrack();
+      if (!track) continue;
+      // Decode at most 1280 on the long side; a layer rarely fills the frame.
+      const k = Math.min(1, 1280 / Math.max(track.displayWidth, track.displayHeight));
+      const w = Math.max(2, Math.round(track.displayWidth * k)), h = Math.max(2, Math.round(track.displayHeight * k));
+      const sink = new CanvasSink(track, { width: w, height: h, fit: 'fill', poolSize: 2 });
+      const times = Array.from({ length: last - first + 1 }, (_, j) => (o.offset ?? 0) + (first + j) / opts.fps - o.at);
+      layers.push({ o, frames: sink.canvasesAtTimestamps(times) as Layer['frames'], first, last, cur: null, w, h });
+    }
+  }
+  // Pull each active video layer's frame for output frame i (a missing frame keeps the previous one).
+  const advance = async (i: number) => {
+    for (const l of layers) if (l.frames && i >= l.first && i <= l.last) l.cur = (await l.frames.next()).value?.canvas ?? l.cur;
+  };
+  const paintLayers = (i: number) => {
+    for (const l of layers) if (i >= l.first && i <= l.last) drawOverlay(ctx, l.o, i / opts.fps, l.cur, l.w, l.h);
+  };
+
   // Video: for each kept piece, pull its clip's frames (one decoder per asset), draw + caption, encode.
   const videoTask = (async () => {
-    const sinks = new Map<string, InstanceType<typeof CanvasSink>>();
+    const sinks = new Map<string, { sink: InstanceType<typeof CanvasSink>; w: number; h: number }>();
     const sinkFor = async (assetId: string) => {
       if (!sinks.has(assetId)) {
         const f = src.files.get(assetId);
         const track = f && (await new Input({ source: new BlobSource(f), formats: ALL_FORMATS }).getPrimaryVideoTrack());
-        if (track) sinks.set(assetId, new CanvasSink(track, { width, height, fit: 'cover', poolSize: 2 }));
+        // Decode at "cover" size (aspect kept), then each strip places it around its focus point.
+        const k = track && Math.max(width / track.displayWidth, height / track.displayHeight);
+        if (track && k) sinks.set(assetId, { sink: new CanvasSink(track, { width: even(track.displayWidth * k), height: even(track.displayHeight * k), fit: 'fill', poolSize: 2 }),
+          w: even(track.displayWidth * k), h: even(track.displayHeight * k) });
       }
       return sinks.get(assetId);
     };
     const starts = clipStarts(src.clips, durations);
+    const trans = new Transitioner();
+    const grader = new Grader(), lutOf = (id?: string) => src.luts?.find((l) => l.id === id);
     let i = 0;
     for (const piece of splitAtBoundaries(segs, starts)) {
       const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2);
       const offset = at ? starts[at.index] : 0;
-      const sink = at ? await sinkFor(src.clips[at.index].assetId) : undefined;      const times = [...frameTimes([piece], opts.fps)];
-      const frames = sink ? sink.canvasesAtTimestamps(times.map((t) => t - offset)) : null;
+      const decoded = at ? await sinkFor(src.clips[at.index].assetId) : undefined, sink = decoded?.sink;
+      const sw = decoded?.w ?? width, sh = decoded?.h ?? height;      const times = [...frameTimes([piece], opts.fps)];
+      const lifted = !!piece.fx?.lift; // a gap: black, no frames decoded
+      const frames = sink && !lifted ? sink.canvasesAtTimestamps(times.map((t) => t - offset)) : null;
+      const si = segs.findIndex((g) => piece.start >= g.start - 1e-6 && piece.start < g.end);
+      const segStart = segs[si]?.start ?? piece.start;
+      const segOut = segs.slice(0, Math.max(0, si)).reduce((a, g) => a + outLen(g), 0); // output time the strip starts
       for (const t of times) {
         if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
         const frame = frames ? (await frames.next()).value : null;
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, width, height);
         const cap = sorted.find((c) => t >= startOf(c) && t < endOf(c));
-        drawFrame(ctx, frame?.canvas ?? null, width, height, [0, 0, width, height], piece.fx, !!cap,
-          () => cap && drawCaption(ctx, cap, t, resolveStyle(style, cap.style)));
+        await advance(i);
+        // Same order as the preview: video, layers, caption (and the person over both with "text behind").
+        const color = piece.fx?.color;
+        const img = frame?.canvas && color ? grader.apply(frame.canvas, sw, sh, color, lutOf(color.lut)) : frame?.canvas ?? null;
+        drawFrame(ctx, img, sw, sh, zoomPlace(coverPlace(width, height, sw, sh, piece.fx?.focus), width, height, piece.fx, t - segStart), piece.fx, !!cap, () => {
+          paintLayers(i);
+          if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
+        });
+        trans.apply(ctx, segs[si]?.fx?.trans, si, i / opts.fps - segOut, segs[si]?.fx?.transDur ?? TRANS_DUR);
         await vOut.add(i / opts.fps, 1 / opts.fps);
         onProgress(++i / total);
       }
       await frames?.return(undefined);
     }
+    for (const l of layers) (await l.frames?.return(null), l.img?.close());
   })();
 
   // Audio: the pre-rendered mix, fed in 1-second chunks.

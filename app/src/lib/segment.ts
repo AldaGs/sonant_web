@@ -53,6 +53,27 @@ function updateMask(src: CanvasImageSource, sw: number, sh: number): boolean {
   return true;
 }
 
+// Where the person is in `src` (centre of the mask's weight, 0..1), or null if nobody is found.
+export async function subjectCenter(src: CanvasImageSource, sw: number, sh: number): Promise<{ x: number; y: number } | null> {
+  await loadSegmenter();
+  if (!seg) return null;
+  if (!small) [[small, sctx], [mask, mctx], [person, pctx]] = [canvas2d(), canvas2d(), canvas2d()];
+  const k = 256 / Math.max(sw, sh), w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
+  if (small.width !== w || small.height !== h) ((small.width = w), (small.height = h));
+  sctx.drawImage(src, 0, 0, w, h);
+  let out: { x: number; y: number } | null = null;
+  seg.segment(small, (r) => {
+    const m = r.confidenceMasks?.[0];
+    if (!m) return;
+    const conf = m.getAsFloat32Array();
+    let sx = 0, sy = 0, n = 0;
+    for (let i = 0; i < conf.length; i++) if (conf[i] > 0.5) ((sx += i % m.width), (sy += Math.floor(i / m.width)), n++);
+    // Bias towards the head: the top quarter of the person's box matters most when framing a face.
+    if (n > conf.length * 0.01) out = { x: sx / n / m.width, y: Math.max(0, sy / n / m.height - 0.1) };
+  });
+  return out;
+}
+
 // Draw only the person from `src` (at place) over whatever ctx has, using the last mask.
 function paintSubject(ctx: CanvasRenderingContext2D, src: CanvasImageSource, [dx, dy, dw, dh]: number[]) {
   const W = ctx.canvas.width, H = ctx.canvas.height;

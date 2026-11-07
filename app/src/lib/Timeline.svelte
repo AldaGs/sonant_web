@@ -1,16 +1,27 @@
 <script lang="ts">
-  import { outDuration, toOutput, toSource, captionsForOutput, type Segment } from './cuts';
+  import Icon from './Icon.svelte';
+  import type { IconName } from './icons';
+  import { outDuration, outLen, toOutput, toSource, captionsForOutput, type Segment } from './cuts';
   import { startOf, endOf, type Caption } from './captions';
   import type { Thumb } from './thumbs';
   import { tickStep } from './waveform';
   import { clipAt, clipStarts, itemLen, audioLanes, trimAudio, type AudioItem, type Clip } from './project';
   import { t } from './i18n.svelte';
+  import { lanes as stackLanes, trimOverlay, type Overlay } from './overlay';
 
   let {
     segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = 1,
     selected = $bindable(-1), selectedCapIds = new Set<string>(), selectedAudio = $bindable(''), onselectcap,
-    onseek, ontrim, oncommit, onmovecap, onaudio,
+    onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
+    pending = [], beats, out,
+    overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
   }: {
+    out?: number; // output time of the playhead (from the player clock)
+    beats?: Map<string, number[]>; // assetId → beat times in the file (music)
+    pending?: [number, number][]; // clean-up preview: ranges that would be cut, sequence time
+    overlays?: Overlay[]; // layers over the video, output time
+    selectedOverlay?: string;
+    onoverlay?: (id: string, patch: Partial<Overlay>) => void; // move or trim a layer, live
     segments: Segment[];
     time: number; // sequence time
     clips: Clip[];
@@ -28,6 +39,9 @@
     onselectcap: (id: string, e: MouseEvent) => void; // Ctrl/⌘ toggles, Shift selects a range
     selectedAudio: string;
     onseek: (out: number) => void;
+    onseeksrc?: (src: number) => void; // show the frame at a source time (live trim preview)
+    snap?: boolean; // snap drags to edges and the playhead (hold Alt to bypass)
+    range?: [number | null, number | null] | null; // I/O marks, sequence time
     ontrim: (i: number, start: number, end: number) => void; // live while dragging
     oncommit: () => void; // a drag started: snapshot for undo
     onmovecap: (id: string, start: number, end: number) => void; // move or retime a caption, live, sequence time
@@ -49,15 +63,53 @@
 
   function moveAudio(e: PointerEvent, item: AudioItem) {
     selectedAudio = item.id;
-    const a = item.at;
-    drag(e, (d) => onaudio(item.id, { at: Math.max(0, Math.min(total - 0.1, a + d)) }));
+    const a = item.at, len = audLen(item), pts = outPoints(item.id);
+    drag(e, (d, on) => {
+      const at = a + d;
+      onaudio(item.id, { at: Math.max(0, Math.min(total - 0.1, at + nearest([at, at + len], pts, on, idOut))) });
+    });
   }
   // Drag an audio item's edge to trim it (the left edge also moves its start).
   function audEdge(e: PointerEvent, item: AudioItem, side: 'start' | 'end') {
     selectedAudio = item.id;
-    const dur = durations.get(item.assetId) ?? 0;
-    drag(e, (d) => onaudio(item.id, trimAudio(item, dur, side, d)));
+    const dur = durations.get(item.assetId) ?? 0, pts = outPoints(item.id);
+    const x = side === 'start' ? item.at : item.at + audLen(item);
+    drag(e, (d, on) => onaudio(item.id, trimAudio(item, dur, side, d + nearest([x + d], pts, on, idOut))));
   }
+  // Layers: same gestures as audio items (drag to move, edges to trim), snapping in output time.
+  function moveOverlay(e: PointerEvent, o: Overlay) {
+    selectedOverlay = o.id;
+    const a = o.at, pts = outPoints(o.id);
+    drag(e, (d, on) => {
+      const at = a + d;
+      onoverlay(o.id, { at: Math.max(0, Math.min(total - 0.1, at + nearest([at, at + o.len], pts, on, idOut))) });
+    });
+  }
+  function ovEdge(e: PointerEvent, o: Overlay, side: 'start' | 'end') {
+    selectedOverlay = o.id;
+    const dur = o.kind === 'video' ? durations.get(o.assetId ?? '') ?? Infinity : Infinity, pts = outPoints(o.id);
+    const x = side === 'start' ? o.at : o.at + o.len;
+    drag(e, (d, on) => onoverlay(o.id, trimOverlay(o, side, d + nearest([x + d], pts, on, idOut), dur)));
+  }
+  const ovLanes = $derived(stackLanes(overlays));
+  const ovCount = $derived(Math.max(1, ...[...ovLanes.values()].map((l) => l + 1)));
+  const ovLabel = (o: Overlay) => (o.kind === 'text' ? o.text ?? '' : names.get(o.assetId ?? '') ?? '');
+  const ovIcon = (o: Overlay) => (o.kind === 'text' ? 'title' : o.kind === 'image' ? 'image' : 'picture_in_picture_alt') as IconName;
+
+  // Beat times of an audio item in output time (only the part that plays).
+  const beatsOf = (a: AudioItem) => {
+    const b = beats?.get(a.assetId) ?? [], off = a.offset ?? 0, len = audLen(a);
+    return b.flatMap((x) => (x >= off && x < off + len ? [a.at + x - off] : []));
+  };
+  // Keyboard: with a timeline item focused, ←/→ move it by 0.1s (Shift: 1s); one undo step per press.
+  function keyMove(e: KeyboardEvent, move: (d: number) => void) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    e.stopPropagation();
+    oncommit();
+    move((e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 1 : 0.1));
+  }
+  const fmtT = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
   const audLen = (a: AudioItem) => itemLen(a, durations.get(a.assetId) ?? 0);
   // Overlapping audio items stack into lanes; the Music & VO row grows to fit them.
   const lanes = $derived(audioLanes(audios, (id) => durations.get(id) ?? 0));
@@ -67,15 +119,19 @@
   let inner = $state<HTMLDivElement>();
   let wave = $state<HTMLCanvasElement>();
   let width = $state(0); // inner width in px
-  const total = $derived(outDuration(segments) || 1);
-  const playhead = $derived(toOutput(segments, time));
+  // While a drag is live the scale is frozen at its starting length (it only grows), so the edge
+  // being dragged stays under the pointer instead of the whole timeline rescaling.
+  let held = $state<number | null>(null);
+  const live = $derived(outDuration(segments) || 1);
+  const total = $derived(held === null ? live : Math.max(held, live));
+  const playhead = $derived(out ?? toOutput(segments, time));
   const pct = (s: number) => `${(s / total) * 100}%`;
 
   // Segment positions in output time.
   const segPos = $derived.by(() => {
     let acc = 0;
     return segments.map((s) => {
-      const p = { start: acc, len: s.end - s.start };
+      const p = { start: acc, len: outLen(s) };
       acc += p.len;
       return p;
     });
@@ -137,8 +193,39 @@
     el.onpointerup = el.onpointercancel = () => (el.onpointermove = el.onpointerup = el.onpointercancel = null);
   }
 
-  // Generic horizontal drag: calls move(deltaSeconds) live; a press without movement runs onclick.
-  function drag(e: PointerEvent, move: (d: number) => void, onclick?: () => void) {
+  // ---- Snapping ----
+  // Drags snap to strip edges, caption edges, audio edges and the playhead when within SNAP_PX.
+  // Hold Alt (Option) while dragging to place freely. A guide line marks the snap.
+  const SNAP_PX = 8;
+  let guide = $state<number | null>(null); // output time of the active snap line
+  const tol = () => (SNAP_PX * total) / (inner?.clientWidth || 1);
+  // Snap points in output time (audio items live there).
+  const outPoints = (skipAudio = '') => [0, total, ...(playhead === null ? [] : [playhead]),
+    ...segPos.flatMap((p) => [p.start, p.start + p.len]),
+    ...outCaps.flatMap((c) => [startOf(c), endOf(c)]),
+    ...audios.filter((a) => a.id !== skipAudio).flatMap((a) => [a.at, a.at + audLen(a)]),
+    ...overlays.filter((o) => o.id !== skipAudio).flatMap((o) => [o.at, o.at + o.len]),
+    ...audios.filter((a) => a.id !== skipAudio).flatMap(beatsOf)];
+  // Snap points in sequence (source) time (strips and captions live there).
+  const srcPoints = (skipCap = '', skipSeg = -1) => [0, duration, time,
+    ...segments.flatMap((g, i) => (i === skipSeg ? [] : [g.start, g.end])),
+    ...captions.filter((c) => c.id !== skipCap).flatMap((c) => [startOf(c), endOf(c)])];
+  // Nearest point within tolerance: returns the shift to apply (0 = no snap) and sets the guide.
+  function nearest(vals: number[], pts: number[], on: boolean, toOut: (v: number) => number | null): number {
+    guide = null;
+    if (!on) return 0;
+    let best = 0, bd = tol();
+    for (const v of vals) for (const p of pts) {
+      const d = Math.abs(p - v);
+      if (d < bd) ((bd = d), (best = p - v), (guide = toOut(p)));
+    }
+    return best;
+  }
+  const idOut = (v: number) => v;
+  const srcOut = (v: number) => toOutput(segments, v) ?? null;
+
+  // Generic horizontal drag: calls move(deltaSeconds, snapOn) live; a press without movement runs onclick.
+  function drag(e: PointerEvent, move: (d: number, snapOn: boolean) => void, onclick?: () => void) {
     e.stopPropagation();
     const x0 = e.clientX, perPx = total / inner!.clientWidth;
     const el = e.currentTarget as HTMLElement;
@@ -146,25 +233,36 @@
     el.setPointerCapture(e.pointerId);
     el.onpointermove = (m) => {
       if (!moved && Math.abs(m.clientX - x0) < 3) return;
-      if (!moved) ((moved = true), oncommit());
-      move((m.clientX - x0) * perPx);
+      if (!moved) ((moved = true), (held = live), oncommit());
+      move((m.clientX - x0) * perPx, snap && !m.altKey);
     };
     el.onpointerup = el.onpointercancel = (u) => {
       el.onpointermove = el.onpointerup = el.onpointercancel = null;
+      guide = null;
+      held = null;
       if (u.type === 'pointerup' && !moved) onclick?.();
     };
   }
 
   function edge(e: PointerEvent, i: number, side: 'start' | 'end') {
-    const s0 = segments[i];
-    drag(e, (d) => (side === 'start' ? ontrim(i, s0.start + d, s0.end) : ontrim(i, s0.start, s0.end + d)));
+    const s0 = segments[i], pts = srcPoints('', i); // captured at drag start, so the preview seek doesn't move the target
+    const k = s0.fx?.speed ?? 1; // dragging an edge of a sped-up strip moves source time faster
+    drag(e, (d, on) => {
+      const v = (side === 'start' ? s0.start : s0.end) + d * k;
+      const x = v + nearest([v], pts, on, srcOut);
+      if (side === 'start') ontrim(i, x, s0.end);
+      else ontrim(i, s0.start, x);
+      // Live preview: show the frame at the edge being trimmed (the last frame for the out edge).
+      onseeksrc?.(side === 'start' ? x : Math.max(s0.start, x - 1 / 30));
+    });
   }
 
   function moveCap(e: PointerEvent, id: string) {
     const c = sourceById.get(id);
     if (!c) return;
-    const a = startOf(c), b = endOf(c);
-    drag(e, (d) => {
+    const a = startOf(c), b = endOf(c), pts = srcPoints(id);
+    drag(e, (d0, on) => {
+      const d = d0 + nearest([a + d0, b + d0], pts, on, srcOut);
       const dd = Math.max(-a, Math.min(duration - b, d));
       onmovecap(id, a + dd, b + dd);
     }, () => onseek(toOutput(segments, a) ?? 0));
@@ -173,10 +271,12 @@
   function capEdge(e: PointerEvent, id: string, side: 'start' | 'end') {
     const c = sourceById.get(id);
     if (!c) return;
-    const a = startOf(c), b = endOf(c);
-    drag(e, (d) => (side === 'start'
-      ? onmovecap(id, Math.max(0, Math.min(b - 0.1, a + d)), b)
-      : onmovecap(id, a, Math.max(a + 0.1, Math.min(duration, b + d)))));
+    const a = startOf(c), b = endOf(c), pts = srcPoints(id);
+    drag(e, (d0, on) => {
+      const d = d0 + nearest([(side === 'start' ? a : b) + d0], pts, on, srcOut);
+      if (side === 'start') onmovecap(id, Math.max(0, Math.min(b - 0.1, a + d)), b);
+      else onmovecap(id, a, Math.max(a + 0.1, Math.min(duration, b + d)));
+    });
   }
 
   // Waveform of the clips' own audio: one bar every 3px, height = loudest peak under it.
@@ -214,8 +314,9 @@
 </script>
 
 <div class="tl">
-  <div class="labels" aria-hidden="true" style:--music="{laneCount * 28 - 4}px">
+  <div class="labels" aria-hidden="true" style:--music="{laneCount * 28 - 4}px" style:--ov="{ovCount * 26 - 4}px">
     <span></span>
+    <span>{t('overlayTrack')}</span>
     <span>{t('videoTrack')}</span>
     <span>{t('audioTrack')}</span>
     <span>{t('captions')}</span>
@@ -225,26 +326,41 @@
 
   <div class="scroller" bind:this={scroller}>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="inner" style:--music="{laneCount * 28 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1}
+    <div class="inner" style:--music="{laneCount * 28 - 4}px" style:--ov="{ovCount * 26 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1}
       role="slider" tabindex="0" aria-label={t('timeline')} aria-valuemin={0} aria-valuemax={total} aria-valuenow={playhead ?? 0}
       onclick={seekAt} onpointerdown={scrub}
       onkeydown={(e) => {
-        const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        const d = (e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0) * (e.shiftKey ? 1 : 1 / 30);
         if (d) (e.preventDefault(), onseek(Math.max(0, (playhead ?? 0) + d)));
       }}>
       <div class="ruler">
         {#each ticks as s}<span class="tick mono" style:left={pct(s)}>{label(s)}</span>{/each}
       </div>
 
+      <div class="row layers">
+        {#each overlays as o (o.id)}
+          <button class="ov" class:sel={o.id === selectedOverlay} class:txt={o.kind === 'text'} style:left={pct(o.at)}
+            style:top="{(ovLanes.get(o.id) ?? 0) * 26}px" style:width={pct(Math.max(0.05, Math.min(o.len, total - o.at)))}
+            title={ovLabel(o)} aria-pressed={o.id === selectedOverlay}
+            onpointerdown={(e) => moveOverlay(e, o)} onclick={(e) => e.stopPropagation()}
+            onkeydown={(e) => keyMove(e, (d) => onoverlay(o.id, { at: Math.max(0, o.at + d) }))}
+            aria-label={t('a11y.item', { name: ovLabel(o), a: fmtT(o.at) })}>
+            {#each o.kf ?? [] as k}<span class="kd" style:left="{(k.t / o.len) * 100}%" aria-hidden="true"><Icon name="diamond" size={10} /></span>{/each}
+            <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span><Icon name={ovIcon(o)} size={13} /> {ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
+        {/each}
+      </div>
+
       <div class="row">
         {#each segments as s, i}
-          <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events (segment select is mouse-only; keyboard users split/delete via shortcuts) -->
-          <div class="seg" class:sel={i === selected} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
+          <div class="seg" class:sel={i === selected} role="button" tabindex="0" aria-pressed={i === selected}
+            aria-label={t('a11y.strip', { n: i + 1, name: clipName(s), a: fmtT(segPos[i].start), b: fmtT(segPos[i].start + segPos[i].len) })}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selected = i; } }} class:lift={s.fx?.lift} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
             onclick={() => (selected = i)} title={clipName(s)}>
             <div class="thumbs">
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>
-            <span class="cname">{clipName(s)}</span>
+            {#if s.fx?.trans && i > 0}<span class="trn" title={t('trans.' + s.fx.trans)} aria-hidden="true"><Icon name="transition_fade" size={13} /></span>{/if}
+            <span class="cname">{#if s.fx?.hold}<Icon name="ac_unit" size={12} /> {s.fx.hold}s{:else}{s.fx?.lift ? t('gap') : clipName(s)}{/if}{#if s.fx?.zoom} <Icon name="zoom_in" size={12} />{/if}{s.fx?.speed ? ` ${s.fx.speed}×` : ''}</span>
             {#if i === selected}
               <div class="handle l" role="slider" tabindex="-1" aria-label={t('trimStart')} aria-valuenow={s.start}
                 onpointerdown={(e) => edge(e, i, 'start')}></div>
@@ -262,7 +378,10 @@
           <button class="cap" class:sel={selectedCapIds.has(c.id)}
             style:left={pct(startOf(c))} style:width={pct(Math.max(0.05, endOf(c) - startOf(c)))}
             title={c.words.map((w) => w.text).join(' ')}
-            onpointerdown={(e) => moveCap(e, c.id)}
+            onpointerdown={(e) => moveCap(e, c.id)} onkeydown={(e) => keyMove(e, (d) => {
+              const src = sourceById.get(c.id);
+              if (src) onmovecap(c.id, Math.max(0, startOf(src) + d), Math.min(duration, endOf(src) + d));
+            })} aria-label={t('a11y.cap', { n: i + 1, a: fmtT(startOf(c)), b: fmtT(endOf(c)), text: c.words.map((w) => w.text).join(' ') })}
             onclick={(e) => { e.stopPropagation(); onselectcap(c.id, e); }}>
             <span class="edge l" aria-hidden="true" onpointerdown={(e) => capEdge(e, c.id, 'start')}></span>{t('lineN', { n: i + 1 })}<span class="edge r" aria-hidden="true" onpointerdown={(e) => capEdge(e, c.id, 'end')}></span></button>
         {/each}
@@ -285,11 +404,26 @@
           <button class="aud" class:sel={item.id === selectedAudio} style:left={pct(item.at)}
             style:top="{(lanes.get(item.id) ?? 0) * 28}px" style:width={pct(Math.min(audLen(item), total - item.at))}
             title={names.get(item.assetId)} aria-pressed={item.id === selectedAudio}
-            onpointerdown={(e) => moveAudio(e, item)} onclick={(e) => e.stopPropagation()}>
-            <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span>♪ {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
+            onpointerdown={(e) => moveAudio(e, item)} onclick={(e) => e.stopPropagation()}
+            onkeydown={(e) => keyMove(e, (d) => onaudio(item.id, { at: Math.max(0, item.at + d) }))}
+            aria-label={t('a11y.item', { name: names.get(item.assetId) ?? '', a: fmtT(item.at) })}>
+            {#each beatsOf(item) as b}<span class="beat" style:left="{((b - item.at) / audLen(item)) * 100}%" aria-hidden="true"></span>{/each}
+            <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span><Icon name="music_note" size={13} /> {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
         {/each}
       </div>
 
+      {#if range && (range[0] !== null || range[1] !== null)}
+        {@const a = toOutput(segments, range[0] ?? range[1]!) ?? 0}
+        {@const b = toOutput(segments, range[1] ?? range[0]!) ?? a}
+        <div class="range" style:left={pct(Math.min(a, b))} style:width={pct(Math.abs(b - a))} aria-hidden="true">
+          {#if range[0] !== null}<span class="mk in">I</span>{/if}{#if range[1] !== null}<span class="mk out">O</span>{/if}
+        </div>
+      {/if}
+      {#each pending as [a, b]}
+        {@const x = toOutput(segments, a)}
+        {#if x !== null}<div class="pend" style:left={pct(x)} style:width={pct(Math.max(0.01, b - a))} aria-hidden="true"></div>{/if}
+      {/each}
+      {#if guide !== null}<div class="guide" style:left={pct(guide)} aria-hidden="true"></div>{/if}
       {#if playhead !== null}
         <div class="playhead" style:left={pct(playhead)}>
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events (the timeline itself is the keyboard slider) -->
@@ -303,7 +437,7 @@
 <style>
   .tl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; user-select: none; -webkit-user-select: none;
     -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
-  .labels, .inner { display: grid; grid-template-rows: 20px 48px 30px 22px 22px var(--music, 24px); row-gap: 6px; }
+  .labels, .inner { display: grid; grid-template-rows: 20px var(--ov, 22px) 48px 30px 22px 22px var(--music, 24px); row-gap: 6px; }
   /* Music & VO sits in its own area under a divider. */
   .labels > span:last-child, .inner > .row.music { border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 2px; align-self: start; }
   .labels { font-size: 12px; color: var(--muted); align-items: center; }
@@ -335,12 +469,30 @@
   .aud { position: absolute; top: 0; height: 24px; min-width: 8px; padding: 0 8px; justify-content: flex-start; overflow: hidden;
     white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(106 184 255 / .4);
     background: rgb(106 184 255 / .12); color: var(--speaker-1); cursor: grab; touch-action: none; }
+  .ov { position: absolute; top: 0; height: 22px; min-width: 8px; padding: 0 8px; justify-content: flex-start; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(190 140 255 / .45);
+    background: rgb(190 140 255 / .14); color: #c9a6ff; cursor: grab; touch-action: none; }
+  .beat { position: absolute; top: 3px; bottom: 3px; width: 1px; background: rgb(106 184 255 / .7); pointer-events: none; }
+  .trn { position: absolute; left: 2px; top: 2px; font-size: 11px; color: #fff; background: rgb(0 0 0 / .6); border-radius: 4px; padding: 0 3px; z-index: 1; pointer-events: none; }
+  .kd { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: 9px; color: #ffd84d; pointer-events: none; text-shadow: 0 0 2px #000; }
+  .seg.lift { background: repeating-linear-gradient(45deg, var(--surface) 0 6px, var(--card) 6px 12px); }
+  .seg.lift .thumbs { opacity: .12; }
+  .ov.txt { border-color: rgb(255 170 90 / .5); background: rgb(255 170 90 / .14); color: #ffbf80; }
+  .ov.sel { box-shadow: 0 0 0 1px currentColor; font-weight: 700; z-index: 2; }
+  .ov:hover .edge, .ov.sel .edge { background: rgb(255 255 255 / .35); }
   .aud.sel { border-color: var(--speaker-1); background: rgb(106 184 255 / .25); }
   /* Edge handles: drag to retime/trim. Wide enough for touch, invisible until hovered. */
   .edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; touch-action: none; z-index: 1; }
   .edge.l { left: 0; border-radius: 6px 0 0 6px; } .edge.r { right: 0; border-radius: 0 6px 6px 0; }
   .cap:hover .edge, .cap.sel .edge { background: rgb(200 245 96 / .55); }
   .aud:hover .edge, .aud.sel .edge { background: rgb(106 184 255 / .55); }
+  .pend { position: absolute; top: 20px; bottom: 0; pointer-events: none; z-index: 1;
+    background: repeating-linear-gradient(45deg, rgb(255 107 107 / .35) 0 4px, rgb(255 107 107 / .12) 4px 8px); border-left: 1px solid #ff6b6b; border-right: 1px solid #ff6b6b; }
+  .guide { position: absolute; top: 0; bottom: 0; width: 1px; background: #ffd84d; pointer-events: none; z-index: 4; box-shadow: 0 0 4px #ffd84d; }
+  .range { position: absolute; top: 0; bottom: 0; background: rgb(255 216 77 / .12); border-left: 1px solid #ffd84d; border-right: 1px solid #ffd84d;
+    pointer-events: none; z-index: 1; min-width: 1px; }
+  .mk { position: absolute; top: 2px; font-size: 10px; font-weight: 700; color: #1a1a1a; background: #ffd84d; border-radius: 3px; padding: 0 3px; }
+  .mk.in { left: 2px; } .mk.out { right: 2px; }
   .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); pointer-events: none; transform: translateX(-1px); }
   .playhead::before { content: ''; position: absolute; top: -2px; left: -4px; border: 5px solid transparent; border-top-color: var(--accent); }
   /* Grab area around the playhead's head, wider than it looks so a finger can catch it. */

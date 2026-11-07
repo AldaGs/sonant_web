@@ -64,3 +64,34 @@ console.log('cuts ok');
   assert.deepEqual(cutRange(halves, 2, 3).map((s) => s.fx), [fx, fx, fx]);
   assert.equal(trim(halves, 0, 1, 4, 10)[0].fx, fx);
 }
+
+// Punch-in zoom and lift.
+{
+  const { zoomPlace, keptCaptions: kc } = await import('./cuts.ts');
+  assert.deepEqual(zoomPlace([0, 0, 100, 50], 100, 50, undefined, 0), [0, 0, 100, 50]);
+  assert.deepEqual(zoomPlace([0, 0, 100, 50], 100, 50, { zoom: 2 }, 0), [-50, -25, 200, 100]);
+  assert.deepEqual(zoomPlace([0, 0, 100, 50], 100, 50, { zoom: 2, zoomIn: true }, 0), [0, 0, 100, 50]);
+  const caps = [{ id: 'a', words: [{ text: 'hi', start: 1, end: 1.5 }] }];
+  assert.equal(kc(caps, [{ start: 0, end: 2 }]).length, 1);
+  assert.equal(kc(caps, [{ start: 0, end: 2, fx: { lift: true } }]).length, 0);
+  console.log('zoom/lift ok');
+}
+
+// Speed and freeze frames.
+{
+  const { outLen, outDuration, toOutput, toSource, freezeAt, splitAt: sa } = await import('./cuts.ts');
+  const fast = [{ start: 0, end: 4, fx: { speed: 2 } }, { start: 4, end: 6 }];
+  assert.equal(outDuration(fast), 4);
+  assert.equal(toOutput(fast, 2), 1);
+  assert.equal(toOutput(fast, 5), 3);
+  assert.equal(toSource(fast, 1), 2);
+  assert.equal(toSource(fast, 3), 5);
+  const fr = freezeAt([{ start: 0, end: 4 }], 2, 1.5);
+  assert.equal(fr.length, 3);
+  assert.equal(fr[1].fx?.hold, 1.5);
+  assert.ok(Math.abs(outDuration(fr) - (4 - 1 / 30 + 1.5)) < 1e-9);
+  assert.equal(toSource(fr, 2.7), 2); // inside the freeze: its frame
+  assert.equal(outLen(fr[1]), 1.5);
+  assert.equal(sa(fr, 2.01), fr); // can't split a freeze frame
+  console.log('speed/freeze ok');
+}

@@ -4,20 +4,34 @@
   import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Caption, type Word } from './lib/captions';
   import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
-  import { splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment, type Fx } from './lib/cuts';
+  import { zoomPlace, segAt, PUNCH_IN, freezeAt, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment, type Fx } from './lib/cuts';
   import { drawFrame } from './lib/segment';
-  import { clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
+  import { itemLen, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
+  import { Transitioner, TRANSITIONS, TRANS_DUR } from './lib/transitions';
+  import { Grader, COLOR_PRESETS, parseCube, type Color, type Lut } from './lib/grade';
+  import { coverPlace, median } from './lib/reframe';
+  import { SAFE_ZONES, drawSafeZones, overlapsZone, type Platform } from './lib/safezones';
+  import { outputSize, type Aspect } from './lib/export';
+  import { subjectCenter } from './lib/segment';
+  import { wantsProxy, makeProxy, loadProxy, saveProxy, deleteProxy } from './lib/proxy';
+  import { cleanup, cleanupRanges } from './lib/cleanup.svelte';
+  import { speechRanges } from './lib/audio';
+  import { beatsOfFile } from './lib/beats';
+  import { translateTexts, translated, type Dir } from './lib/translate';
+  import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
+  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
   import { audioPeaks } from './lib/waveform';
   import * as store from './lib/store';
   import { t, ui, setLang } from './lib/i18n.svelte';
   import Timeline from './lib/Timeline.svelte';
+  import Icon from './lib/Icon.svelte';
   import ExportDialog from './lib/ExportDialog.svelte';
   import StylePanel from './lib/StylePanel.svelte';
   import TranscriptView from './lib/TranscriptView.svelte';
-  import { loadDoc, saveDoc, saveProjectFile, deleteAssetIfUnused, type ProjectDoc, type ProjectMeta } from './lib/projects';
+  import { loadDoc, saveDoc, saveProjectFile, deleteAssetIfUnused, addVersion, listVersions, type ProjectDoc, type ProjectMeta, type Version } from './lib/projects';
 
   // The editor works on one project at a time; the home page (#/) lists them all.
   let { projectId }: { projectId: string } = $props();
@@ -27,6 +41,9 @@
   let clips = $state<Clip[]>([]); // video track, in play order
   let audios = $state<AudioItem[]>([]); // music / voiceover, output time
   let clipVolume = $state(1); // volume of the clips' own sound
+  let overlays = $state<Overlay[]>([]); // picture-in-picture video, images, text layers; output time, bottom first
+  let selectedOverlay = $state('');
+  const images = new Map<string, HTMLImageElement>(); // assetId → decoded image
   let urls = $state<Record<string, string>>({}); // assetId → object URL
   const files = new Map<string, File>(); // assetId → file
   let thumbs = $state<Record<string, Thumb[]>>({});
@@ -39,8 +56,13 @@
   const hasMedia = $derived(clips.length > 0);
   const videoIds = $derived([...new Set(clips.map((c) => c.assetId))]);
   const firstVideo = $derived(clips.map((c) => assets.find((a) => a.id === c.assetId)).find((a) => a?.width));
-  const frameW = $derived(firstVideo?.width || 1280);
-  const frameH = $derived(firstVideo?.height || 720);
+  const srcW = $derived(firstVideo?.width || 1280);
+  const srcH = $derived(firstVideo?.height || 720);
+  // Canvas shape for the whole project (Original, 9:16, 1:1, 4:5, 16:9); videos cover it around each strip's focus.
+  let canvasAspect = $state<Aspect>('source');
+  const canvasSize = $derived(outputSize(srcW, srcH, 'source', canvasAspect));
+  const frameW = $derived(canvasSize.width);
+  const frameH = $derived(canvasSize.height);
 
   // ---- Editing state ----
   let time = $state(0); // sequence time
@@ -122,25 +144,31 @@
     });
   }
 
-  const player = new Player(() => ({ clips, audios, segments, durations, clipVolume }));
+  const player = new Player(() => ({ clips, audios, segments, durations, clipVolume, overlays, speech }));
 
   // Undo/redo: snapshots of the editable project.
-  type Snap = { segments: Segment[]; captions: Caption[]; clips: Clip[]; audios: AudioItem[] };
+  type Snap = { segments: Segment[]; captions: Caption[]; clips: Clip[]; audios: AudioItem[]; overlays: Overlay[] };
   let past = $state<Snap[]>([]);
   let future = $state<Snap[]>([]);
-  const snap = (): Snap => $state.snapshot({ segments, captions, clips, audios });
-  const restore = (s: Snap) => ((segments = s.segments), (captions = s.captions), (clips = s.clips), (audios = s.audios), (selected = -1), (selectedCapIds = []));
+  const snap = (): Snap => $state.snapshot({ segments, captions, clips, audios, overlays });
+  const restore = (s: Snap) => ((segments = s.segments), (captions = s.captions), (clips = s.clips), (audios = s.audios), (overlays = s.overlays ?? []), (selected = -1), (selectedCapIds = []));
   function commit() {
     past = [...past.slice(-99), snap()]; // ponytail: 100-step cap, full snapshots; fine at caption-list sizes
     future = [];
   }
   function undo() {
     const s = past.at(-1);
-    if (s) ((future = [snap(), ...future]), (past = past.slice(0, -1)), restore(s));
+    if (s) ((future = [snap(), ...future]), (past = past.slice(0, -1)), restore(s), announce(t('a11y.undone')));
   }
   function redo() {
     const s = future[0];
-    if (s) ((past = [...past, snap()]), (future = future.slice(1)), restore(s));
+    if (s) ((past = [...past, snap()]), (future = future.slice(1)), restore(s), announce(t('a11y.redone')));
+  }
+  // Screen-reader announcements for actions that only change the picture or the timeline.
+  let liveMsg = $state('');
+  function announce(m: string) {
+    liveMsg = '';
+    queueMicrotask(() => (liveMsg = m));
   }
   const setCaps = (c: Caption[]) => (commit(), (captions = c));
   // Kept segments never cross a clip boundary (so clips can be reordered and exported piece by piece).
@@ -165,12 +193,45 @@
   let ready = false; // no autosave until the saved project has been restored
   let savedFonts: SavedFont[] = [];
 
+  // ---- Proxies: small fast-seeking copies for the preview (export uses the originals) ----
+  let proxyUrls = $state<Record<string, string>>({});
+  let proxyPct = $state<Record<string, number>>({}); // assetId → progress while building
+  const previewUrl = (id: string) => proxyUrls[id] ?? urls[id];
+  async function buildProxy(a: Asset) {
+    const f = files.get(a.id);
+    if (!f || a.id in proxyPct) return;
+    proxyPct[a.id] = 0;
+    try {
+      const blob = await makeProxy(f, (p) => (proxyPct[a.id] = p));
+      await saveProxy(a.id, blob).catch(() => {}); // over quota: still used this session
+      proxyUrls[a.id] = URL.createObjectURL(blob);
+      assets = assets.map((x) => (x.id === a.id ? { ...x, proxy: true } : x));
+    } catch {
+      notice = 'err.proxy';
+    } finally {
+      delete proxyPct[a.id];
+    }
+  }
+  async function dropProxy(a: Asset) {
+    if (proxyUrls[a.id]) URL.revokeObjectURL(proxyUrls[a.id]);
+    delete proxyUrls[a.id];
+    assets = assets.map((x) => (x.id === a.id ? { ...x, proxy: undefined } : x));
+    await deleteProxy(a.id);
+  }
+
   // Make a file usable: object URL, thumbnails, waveform.
   function register(a: Asset, f: File) {
     files.set(a.id, f);
     const url = URL.createObjectURL(f);
     urls[a.id] = url;
+    if (a.kind === 'image') {
+      const img = new Image();
+      img.src = url;
+      images.set(a.id, img);
+      return;
+    }
     if (a.kind === 'video') thumbnails(url, a.duration).then((th) => (thumbs[a.id] = th)).catch(() => {});
+    if (a.proxy) loadProxy(a.id).then((b) => b && (proxyUrls[a.id] = URL.createObjectURL(b)));
     audioPeaks(f).then((p) => (peaks[a.id] = p)).catch(() => {}); // no audio track: no waveform
   }
 
@@ -193,6 +254,7 @@
       assets = doc.assets ?? [];
       clips = doc.clips ?? [];
       audios = doc.audios ?? [];
+      overlays = doc.overlays ?? [];
       clipVolume = doc.clipVolume ?? 1;
       wordCache = doc.words ?? {};
       restoreDoc(doc);
@@ -209,6 +271,9 @@
     segments = doc.segments ?? [];
     style = migrateStyle(doc.style ?? {});
     language = doc.language ?? null;
+    showTr = doc.showTr ?? false;
+    canvasAspect = doc.aspect ?? 'source';
+    Promise.all((doc.luts ?? []).map((l) => store.get<Lut>('lut:' + l.id))).then((r) => (luts = r.filter((x): x is Lut => !!x)));
     // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
     if (!fonts.some((f) => f.family === style.family)) fonts = [...fonts, { family: style.family, weight: style.weight }];
   }
@@ -224,22 +289,50 @@
 
 
   async function saveNow() {
-    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume }), words: wordCache };
+    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), luts: luts.map((l) => ({ id: l.id, name: l.name })), aspect: canvasAspect, words: wordCache };
     const meta: Partial<ProjectMeta> = { duration: outDuration(segments), clips: clips.length };
     if (Date.now() - lastThumb > 10000) {
       const th = thumbnail();
       if (th) ((meta.thumb = th), (lastThumb = Date.now()));
     }
     await saveDoc(projectId, doc, meta);
+    addVersion(projectId, doc).catch(() => {}); // a snapshot every ~2 minutes of editing
   }
   $effect(() => {
-    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume });
+    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr });
+    void luts.length, canvasAspect;
     void (clips.length && thumbs[clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
     if (!ready) return;
     saving = true;
     const id = setTimeout(() => saveNow().catch(() => {}).finally(() => (saving = false)), 400);
     return () => clearTimeout(id);
   });
+
+  // ---- Version history ----
+  let histDialog = $state<HTMLDialogElement>();
+  let versions = $state<Version[]>([]);
+  async function openHistory() {
+    versions = (await listVersions(projectId)).toReversed();
+    histDialog?.showModal();
+  }
+  async function restoreVersion(v: Version) {
+    // Keep the current state as a version first, so restoring can itself be undone from here.
+    await addVersion(projectId, { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), aspect: canvasAspect } as Doc, { force: true, label: t('beforeRestore') });
+    commit();
+    const d = v.doc;
+    const have = new Set(assets.map((a) => a.id)); // media deleted since then can't come back
+    clips = (d.clips ?? []).filter((c) => have.has(c.assetId));
+    audios = (d.audios ?? []).filter((a) => have.has(a.assetId));
+    overlays = (d.overlays ?? []).filter((o) => !o.assetId || have.has(o.assetId));
+    clipVolume = d.clipVolume ?? 1;
+    restoreDoc({ ...d, assets } as Doc);
+    histDialog?.close();
+    announce(t('versionRestored'));
+  }
+  const ago = (ms: number) => {
+    const m = Math.round((Date.now() - ms) / 60000);
+    return m < 1 ? t('justNow') : m < 60 ? t('minAgo', { n: m }) : new Date(ms).toLocaleString(ui.lang);
+  };
 
   // Save the project as a .sonant file (Ctrl/⌘+S). Chrome/Edge keep writing to the same file afterwards.
   let fileStatus = $state('');
@@ -268,7 +361,9 @@
       assets = [...assets, r.asset];
       register(r.asset, r.f);
       if (!name) name = r.f.name.replace(/\.[^.]+$/, '');
+      if (wantsProxy(r.asset)) buildProxy(r.asset); // big or long footage: fast preview copy in the background
       if (r.asset.kind === 'video') addClip(r.asset.id);
+      else if (r.asset.kind === 'image') addOverlay(r.asset, at);
       else addAudio(r.asset.id, at);
     }
   }
@@ -281,12 +376,95 @@
     audios = [...audios, item];
     selectedAudio = item.id;
   }
-  const addToTimeline = (a: Asset) => (a.kind === 'video' ? addClip(a.id) : addAudio(a.id));
+  const addToTimeline = (a: Asset) => (a.kind === 'video' ? addClip(a.id) : a.kind === 'image' ? addOverlay(a) : addAudio(a.id));
+
+  // ---- Overlays (layers over the main video) ----
+  const outNow = () => player.o;
+  function pushOverlay(o: Overlay) {
+    commit();
+    overlays = [...overlays, o];
+    selectedOverlay = o.id;
+  }
+  // A video or image as a layer at the playhead (videos keep their length, capped by the timeline end).
+  function addOverlay(a: Asset, at = outNow()) {
+    const end = outDuration(segments) || a.duration;
+    const len = a.kind === 'video' ? Math.min(a.duration, Math.max(1, end - at)) : Math.min(5, Math.max(1, end - at));
+    pushOverlay(newMedia(a.kind === 'video' ? 'video' : 'image', a.id, at, len));
+  }
+  const addText = () => pushOverlay(newText(outNow(), t('newText')));
+
+  // ---- Templates (shared by every project in this browser) ----
+  let myTemplates = $state<Template[]>([]);
+  store.get<Template[]>('templates').then((l) => (myTemplates = l ?? []));
+  const saveTemplates = (l: Template[]) => ((myTemplates = l), store.set('templates', $state.snapshot(l)).catch(() => {}));
+  // Apply: caption look + its text layers (at the playhead, or stuck to the end).
+  function applyTemplate(tp: Template) {
+    commit();
+    style = { ...structuredClone($state.snapshot(tp.style)), x: style.x, y: tp.style.y };
+    const added = placeLayers(tp, outNow(), outDuration(segments));
+    overlays = [...overlays, ...added];
+    if (added[0]) selectedOverlay = added[0].id;
+  }
+  function saveTemplate() {
+    const n = prompt(t('templateName'), name ? `${name} style` : t('myTemplate'));
+    if (!n?.trim()) return;
+    saveTemplates([...myTemplates, fromProject(n.trim(), $state.snapshot(style), $state.snapshot(overlays), outDuration(segments))]);
+  }
+  const deleteTemplate = (tp: Template) => confirm(t('confirmDelTemplate', { name: tp.name })) && saveTemplates(myTemplates.filter((x) => x.id !== tp.id));
+  const selOverlay = $derived(overlays.find((o) => o.id === selectedOverlay) ?? null);
+  // Live edits (sliders, drags) take one undo step: snapshot on the first change, until the next 'change' event.
+  let ovEditing = false;
+  function setOverlay(id: string, patch: Partial<Overlay>, snapshot = true) {
+    if (snapshot && !ovEditing) ((ovEditing = true), commit());
+    overlays = overlays.map((o) => (o.id === id ? { ...o, ...patch } : o));
+  }
+  // Transform edits. Once a layer has keyframes, changes to animated values go into the keyframe at the
+  // playhead (added if there isn't one), like CapCut; flip and crop always change the base transform.
+  const setTf = (id: string, tf: Partial<Transform>, snapshot = true) => {
+    const o = overlays.find((x) => x.id === id);
+    if (!o) return;
+    const animated = !!o.kf?.length && ANIMATED.some((k) => k in tf);
+    if (!animated) return setOverlay(id, { tf: { ...o.tf, ...tf } }, snapshot);
+    const out = outNow(), base = { ...o.tf, ...Object.fromEntries(Object.entries(tf).filter(([k]) => !(ANIMATED as readonly string[]).includes(k))) };
+    setOverlay(id, { tf: base, kf: setKey(o.kf, out - o.at, { ...tfAt(o, out), ...tf }) }, snapshot);
+  };
+  // Keyframe controls for the selected layer, at the playhead.
+  const layerT = (o: Overlay) => Math.min(o.len, Math.max(0, outNow() - o.at));
+  function toggleKey(o: Overlay) {
+    const t0 = layerT(o);
+    if (keyAt(o.kf, t0)) setOverlay(o.id, { kf: dropKey(o.kf!, t0) });
+    else setOverlay(o.id, { kf: setKey(o.kf, t0, tfAt(o, outNow())) });
+    doneEditing();
+  }
+  function jumpKey(o: Overlay, dir: -1 | 1) {
+    const t0 = layerT(o), ks = (o.kf ?? []).map((k) => k.t);
+    const t1 = dir > 0 ? ks.find((t) => t > t0 + 1e-3) : ks.findLast((t) => t < t0 - 1e-3);
+    if (t1 !== undefined) seekOut(o.at + t1);
+  }
+  const punchIn = (o: Overlay) => (setOverlay(o.id, { kf: punchKeys(o, layerT(o)) }), doneEditing());
+  // Clearing keeps the look at the playhead as the layer's fixed transform.
+  const clearKeys = (o: Overlay) => (setOverlay(o.id, { tf: tfAt(o, outNow()), kf: undefined }), doneEditing());
+  const doneEditing = () => (ovEditing = false);
+  function removeOverlay() {
+    if (!selectedOverlay) return false;
+    commit();
+    overlays = overlays.filter((o) => o.id !== selectedOverlay);
+    selectedOverlay = '';
+    return true;
+  }
+  // Stacking order: move the selected layer up (drawn later) or down.
+  function restack(dir: -1 | 1) {
+    const i = overlays.findIndex((o) => o.id === selectedOverlay);
+    if (i < 0) return;
+    commit();
+    overlays = move(overlays, i, dir);
+  }
 
   async function removeAsset(a: Asset) {
     if (!confirm(t('confirmRemoveAsset', { name: a.name }))) return;
     setClips(clips.filter((c) => c.assetId !== a.id));
     audios = audios.filter((x) => x.assetId !== a.id);
+    overlays = overlays.filter((x) => x.assetId !== a.id);
     assets = assets.filter((x) => x.id !== a.id);
     past = future = []; // the file is gone, so earlier states can't be restored
     files.delete(a.id);
@@ -296,8 +474,8 @@
   }
 
   // Register each <video>/<audio> with the player.
-  function media(node: HTMLMediaElement, [kind, id]: ['v' | 'a', string]) {
-    const map = (kind === 'v' ? player.videos : player.audios) as Map<string, HTMLMediaElement>;
+  function media(node: HTMLMediaElement, [kind, id]: ['v' | 'a' | 'o', string]) {
+    const map = (kind === 'v' ? player.videos : kind === 'o' ? player.overlays : player.audios) as Map<string, HTMLMediaElement>;
     map.set(id, node);
     return { destroy: () => map.get(id) === node && map.delete(id) };
   }
@@ -341,6 +519,11 @@
         setCaps(fresh);
         if (!captions.length) error = 'noSpeech';
       }
+      // Auto clean-up: cut fillers and long pauses straight away (one more undo step, so it can be undone alone).
+      if (cleanup.auto && captions.length) {
+        const r = cleanupRanges(captions.flatMap((c) => c.words), duration, segments);
+        if (r.fillers.length || r.silences.length) cutRanges([...r.fillers, ...r.silences]);
+      }
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -351,13 +534,20 @@
 
   // ---- Playback ----
   const active = (c: Caption) => time >= startOf(c) && time < endOf(c);
-  const seek = (s: number) => (player.seek(Math.max(0, Math.min(s, duration))), (time = player.t));
+  const seek = (s: number) => (player.seek(Math.max(0, Math.min(s, duration))), (time = player.t), (outClock = player.o));
+  // Seek by output time (exact inside freeze frames, where source time stands still).
+  function seekOut(o: number) {
+    seek(toSource(segments, o));
+    player.o = Math.max(0, Math.min(o, outDuration(segments)));
+    outClock = player.o;
+  }
   const toggle = () => (player.playing ? player.pause() : player.play(), (paused = !player.playing));
   const update = (i: number, c: Caption) => setCaps(captions.with(i, c));
-  const outTime = $derived(toOutput(segments, time) ?? 0);
+  let outClock = $state(0); // output time from the player (moves during freeze frames, unlike `time`)
+  const outTime = $derived(outClock);
 
   function download(ext: 'srt' | 'vtt') {
-    const caps = captionsForOutput(captions, segments);
+    const caps = captionsForOutput(displayCaps, segments);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([ext === 'srt' ? toSRT(caps) : toVTT(caps)], { type: 'text/plain' }));
     a.download = (name || 'captions') + '.' + ext;
@@ -371,25 +561,56 @@
     const ctx = canvas.getContext('2d')!;
     const cv = canvas;
     let id = 0;
+    // Last good video frame (downscaled): shown while the element is seeking instead of black.
+    const hold = document.createElement('canvas');
+    const hctx = hold.getContext('2d')!;
+    let held = false;
     const tick = () => {
       const w = frameW, h = frameH;
       if (cv.width !== w || cv.height !== h) ((cv.width = w), (cv.height = h));
       const tNow = player.tick();
       time = tNow;
+      outClock = player.o;
       paused = !player.playing;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
       const p = player.frame();
-      const f = p && p.videoWidth ? p : null;
-      const k = f ? Math.max(w / f.videoWidth, h / f.videoHeight) : 1;
-      const dw = f ? f.videoWidth * k : w, dh = f ? f.videoHeight * k : h;
-      const cap = visibleCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
+      let f: CanvasImageSource | null = p && p.videoWidth ? p : null;
+      let fw = p?.videoWidth ?? 0, fh = p?.videoHeight ?? 0;
+      if (p && f && !p.seeking) {
+        const s = Math.min(1, 720 / Math.max(fw, fh));
+        const hw = Math.round(fw * s), hh = Math.round(fh * s);
+        if (hold.width !== hw || hold.height !== hh) ((hold.width = hw), (hold.height = hh));
+        hctx.drawImage(p, 0, 0, hw, hh);
+        held = true;
+      } else if (held && player.clipsAt()) {
+        f = hold; fw = hold.width; fh = hold.height;
+      }
+      const k = f ? Math.max(w / fw, h / fh) : 1;
+      const dw = f ? fw * k : w, dh = f ? fh * k : h;
+      const cap = displayCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
       capOnScreen = cap ?? null;
-      const fx = segments.find((s) => tNow >= s.start && tNow < s.end)?.fx;
+      const strip = segAt(segments, tNow), fx = strip?.fx;
+      if (fx?.lift) f = null; // a lifted strip is a gap: black
+      else if (f && fx?.color) f = grader.apply(f, fw, fh, fx.color, lutMap.get(fx.color.lut ?? ''));
       capBox = null;
-      drawFrame(ctx, f, f?.videoWidth ?? w, f?.videoHeight ?? h, [(w - dw) / 2, (h - dh) / 2, dw, dh], fx, !!cap,
-        () => (capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null));
+      drawFrame(ctx, f, f ? fw : w, f ? fh : h, zoomPlace(f ? coverPlace(w, h, fw, fh, fx?.focus) : [0, 0, w, h], w, h, fx, tNow - (strip?.start ?? 0)), fx, !!cap,
+        () => {
+          placed = drawLayers(ctx, tNow);
+          capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
+        });
+      // Transition into this strip (over the finished frame: video, layers, captions).
+      const si = strip ? segments.indexOf(strip) : -1;
+      if (si >= 0) {
+        const segStartOut = toOutput(segments, strip!.start) ?? 0;
+        trans.apply(ctx, strip!.fx?.trans, si, player.o - segStartOut, strip!.fx?.transDur ?? TRANS_DUR);
+      }
+      const sel = placed.find((p) => p.id === selectedOverlay);
+      if (sel) drawLayerBox(ctx, sel, cv.width / (cv.getBoundingClientRect().width || cv.width));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
+      // Platform UI zones (preview only): captions under the app's buttons/description get a warning.
+      capInZone = !!(safe && capBox && overlapsZone(safe, capBox, w, h));
+      if (safe) drawSafeZones(ctx, safe, capInZone);
       if (capBox && (paused || hover || drag?.onBox)) drawDragBox(ctx, capBox, cv.width / (cv.getBoundingClientRect().width || cv.width));
       id = requestAnimationFrame(tick);
     };
@@ -401,6 +622,150 @@
   $effect(() => {
     document.fonts.load(fontString(style, 40)).catch(() => {});
   });
+
+  // ---- Overlay layers on the preview ----
+  let placed: Placed[] = []; // layers drawn this frame, bottom first (for hit tests)
+  const trans = new Transitioner();
+  let safe = $state<Platform | ''>('');
+  let capInZone = $state(false);
+  const grader = new Grader();
+
+  // ---- Colour: per-strip grade; LUT files are kept per project (data under lut:<id>) ----
+  let luts = $state<Lut[]>([]);
+  const lutMap = $derived(new Map(luts.map((l) => [l.id, l])));
+  async function importLut(file: File | undefined) {
+    if (!file) return;
+    try {
+      const l = parseCube(await file.text(), file.name.replace(/\.cube$/i, ''));
+      await store.set('lut:' + l.id, l);
+      luts = [...luts, l];
+      setColor({ lut: l.id, lutMix: 1 });
+    } catch {
+      error = 'err.badLut';
+    }
+  }
+  const selColor = $derived<Color>(selected >= 0 ? segments[selected]?.fx?.color ?? {} : {});
+  // Slider drags: one undo step per drag (like layer edits).
+  let colorEditing = false;
+  function setColor(patch: Partial<Color>, replace = false) {
+    if (selected < 0 || !segments[selected]) return;
+    if (!colorEditing) ((colorEditing = true), commit());
+    const color = replace ? patch : { ...segments[selected].fx?.color, ...patch };
+    segments = segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, color } });
+  }
+  // Reframing only matters when the canvas shape differs from the footage.
+  const reframes = $derived(Math.abs(frameW / frameH - srcW / srcH) > 0.01);
+  function setFocus(focus: { x: number; y: number } | undefined) {
+    if (selected < 0 || !segments[selected]) return;
+    if (!colorEditing) ((colorEditing = true), commit());
+    segments = segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, focus } });
+  }
+  // Auto-reframe: find the person in a few frames of the strip and centre on them (median, so one miss doesn't matter).
+  let reframing = $state(false);
+  async function focusOf(i: number): Promise<{ x: number; y: number } | null> {
+    const s = segments[i], starts = clipStarts(clips, durations);
+    const ci = clips.findIndex((_, k) => s.start >= starts[k] - 1e-6 && s.start < starts[k] + (durations.get(clips[k].assetId) ?? 0));
+    if (ci < 0) return null;
+    const v = document.createElement('video');
+    v.muted = true;
+    v.src = urls[clips[ci].assetId];
+    await new Promise((r, j) => ((v.onloadeddata = r), (v.onerror = j)));
+    const xs: number[] = [], ys: number[] = [];
+    for (let k = 0; k < 5; k++) {
+      v.currentTime = s.start - starts[ci] + ((k + 0.5) / 5) * (s.end - s.start);
+      await new Promise((r) => (v.onseeked = r));
+      const c = await subjectCenter(v, v.videoWidth, v.videoHeight).catch(() => null);
+      if (c) (xs.push(c.x), ys.push(c.y));
+    }
+    v.removeAttribute('src');
+    return xs.length ? { x: median(xs), y: median(ys) } : null;
+  }
+  async function autoReframe(i: number) {
+    reframing = true;
+    error = '';
+    try {
+      const f = await focusOf(i);
+      if (!f) return void (error = 'noPerson');
+      commit();
+      segments = segments.with(i, { ...segments[i], fx: { ...segments[i].fx, focus: f } });
+    } catch {
+      error = 'noPerson';
+    } finally {
+      reframing = false;
+    }
+  }
+  async function autoReframeAll() {
+    reframing = true;
+    try {
+      const fs: ({ x: number; y: number } | null)[] = [];
+      for (let i = 0; i < segments.length; i++) fs.push(await focusOf(i).catch(() => null));
+      commit();
+      segments = segments.map((s, i) => (fs[i] ? { ...s, fx: { ...s.fx, focus: fs[i]! } } : s));
+    } finally {
+      reframing = false;
+    }
+  }
+  function colorToAll() {
+    commit();
+    const color = $state.snapshot(selColor);
+    segments = segments.map((s) => ({ ...s, fx: { ...s.fx, color } }));
+  }
+  function drawLayers(ctx: CanvasRenderingContext2D, t: number): Placed[] {
+    if (toOutput(segments, t) === null) return [];
+    const out = player.o;
+    const res: Placed[] = [];
+    for (const o of overlaysAt(overlays, out)) {
+      let src: CanvasImageSource | null = null, sw = 0, sh = 0;
+      if (o.kind === 'video') {
+        const v = player.overlayFrame(o.id);
+        if (v) ((src = v), (sw = v.videoWidth), (sh = v.videoHeight));
+      } else if (o.kind === 'image') {
+        const img = images.get(o.assetId ?? '');
+        if (img?.complete && img.naturalWidth) ((src = img), (sw = img.naturalWidth), (sh = img.naturalHeight));
+      }
+      const p = drawOverlay(ctx, o, out, src, sw, sh);
+      if (p) res.push(p);
+    }
+    return res;
+  }
+  // Selection frame: rotated outline, corner squares to scale, a round knob above to rotate.
+  const ROT_GAP = 26; // CSS px from the top edge to the rotate knob
+  function drawLayerBox(ctx: CanvasRenderingContext2D, p: Placed, k: number) {
+    ctx.save();
+    ctx.translate(p.cx, p.cy);
+    ctx.rotate((p.rot * Math.PI) / 180);
+    ctx.strokeStyle = '#6ab8ff';
+    ctx.lineWidth = 2 * k;
+    ctx.strokeRect(-p.w / 2, -p.h / 2, p.w, p.h);
+    ctx.beginPath();
+    ctx.moveTo(0, -p.h / 2);
+    ctx.lineTo(0, -p.h / 2 - ROT_GAP * k);
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    const r = 5 * k;
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      ctx.fillRect(sx * p.w / 2 - r, sy * p.h / 2 - r, r * 2, r * 2);
+      ctx.strokeRect(sx * p.w / 2 - r, sy * p.h / 2 - r, r * 2, r * 2);
+    }
+    ctx.beginPath();
+    ctx.arc(0, -p.h / 2 - ROT_GAP * k, 6 * k, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  // Which part of the selected layer's frame is under a canvas point.
+  function layerHandle(p: Placed, x: number, y: number, k: number, grow: number): 'scale' | 'rotate' | null {
+    const g = (grow + 6) * k;
+    const a = (p.rot * Math.PI) / 180, top = { x: p.cx + Math.sin(a) * (p.h / 2 + ROT_GAP * k), y: p.cy - Math.cos(a) * (p.h / 2 + ROT_GAP * k) };
+    if (Math.hypot(x - top.x, y - top.y) <= g + 4 * k) return 'rotate';
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      const c = corner(p, sx, sy);
+      if (Math.hypot(x - c.x, y - c.y) <= g) return 'scale';
+    }
+    return null;
+  }
+  type LayerDrag = { id: string; mode: 'move' | 'scale' | 'rotate'; x0: number; y0: number; tf: Transform; cx: number; cy: number; d0: number; a0: number; moved: boolean };
+  let layerDrag: LayerDrag | null = null;
 
   // ---- Caption drag box ----
   // Drag inside the box (or its grab handle) to move the caption; a tap elsewhere plays/pauses.
@@ -458,6 +823,10 @@
 
   function pointer(e: PointerEvent) {
     const r = canvas!.getBoundingClientRect();
+    const k = canvas!.width / (r.width || canvas!.width);
+    const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k;
+    const grow = e.pointerType === 'mouse' ? 0 : 14;
+    if (layerPointer(e, x, y, k, grow)) return;
     if (e.type === 'pointerdown') {
       const onBox = onCaption(e);
       const capId = onBox && ownPosition(capOnScreen) ? capOnScreen!.id : null;
@@ -481,12 +850,73 @@
     }
   }
 
+  // Layers: the selected one's handles win, then the caption box, then the topmost layer under the pointer.
+  // Returns true when the event was a layer action.
+  function layerPointer(e: PointerEvent, x: number, y: number, k: number, grow: number): boolean {
+    if (e.type === 'pointerdown') {
+      const sel = placed.find((p) => p.id === selectedOverlay);
+      let mode: LayerDrag['mode'] | null = sel ? layerHandle(sel, x, y, k, grow) : null;
+      let hit = mode ? sel! : null;
+      if (!hit && !onCaption(e)) {
+        hit = [...placed].reverse().find((p) => hitPlaced(p, x, y, grow * k)) ?? null;
+        if (hit) mode = 'move';
+      }
+      if (!hit || !mode) {
+        if (selectedOverlay && !onCaption(e)) selectedOverlay = '';
+        return false;
+      }
+      const o = overlays.find((v) => v.id === hit!.id);
+      if (!o) return false;
+      selectedOverlay = o.id;
+      layerDrag = { id: o.id, mode, x0: x, y0: y, tf: { ...tfAt(o, outNow()) }, cx: hit.cx, cy: hit.cy,
+        d0: Math.max(1, Math.hypot(x - hit.cx, y - hit.cy)), a0: Math.atan2(y - hit.cy, x - hit.cx), moved: false };
+      canvas!.setPointerCapture(e.pointerId);
+      return true;
+    }
+    if (e.type === 'pointermove') {
+      if (!layerDrag) {
+        const sel = placed.find((p) => p.id === selectedOverlay);
+        const h = sel && layerHandle(sel, x, y, k, grow);
+        if (h) return ((canvas!.style.cursor = h === 'rotate' ? 'grab' : 'nwse-resize'), true);
+        if (!onCaption(e) && placed.some((p) => hitPlaced(p, x, y))) return ((canvas!.style.cursor = 'move'), (hover = false), true);
+        return false;
+      }
+      const d = layerDrag, W = canvas!.width, H = canvas!.height;
+      if (!d.moved && Math.hypot(x - d.x0, y - d.y0) < 4 * k) return true;
+      if (!d.moved) ((d.moved = true), commit());
+      if (d.mode === 'move') {
+        // Snap the centre to the frame's centre lines (Alt to place freely).
+        let nx = d.tf.x + (x - d.x0) / W, ny = d.tf.y + (y - d.y0) / H;
+        if (!e.altKey && Math.abs(nx - 0.5) < 0.015) nx = 0.5;
+        if (!e.altKey && Math.abs(ny - 0.5) < 0.015) ny = 0.5;
+        setTf(d.id, { x: nx, y: ny }, false);
+      } else if (d.mode === 'scale') {
+        setTf(d.id, { scale: Math.max(0.05, Math.min(8, d.tf.scale * (Math.hypot(x - d.cx, y - d.cy) / d.d0))) }, false);
+      } else {
+        let deg = d.tf.rotation + ((Math.atan2(y - d.cy, x - d.cx) - d.a0) * 180) / Math.PI;
+        deg = ((deg % 360) + 540) % 360 - 180; // -180..180
+        if (!e.altKey) for (const s of [-180, -90, 0, 90, 180]) if (Math.abs(deg - s) < 5) deg = s;
+        setTf(d.id, { rotation: Math.round(deg) }, false);
+      }
+      return true;
+    }
+    if (layerDrag && (e.type === 'pointerup' || e.type === 'pointercancel')) {
+      layerDrag = null;
+      return true;
+    }
+    return false;
+  }
+
   // Keyboard: with the preview focused, arrow keys nudge the caption (Shift = bigger steps).
   function nudge(e: KeyboardEvent) {
     const d = e.shiftKey ? 0.05 : 0.01;
     const dir = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] }[e.key];
     if (!dir) return;
     e.preventDefault();
+    if (selOverlay) {
+      const cur = tfAt(selOverlay, outNow());
+      return (setTf(selOverlay.id, { x: cur.x + dir[0], y: cur.y + dir[1] }), doneEditing());
+    }
     const capId = ownPosition(capOnScreen) ? capOnScreen!.id : null;
     const pos = capId ? resolveStyle(style, capOnScreen!.style) : style;
     moveCaption(capId, pos.x + dir[0], pos.y + dir[1]);
@@ -531,7 +961,7 @@
     sheet = sheet === s && (!t || tab === t) ? null : s;
   }
   let zoom = $state(1); // 1 = fit to the stage
-  let filter = $state<'all' | 'video' | 'audio'>('all');
+  let filter = $state<'all' | 'video' | 'audio' | 'image'>('all');
   const shown = $derived(assets.filter((a) => filter === 'all' || a.kind === filter));
   const used = $derived(new Set([...clips.map((c) => c.assetId), ...audios.map((a) => a.assetId)]));
   const selAudio = $derived(audios.find((a) => a.id === selectedAudio));
@@ -539,7 +969,71 @@
   let transcriptView = $state<TranscriptView>();
   const cutRanges = (r: [number, number][]) => setSegs(r.reduce((s, [a, b]) => cutRange(s, a, b), segments));
   const keepRanges = (r: [number, number][]) => setSegs(r.reduce((s, [a, b]) => keepRange(s, a, b), segments));
-  const visibleCaps = $derived(keptCaptions(captions, segments)); // what the preview draws
+  const visibleCaps = $derived(keptCaptions(captions, segments)); // kept words of the original captions
+  // ---- Translation: a second language per caption (Caption.tr), shown instead of the original when on ----
+  let showTr = $state(false);
+  let trDir = $state<Dir>('en-es');
+  $effect(() => { if (language) trDir = language === 'spanish' ? 'es-en' : 'en-es'; });
+  let trBusy = $state(false);
+  const hasTr = $derived(captions.some((c) => c.tr));
+  // What the preview, SRT/VTT files and export show.
+  const displayCaps = $derived(showTr ? translated(visibleCaps) : visibleCaps);
+  async function translateAll() {
+    if (!captions.length) return;
+    trBusy = true;
+    error = '';
+    try {
+      const texts = await translateTexts(captions.map(captionText), trDir, (st, p) => ((status = st), (pct = p)));
+      const byId = new Map(captions.map((c, i) => [c.id, texts[i]]));
+      setCaps(captions.map((c) => ({ ...c, tr: byId.get(c.id) || undefined })));
+      showTr = true;
+    } catch (e) {
+      error = (e as Error).message || 'err.translate';
+    } finally {
+      trBusy = false;
+      status = '';
+    }
+  }
+  // Where someone is talking, in output time: music marked "duck" dips under it.
+  const speech = $derived(speechRanges(captionsForOutput(visibleCaps, segments).flatMap((c) => c.words)));
+  // Clean-up preview on the timeline: what "Apply" would cut.
+  const pendingCuts = $derived.by(() => {
+    if (!cleanup.preview) return [];
+    const r = cleanupRanges(captions.flatMap((c) => c.words), duration, segments);
+    return [...r.fillers, ...r.silences];
+  });
+
+  // Auto-select: follow the playhead. The caption under it becomes the selection (none in a gap),
+  // and with more than one video strip the strip under it is selected too. Only acts when the
+  // thing under the playhead changes, so a manual pick stays until the playhead moves on.
+  const pref = (k: string) => { try { return localStorage.getItem('sonant.' + k) !== '0'; } catch { return true; } };
+  let snapOn = $state(pref('snap'));
+  $effect(() => { try { localStorage.setItem('sonant.snap', snapOn ? '1' : '0'); } catch {} });
+  let marks = $state<[number | null, number | null]>([null, null]); // I/O range, sequence time
+  let showKeys = $state(false);
+  let autoSelect = $state((() => { try { return localStorage.getItem('sonant.autoSelect') !== '0'; } catch { return true; } })());
+  $effect(() => { try { localStorage.setItem('sonant.autoSelect', autoSelect ? '1' : '0'); } catch {} });
+  const capUnder = $derived(visibleCaps.find((c) => time >= startOf(c) && time < endOf(c))?.id ?? null);
+  const stripUnder = $derived(segments.length > 1 ? segments.findIndex((g) => time >= g.start && time < g.end) : -2);
+  // Paused while a pointer is down, so a drag's live preview seek can't swap the selection mid-drag.
+  let pressing = $state(false);
+  $effect(() => {
+    const down = () => (pressing = true), up = () => (pressing = false);
+    addEventListener('pointerdown', down, true);
+    addEventListener('pointerup', up, true);
+    addEventListener('pointercancel', up, true);
+    return () => (removeEventListener('pointerdown', down, true), removeEventListener('pointerup', up, true), removeEventListener('pointercancel', up, true));
+  });
+  $effect(() => {
+    const id = capUnder;
+    if (!autoSelect || pressing) return;
+    if (id) { if (selectedCapIds.length !== 1 || selectedCapIds[0] !== id) selectedCapIds = [id]; }
+    else if (selectedCapIds.length) selectedCapIds = [];
+  });
+  $effect(() => {
+    const i = stripUnder;
+    if (autoSelect && !pressing && i !== -2 && selected !== i) selected = i;
+  });
 
   // Add a 2-second line at the playhead, kept in time order.
   function addLine() {
@@ -553,13 +1047,19 @@
   const currentCap = $derived(visibleCaps.find((c) => time >= startOf(c) && time < endOf(c)) ?? selectedCap);
   const currentAnim = $derived(currentCap?.style?.animation ?? style.animation);
   const animName = $derived(t('anim.' + currentAnim));
+  // The preview pill names the animation only when every caption uses the same one (no mixed overrides).
+  const sharedAnim = $derived.by(() => {
+    if (!captions.length) return null;
+    const set = new Set(captions.map((c) => c.style?.animation ?? style.animation));
+    return set.size === 1 ? [...set][0] : null;
+  });
   const saveState = $derived(saving ? t('saving') : t('saved'));
 
-  const cutHere = () => setSegs(splitAt(segments, time));
+  const cutHere = () => (setSegs(splitAt(segments, time)), announce(t('a11y.split', { t: tc(outTime) })));
   // Effects of the selected strip (captions behind the person, background swap).
   const selFx = $derived(selected >= 0 && segments[selected] ? (segments[selected].fx ?? {}) : null);
   const setFx = (p: Partial<Fx>) => selected >= 0 && setSegs(segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, ...p } }));
-  const deleteSelected = () => selected >= 0 && (setSegs(remove(segments, selected)), (selected = -1));
+  const deleteSelected = () => selected >= 0 && (setSegs(remove(segments, selected)), (selected = -1), announce(t('a11y.deleted')), true);
   function removeAudioItem() {
     if (!selectedAudio) return false;
     commit();
@@ -567,10 +1067,48 @@
     selectedAudio = '';
     return true;
   }
+  // Beats of the selected music: detected once per file and kept on the asset.
+  let beatBusy = $state(false);
+  async function detectBeatsFor(assetId: string) {
+    const f = files.get(assetId);
+    if (!f) return;
+    beatBusy = true;
+    try {
+      const r = await beatsOfFile(f);
+      assets = assets.map((a) => (a.id === assetId ? { ...a, beats: r.times, bpm: r.bpm } : a));
+      if (!r.times.length) error = 'noBeats';
+    } catch {
+      error = 'noBeats';
+    } finally {
+      beatBusy = false;
+    }
+  }
+  const beatMap = $derived(new Map(assets.flatMap((a) => (a.beats?.length ? [[a.id, a.beats] as [string, number[]]] : []))));
+  // Split the main video on every beat of the selected music (every `every`-th beat).
+  function cutOnBeats(item: AudioItem, every = 1) {
+    const a = assets.find((x) => x.id === item.assetId);
+    if (!a?.beats) return;
+    const off = item.offset ?? 0, len = itemLen(item, a.duration), end = outDuration(segments);
+    const outs = a.beats.filter((_, i) => i % every === 0).map((b) => item.at + b - off).filter((t) => t > item.at && t < Math.min(item.at + len, end));
+    setSegs(outs.reduce((s, o) => splitAt(s, toSource(s, o)), segments));
+  }
   const setAudio = (id: string, patch: Partial<AudioItem>) => (audios = audios.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+
+  const FRAME = 1 / 30;
+  const step = (d: number) => (player.playing && player.pause(), (paused = true), seek(time + d));
+  // Cut the I/O range (ripple: later material slides left).
+  function cutMarks() {
+    const [a, b] = marks;
+    if (a === null || b === null) return false;
+    setSegs(cutRange(segments, Math.min(a, b), Math.max(a, b)));
+    marks = [null, null];
+    announce(t('a11y.rangeCut'));
+    return true;
+  }
 
   function keys(e: KeyboardEvent) {
     const mod = e.ctrlKey || e.metaKey;
+    if (showKeys && (e.key === 'Escape' || e.key === '?')) return (e.preventDefault(), (showKeys = false));
     // Ctrl/⌘+S saves the project file from anywhere (Shift = choose a new file).
     if (mod && e.key.toLowerCase() === 's') return (e.preventDefault(), void saveToFile(!e.shiftKey));
     if ((e.target as HTMLElement).closest?.('input, textarea, select')) return;
@@ -578,10 +1116,28 @@
     else if (mod && e.key.toLowerCase() === 'y') (e.preventDefault(), redo());
     else if (mod) return;
     else if (e.code === 'Space' && !(e.target as HTMLElement).closest?.('button')) (e.preventDefault(), toggle());
+    else if (e.key === '?') showKeys = true;
+    else if (e.altKey) return;
     else if (e.key.toLowerCase() === 's') cutHere();
-    else if (e.key === 'Escape') clearCapSelection();
+    else if (e.key === 'Escape') (clearCapSelection(), (marks = [null, null]), (selectedOverlay = ''));
+    else if ((e.key === 'Delete' || e.key === 'Backspace') && e.shiftKey && selFx) setFx({ lift: !selFx.lift || undefined });
     else if (e.key === 'Delete' || e.key === 'Backspace')
-      (tab === 'transcript' && transcriptView?.toggleSelection()) || removeAudioItem() || deleteSelected();
+      cutMarks() || removeOverlay() || (tab === 'transcript' && transcriptView?.toggleSelection()) || removeAudioItem() || deleteSelected();
+    // The timeline and the preview canvas handle their own arrows (seek / nudge caption).
+    else if (e.key.startsWith('Arrow') && (e.target as HTMLElement).closest?.('.tl, canvas')) return;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+      (e.preventDefault(), step((e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 1 : FRAME)));
+    else if (e.key === 'Home') (e.preventDefault(), seek(0));
+    else if (e.key === 'End') (e.preventDefault(), seek(duration));
+    else if (e.key.toLowerCase() === 'k') (player.pause(), (paused = true));
+    else if (e.key.toLowerCase() === 'l') (player.play(), (paused = !player.playing));
+    else if (e.key.toLowerCase() === 'j') seek(time - (e.shiftKey ? 5 : 1));
+    else if (e.key.toLowerCase() === 'i') ((marks = [time, marks[1]]), announce(t('a11y.markIn', { t: tc(outTime) })));
+    else if (e.key.toLowerCase() === 'o') ((marks = [marks[0], time]), announce(t('a11y.markOut', { t: tc(outTime) })));
+    else if (e.key.toLowerCase() === 'x') cutMarks();
+    else if (e.key.toLowerCase() === 'n') ((snapOn = !snapOn), announce(t(snapOn ? 'a11y.on' : 'a11y.off', { what: t('snap') })));
+    else if (e.key.toLowerCase() === 'a') ((autoSelect = !autoSelect), announce(t(autoSelect ? 'a11y.on' : 'a11y.off', { what: t('autoSelect') })));
+    else if (e.key.toLowerCase() === 't') addText();
   }
 
   // Drag an asset card onto the timeline (or drop files anywhere on it).
@@ -624,17 +1180,18 @@
         <option value="en">EN</option>
         <option value="es">ES</option>
       </select>
-      <a class="btn mob-close icon" href="#/" title={t('allProjects')} aria-label={t('allProjects')}>✕</a>
+      <a class="btn mob-close icon" href="#/" title={t('allProjects')} aria-label={t('allProjects')}><Icon name="close" /></a>
       <a class="btn desk" href="#/" title={t('allProjects')}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
+        <Icon name="grid_view" />
         {t('projects')}
       </a>
-      <button class="desk" onclick={() => saveToFile()} disabled={!assets.length} title={t('saveFileTip')}>{fileStatus ? t(fileStatus) : t('saveFile')}</button>
+      <button class="desk" onclick={() => saveToFile()} disabled={!assets.length} title={t('saveFileTip')}><Icon name="save" size={16} /> {fileStatus ? t(fileStatus) : t('saveFile')}</button>
+      <button class="desk" onclick={openHistory} disabled={!assets.length} title={t('historyTip')}><Icon name="history" size={16} /> {t('history')}</button>
       <button class="desk" class:on={assetsOpen} onclick={() => (assetsOpen = !assetsOpen)} aria-pressed={assetsOpen} title={t('toggleAssets')}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
+        <Icon name="view_sidebar" />
         {t('assets')}
       </button>
-      <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length || !firstVideo}>{t('ex.title')}</button>
+      <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length || !firstVideo}><Icon name="ios_share" size={16} /> {t('ex.title')}</button>
     </div>
   </header>
 
@@ -643,14 +1200,14 @@
       <div class="grab" aria-hidden="true"></div>
       <div class="phead">
         <h2>{t('assets')}</h2>
-        <button class="icon sm" onclick={() => { if (sheet) sheet = null; else assetsOpen = false; }} aria-label={t('collapse')}>‹</button>
+        <button class="icon sm" onclick={() => { if (sheet) sheet = null; else assetsOpen = false; }} aria-label={t('collapse')}><Icon name="chevron_left" /></button>
       </div>
       <label class="import">
-        {t('importMedia')}
-        <input type="file" accept="video/*,audio/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
+        <Icon name="upload" /> {t('importMedia')}
+        <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
       </label>
       <div class="filters" role="group" aria-label={t('assets')}>
-        {#each ['all', 'video', 'audio'] as const as f}
+        {#each ['all', 'video', 'audio', 'image'] as const as f}
           <button class:on={filter === f} aria-pressed={filter === f} onclick={() => (filter = f)}>{t('filter.' + f)}</button>
         {/each}
       </div>
@@ -659,12 +1216,19 @@
           <div class="asset" draggable="true" role="listitem"
             ondragstart={(e) => e.dataTransfer?.setData('text/x-asset', a.id)}>
             <div class="thumb" class:used={used.has(a.id)}>
-              {#if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
-              {:else}<span class="muted">{a.kind === 'audio' ? '♪ ' + t('filter.audio') : t('filter.video')}</span>{/if}
-              <span class="dur mono">{fmt(a.duration)}</span>
+              {#if a.kind === 'image' && urls[a.id]}<img src={urls[a.id]} alt="" />
+              {:else if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
+              {:else}<span class="muted ph">{#if a.kind === 'audio'}<Icon name="music_note" size={20} />{/if}{a.kind === 'audio' ? t('filter.audio') : t('filter.video')}</span>{/if}
+              {#if a.kind !== 'image'}<span class="dur mono">{fmt(a.duration)}</span>{/if}
+              {#if a.id in proxyPct}<span class="proxybar" style:width="{proxyPct[a.id] * 100}%" title={t('proxyBuilding')}></span>{/if}
               <span class="acts">
                 <button class="sm icon" onclick={() => addToTimeline(a)} aria-label={t('addToTimeline', { name: a.name })} title={t('addToTimeline', { name: a.name })}>+</button>
-                <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}>✕</button>
+                {#if a.kind === 'video'}
+                  <button class="sm icon" class:on={!!a.proxy} aria-pressed={!!a.proxy} disabled={a.id in proxyPct}
+                    onclick={() => (a.proxy ? dropProxy(a) : buildProxy(a))} title={a.proxy ? t('proxyOn') : t('proxyMake')} aria-label={a.proxy ? t('proxyOn') : t('proxyMake')}><Icon name="bolt" /></button>
+                  <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}><Icon name="picture_in_picture_alt" /></button>
+                {/if}
+                <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}><Icon name="close" /></button>
               </span>
             </div>
             <span class="aname" title={a.name}>{a.name}</span>
@@ -680,9 +1244,9 @@
             <li>
               <span class="mono muted small">{i + 1}</span>
               <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
-              <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}>↑</button>
-              <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}>↓</button>
-              <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}>✕</button>
+              <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}><Icon name="arrow_upward" /></button>
+              <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}><Icon name="arrow_downward" /></button>
+              <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}><Icon name="close" /></button>
             </li>
           {/each}
         </ol>
@@ -698,7 +1262,7 @@
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected={tab === 'transcript'} class:on={tab === 'transcript'} onclick={() => (tab = 'transcript')}>{t('transcript')}</button>
       <button role="tab" aria-selected={tab === 'captions'} class:on={tab === 'captions'} onclick={() => (tab = 'captions')}>{t('captions')}</button>
-      <button class="icon sm sheet-x" onclick={() => (sheet = null)} aria-label={t('ex.close')}>✕</button>
+      <button class="icon sm sheet-x" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button>
     </div>
     <div class="scroll">
       {#if notice}<p class="notice">{t(notice)}</p>{/if}
@@ -732,6 +1296,18 @@
         {/if}
       {:else}
         <p class="muted small">{t('captionsHint')} {t('selectHint')}</p>
+        {#if captions.length}
+          <div class="trbox">
+            <select bind:value={trDir} disabled={trBusy} aria-label={t('trDir')}>
+              <option value="en-es">English → Español</option>
+              <option value="es-en">Español → English</option>
+            </select>
+            <button class="sm" onclick={translateAll} disabled={trBusy}>{trBusy ? `${t(status || 'st.translating')} ${Math.round(pct)}%` : hasTr ? t('retranslate') : t('translate')}</button>
+            {#if hasTr}
+              <label class="chk"><input type="checkbox" bind:checked={showTr} /> {t('showTr')}</label>
+            {/if}
+          </div>
+        {/if}
         <ol class="caps">
           {#each captions as c, i (c.id)}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
@@ -745,20 +1321,24 @@
               <div class="cap-main">
                 <textarea rows="2" aria-label={t('capText')} value={captionText(c)} onfocus={() => { if (!selectedSet.has(c.id)) selectCap(c.id); seek(startOf(c)); }}
                   onchange={(e) => update(i, setText(c, e.currentTarget.value))}></textarea>
+                {#if c.tr !== undefined}
+                  <textarea class="tr" rows="1" aria-label={t('trText')} value={c.tr} placeholder={t('trText')}
+                    onchange={(e) => update(i, { ...c, tr: e.currentTarget.value.trim() || undefined })}></textarea>
+                {/if}
                 {#if c.style?.animation}
-                  <span class="cap-anim-tag" title={t('animBadge', { name: t('anim.' + c.style.animation) })}>⚡ {t('anim.' + c.style.animation)}</span>
+                  <span class="cap-anim-tag" title={t('animBadge', { name: t('anim.' + c.style.animation) })}><Icon name="animation" size={13} /> {t('anim.' + c.style.animation)}</span>
                 {/if}
               </div>
               <span class="tools">
-                <button class="sm icon" title={t('playHere')} aria-label={t('playHere')} onclick={() => seek(startOf(c))}>▶</button>
-                <button class="sm icon" title={t('splitCap')} aria-label={t('splitCap')} disabled={c.words.length < 2} onclick={() => setCaps(split(captions, i))}>✂</button>
-                <button class="sm icon" title={t('mergeNext')} aria-label={t('mergeNext')} disabled={i === captions.length - 1} onclick={() => setCaps(mergeNext(captions, i))}>⤓</button>
-                <button class="sm icon" title={t('del')} aria-label={t('del')} onclick={() => setCaps(captions.toSpliced(i, 1))}>✕</button>
+                <button class="sm icon" title={t('playHere')} aria-label={t('playHere')} onclick={() => seek(startOf(c))}><Icon name="play_arrow" /></button>
+                <button class="sm icon" title={t('splitCap')} aria-label={t('splitCap')} disabled={c.words.length < 2} onclick={() => setCaps(split(captions, i))}><Icon name="content_cut" /></button>
+                <button class="sm icon" title={t('mergeNext')} aria-label={t('mergeNext')} disabled={i === captions.length - 1} onclick={() => setCaps(mergeNext(captions, i))}><Icon name="merge" /></button>
+                <button class="sm icon" title={t('del')} aria-label={t('del')} onclick={() => setCaps(captions.toSpliced(i, 1))}><Icon name="close" /></button>
               </span>
             </li>
           {/each}
         </ol>
-        <button class="add" onclick={addLine} disabled={!hasMedia}>{t('addLine')}</button>
+        <button class="add" onclick={addLine} disabled={!hasMedia}><Icon name="add" /> {t('addLine')}</button>
         {#if captions.length}
           <h3 class="sub">{t('subtitleFiles')}</h3>
           <div class="row">
@@ -774,7 +1354,11 @@
     <!-- Hidden media elements the player drives; the canvas shows the result. -->
     {#each videoIds as id (id)}
       <!-- svelte-ignore a11y_media_has_caption -->
-      <video src={urls[id]} use:media={['v', id]} preload="auto" playsinline hidden></video>
+      <video src={previewUrl(id)} use:media={['v', id]} preload="auto" playsinline hidden></video>
+    {/each}
+    {#each overlays.filter((o) => o.kind === 'video') as o (o.id)}
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video src={previewUrl(o.assetId ?? '')} use:media={['o', o.id]} preload="auto" playsinline hidden></video>
     {/each}
     {#each audios as item (item.id)}
       <audio src={urls[item.assetId]} use:media={['a', item.id]} preload="auto"></audio>
@@ -793,7 +1377,7 @@
         <!-- .frame is the visible stage box; .fit is the largest box with the video's aspect ratio inside it (× zoom). -->
         <div class="frame">
           <div class="fit" style:--ar={frameW / frameH} style:--z={zoom}>
-            <span class="badge">{t('animBadge', { name: animName })}</span>
+            {#if sharedAnim}<span class="badge">{t('animBadge', { name: t('anim.' + sharedAnim) })}</span>{/if}
             <!-- svelte-ignore a11y_no_noninteractive_tabindex (focusable so arrow keys can move the caption) -->
             <canvas bind:this={canvas} tabindex="0" onpointerdown={pointer} onpointermove={pointer} onpointerup={pointer}
               onpointercancel={pointer} onpointerleave={() => (hover = false)} onkeydown={nudge}
@@ -803,29 +1387,171 @@
       {:else}
         <label class="empty">
           <span>{t('drop')}</span>
-          <input type="file" accept="video/*,audio/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
+          <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
         </label>
       {/if}
     </div>
     <div class="transport">
       <div class="row">
-        <button class="round" onclick={() => seek(time - 5)} disabled={!hasMedia} aria-label={t('back')}>«</button>
-        <button class="round play" onclick={toggle} disabled={!hasMedia} aria-label={paused ? t('play') : t('pause')}>{paused ? '▶' : '❚❚'}</button>
-        <button class="round" onclick={() => seek(time + 5)} disabled={!hasMedia} aria-label={t('forward')}>»</button>
+        <button class="round" onclick={() => seek(time - 5)} disabled={!hasMedia} aria-label={t('back')}><Icon name="replay_5" size={22} /></button>
+        <button class="round play" onclick={toggle} disabled={!hasMedia} aria-label={paused ? t('play') : t('pause')}><Icon name={paused ? 'play_arrow' : 'pause'} size={28} /></button>
+        <button class="round" onclick={() => seek(time + 5)} disabled={!hasMedia} aria-label={t('forward')}><Icon name="forward_5" size={22} /></button>
+        {#if capInZone}<span class="zonewarn" role="status">{t('capInZone', { app: t('safe.' + safe) })}</span>{/if}
         <span class="mono tcode">{tc(outTime)} <span class="muted">/ {tc(outDuration(segments))}</span></span>
       </div>
       <div class="row zoomctl">
-        <button class="sm icon" onclick={() => (zoom = Math.max(0.5, zoom - 0.25))} aria-label={t('zoomOut')}>−</button>
+        <select class="ratio" bind:value={safe} aria-label={t('safeZones')} title={t('safeZonesTip')}>
+          <option value="">{t('safeOff')}</option>
+          {#each Object.keys(SAFE_ZONES) as k}<option value={k}>{t('safe.' + k)}</option>{/each}
+        </select>
+        <select class="ratio" bind:value={canvasAspect} aria-label={t('canvasRatio')} title={t('canvasRatio')}>
+          <option value="source">{t('ex.original')}</option>
+          <option value="9:16">9:16</option>
+          <option value="1:1">1:1</option>
+          <option value="4:5">4:5</option>
+          <option value="16:9">16:9</option>
+        </select>
+        <button class="sm icon" onclick={() => (zoom = Math.max(0.5, zoom - 0.25))} aria-label={t('zoomOut')}><Icon name="zoom_out" /></button>
         <span class="mono small zl">{zoom === 1 ? t('fit') : `${Math.round(zoom * 100)}%`}</span>
-        <button class="sm icon" onclick={() => (zoom = Math.min(3, zoom + 0.25))} aria-label={t('zoomIn')}>+</button>
-        <button class="sm" class:on={zoom === 1} onclick={() => (zoom = 1)} aria-pressed={zoom === 1}>⛶ {t('fit')}</button>
+        <button class="sm icon" onclick={() => (zoom = Math.min(3, zoom + 0.25))} aria-label={t('zoomIn')}><Icon name="zoom_in" /></button>
+        <button class="sm" class:on={zoom === 1} onclick={() => (zoom = 1)} aria-pressed={zoom === 1}><Icon name="fit_screen" /> {t('fit')}</button>
       </div>
     </div>
   </section>
 
   <aside class="style panel" class:shown={sheet === 'style'}>
     <div class="grab" aria-hidden="true"></div>
-    <div class="sheet-bar"><h2>{t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}>✕</button></div>
+    <div class="sheet-bar"><h2>{t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button></div>
+    <details class="tpl">
+      <summary>{t('templates')}</summary>
+      <div class="tpl-list">
+        {#each [...BUILTIN, ...myTemplates] as tp (tp.id)}
+          <div class="tpl-item">
+            <button class="sm" onclick={() => applyTemplate(tp)} disabled={!hasMedia}
+              title={t('applyTemplateTip', { n: tp.layers.length })}>{tp.builtin ? t('tpl.' + tp.id) : tp.name}</button>
+            {#if !tp.builtin}<button class="sm icon" onclick={() => deleteTemplate(tp)} aria-label={t('del')}><Icon name="close" /></button>{/if}
+          </div>
+        {/each}
+      </div>
+      <button class="sm" onclick={saveTemplate} disabled={!hasMedia} title={t('saveTemplateTip')}><Icon name="add" /> {t('saveTemplate')}</button>
+    </details>
+    {#if selected >= 0 && segments[selected] && !selOverlay}
+      {@const c = selColor}
+      <section class="layer strip" aria-label={t('stripColor')} onchange={() => (colorEditing = false)} onpointerup={() => (colorEditing = false)}>
+        <div class="lhead"><h3>{t('stripColor')}</h3></div>
+        <div class="lrow">
+          <button class="sm" class:on={!Object.keys(c).length} onclick={() => (setColor({}, true), (colorEditing = false))}>{t('col.none')}</button>
+          {#each Object.entries(COLOR_PRESETS) as [k, v]}
+            <button class="sm" onclick={() => (setColor({ ...v, lut: c.lut, lutMix: c.lutMix }, true), (colorEditing = false))}>{t('col.' + k)}</button>
+          {/each}
+        </div>
+        {#each [['b', 'brightness'], ['c', 'contrast'], ['s', 'saturation'], ['temp', 'temperature']] as [k, label]}
+          {@const v = (c as Record<string, number>)[k] ?? 0}
+          <label class="vol">{t(label)} <span class="mono small">{v > 0 ? '+' : ''}{Math.round(v * 100)}</span>
+            <input type="range" min="-1" max="1" step="0.01" value={v} oninput={(e) => setColor({ [k]: +e.currentTarget.value })}
+              ondblclick={() => (setColor({ [k]: 0 }), (colorEditing = false))} />
+          </label>
+        {/each}
+        <div class="lrow">
+          <label class="vol">{t('lut')}
+            <select value={c.lut ?? ''} onchange={(e) => (setColor({ lut: e.currentTarget.value || undefined }), (colorEditing = false))}>
+              <option value="">{t('col.noLut')}</option>
+              {#each luts as l}<option value={l.id}>{l.name}</option>{/each}
+            </select>
+          </label>
+          <label class="btn sm">{t('importLut')}<input type="file" accept=".cube" hidden onchange={(e) => importLut(e.currentTarget.files?.[0])} /></label>
+        </div>
+        {#if c.lut}
+          <label class="vol">{t('lutMix')} <span class="mono small">{Math.round((c.lutMix ?? 1) * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.01" value={c.lutMix ?? 1} oninput={(e) => setColor({ lutMix: +e.currentTarget.value })} />
+          </label>
+        {/if}
+        <button class="sm" onclick={colorToAll} disabled={segments.length < 2}>{t('colorAll')}</button>
+        {#if reframes}
+          {@const fc = segments[selected].fx?.focus ?? { x: 0.5, y: 0.5 }}
+          <div class="lhead"><h3>{t('reframe')}</h3></div>
+          <label class="vol">{t('focusX')} <span class="mono small">{Math.round(fc.x * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.01" value={fc.x} oninput={(e) => setFocus({ ...fc, x: +e.currentTarget.value })} />
+          </label>
+          <label class="vol">{t('focusY')} <span class="mono small">{Math.round(fc.y * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.01" value={fc.y} oninput={(e) => setFocus({ ...fc, y: +e.currentTarget.value })} />
+          </label>
+          <div class="lrow">
+            <button class="sm" onclick={() => autoReframe(selected)} disabled={reframing}>{#if !reframing}<Icon name="center_focus_strong" />{/if} {reframing ? t('detecting') : t('autoReframe')}</button>
+            <button class="sm" onclick={autoReframeAll} disabled={reframing}>{t('autoReframeAll')}</button>
+            <button class="sm" onclick={() => (setFocus(undefined), (colorEditing = false))}>{t('center')}</button>
+          </div>
+        {/if}
+        {#if !grader.ok}<p class="muted small">{t('noWebgl')}</p>{/if}
+      </section>
+    {/if}
+    {#if selOverlay}
+      {@const o = selOverlay}
+      {@const cur = tfAt(o, outTime)}
+      {@const onKey = !!keyAt(o.kf, outTime - o.at)}
+      <!-- Layer inspector: live edits are one undo step each (snapshot on first input, closed on change). -->
+      <section class="layer" aria-label={t('layer')} onchange={doneEditing} onpointerup={doneEditing}>
+        <div class="lhead">
+          <h3>{o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
+          <button class="sm icon" onclick={() => (selectedOverlay = '')} aria-label={t('ex.close')}><Icon name="close" /></button>
+        </div>
+        {#if o.kind === 'text'}
+          <label class="vol">{t('text')}
+            <textarea rows="2" value={o.text} oninput={(e) => setOverlay(o.id, { text: e.currentTarget.value })}></textarea>
+          </label>
+          <div class="lrow">
+            <label class="vol">{t('color')}<input type="color" value={textStyle(o).color} oninput={(e) => setOverlay(o.id, { style: { ...o.style, color: e.currentTarget.value } })} /></label>
+            <label class="vol">{t('highlight')}<input type="color" value={textStyle(o).highlight} oninput={(e) => setOverlay(o.id, { style: { ...o.style, highlight: e.currentTarget.value } })} /></label>
+            <label class="vol">{t('font')}
+              <select value={textStyle(o).family} onchange={(e) => setOverlay(o.id, { style: { ...o.style, family: e.currentTarget.value } })}>
+                {#each fonts as f}<option value={f.family}>{f.family}</option>{/each}
+              </select>
+            </label>
+          </div>
+        {/if}
+        <div class="keyrow" role="group" aria-label={t('keyframes')}>
+          <button class="sm icon" onclick={() => jumpKey(o, -1)} disabled={!o.kf?.length} title={t('prevKey')} aria-label={t('prevKey')}><Icon name="chevron_left" /></button>
+          <button class="sm key" class:on={onKey} aria-pressed={onKey} onclick={() => toggleKey(o)}
+            title={onKey ? t('removeKey') : t('addKey')}><Icon name="diamond" size={16} /> {onKey ? t('removeKey') : t('addKey')}</button>
+          <button class="sm icon" onclick={() => jumpKey(o, 1)} disabled={!o.kf?.length} title={t('nextKey')} aria-label={t('nextKey')}><Icon name="chevron_right" /></button>
+          <button class="sm" onclick={() => punchIn(o)} title={t('punchLayerTip')}><Icon name="zoom_in" /> {t('punchIn')}</button>
+          {#if o.kf?.length}<button class="sm" onclick={() => clearKeys(o)}>{t('clearKeys')}</button>{/if}
+        </div>
+        {#if o.kf?.length}<p class="muted small keyhint">{t('keyHint', { n: o.kf.length })}</p>{/if}
+        <label class="vol">{t('scale')} <span class="mono small">{Math.round(cur.scale * 100)}%</span>
+          <input type="range" min="0.05" max={o.kind === 'text' ? 4 : 1.5} step="0.01" value={cur.scale} oninput={(e) => setTf(o.id, { scale: +e.currentTarget.value })} />
+        </label>
+        <label class="vol">{t('rotation')} <span class="mono small">{Math.round(cur.rotation)}°</span>
+          <input type="range" min="-180" max="180" step="1" value={cur.rotation} oninput={(e) => setTf(o.id, { rotation: +e.currentTarget.value })} />
+        </label>
+        <label class="vol">{t('opacity')} <span class="mono small">{Math.round(cur.opacity * 100)}%</span>
+          <input type="range" min="0" max="1" step="0.01" value={cur.opacity} oninput={(e) => setTf(o.id, { opacity: +e.currentTarget.value })} />
+        </label>
+        {#if o.kind !== 'text'}
+          {@const c = o.tf.crop ?? [0, 0, 0, 0]}
+          <div class="crop">
+            {#each [['cropL', 0], ['cropT', 1], ['cropR', 2], ['cropB', 3]] as [label, i]}
+              <label class="vol">{t(label as string)} <span class="mono small">{Math.round(c[i as number] * 100)}%</span>
+                <input type="range" min="0" max="0.45" step="0.01" value={c[i as number]}
+                  oninput={(e) => setTf(o.id, { crop: c.with(i as number, +e.currentTarget.value) as Transform['crop'] })} />
+              </label>
+            {/each}
+          </div>
+        {/if}
+        {#if o.kind === 'video'}
+          <label class="vol">{t('volume')} <span class="mono small">{Math.round((o.volume ?? 0) * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.05" value={o.volume ?? 0} oninput={(e) => setOverlay(o.id, { volume: +e.currentTarget.value })} />
+          </label>
+        {/if}
+        <div class="lrow">
+          <button class="sm" class:on={o.tf.flipX} aria-pressed={!!o.tf.flipX} onclick={() => (setTf(o.id, { flipX: !o.tf.flipX }), doneEditing())}><Icon name="flip" /> {t('flip')}</button>
+          <button class="sm" onclick={() => (setTf(o.id, { x: 0.5, y: 0.5, rotation: 0, crop: undefined, flipX: false, opacity: 1 }), doneEditing())}>{t('resetLayer')}</button>
+          <button class="sm icon" onclick={() => restack(1)} disabled={overlays.at(-1)?.id === o.id} title={t('bringForward')} aria-label={t('bringForward')}><Icon name="flip_to_front" /></button>
+          <button class="sm icon" onclick={() => restack(-1)} disabled={overlays[0]?.id === o.id} title={t('sendBackward')} aria-label={t('sendBackward')}><Icon name="flip_to_back" /></button>
+          <button class="sm" onclick={removeOverlay}>{t('del')}</button>
+        </div>
+      </section>
+    {/if}
     <StylePanel
       bind:style
       {selectedCap}
@@ -849,17 +1575,51 @@
       <h2>{t('timelineH')}</h2>
       <div class="row">
         {#if selAudio}
-          <span class="aname small selname">♪ {names.get(selAudio.assetId)}</span>
+          <span class="aname small selname"><Icon name="music_note" size={16} /> {names.get(selAudio.assetId)}</span>
           <label class="vol inline">{t('volume')}
             <input type="range" min="0" max="1" step="0.05" value={selAudio.volume}
               oninput={(e) => setAudio(selAudio.id, { volume: +e.currentTarget.value })} />
           </label>
+          {@const ba = assets.find((a) => a.id === selAudio.assetId)}
+          {#if ba?.beats?.length}
+            <span class="small mono" title={t('beatsFound', { n: ba.beats.length })}><Icon name="graphic_eq" size={16} /> {ba.bpm} BPM</span>
+            <button class="sm" onclick={() => cutOnBeats(selAudio)} title={t('cutBeatsTip')}>{t('cutBeats')}</button>
+            <button class="sm" onclick={() => cutOnBeats(selAudio, 2)}>{t('cutBeats2')}</button>
+          {:else}
+            <button class="sm" onclick={() => detectBeatsFor(selAudio.assetId)} disabled={beatBusy}>{beatBusy ? t('detecting') : t('detectBeats')}</button>
+          {/if}
+          <label class="chk" title={t('duckTip')}><input type="checkbox" checked={!!selAudio.duck}
+            onchange={(e) => (commit(), setAudio(selAudio.id, { duck: e.currentTarget.checked || undefined }))} /> {t('duck')}</label>
           <button class="sm" onclick={removeAudioItem}>{t('removeAudio')}</button>
           <span class="divider"></span>
         {/if}
         {#if selFx}
+          {#if selected > 0}
+            <label class="vol inline">{t('transIn')}
+              <select value={selFx.trans ?? ''} onchange={(e) => setFx({ trans: (e.currentTarget.value || undefined) as Fx['trans'] })}>
+                <option value="">{t('trans.none')}</option>
+                {#each TRANSITIONS as k}<option value={k}>{t('trans.' + k)}</option>{/each}
+              </select>
+            </label>
+          {/if}
+          {#if selFx.hold}
+            <label class="vol inline">{t('freezeLen')}
+              <input type="number" min="0.2" max="10" step="0.1" value={selFx.hold} style="width: 64px"
+                onchange={(e) => setFx({ hold: Math.max(0.2, Math.min(10, +e.currentTarget.value || 1)) })} />
+            </label>
+          {:else}
+            <label class="vol inline">{t('speed')}
+              <select value={selFx.speed ?? 1} onchange={(e) => setFx({ speed: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })}>
+                {#each [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as v}<option value={v}>{v}×</option>{/each}
+              </select>
+            </label>
+          {/if}
+          <button class="sm" class:on={!!selFx.zoom} aria-pressed={!!selFx.zoom} title={t('punchTip')}
+            onclick={() => setFx(selFx.zoom ? { zoom: undefined, zoomIn: undefined } : { zoom: PUNCH_IN, zoomIn: true })}><Icon name="zoom_in" /> {t('punchIn')}</button>
+          <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
+            onclick={() => setFx({ lift: !selFx.lift || undefined })}>{t('lift')}</button>
           <button class="sm icon" class:on={selFx.behind} aria-pressed={!!selFx.behind} title={t('textBehind')} aria-label={t('textBehind')}
-            onclick={() => setFx({ behind: !selFx.behind })}>👤</button>
+            onclick={() => setFx({ behind: !selFx.behind })}><Icon name="person" /></button>
           <label class="vol">{t('background')}
             <select value={selFx.bg ?? ''} onchange={(e) => setFx({ bg: (e.currentTarget.value || undefined) as Fx['bg'] })}>
               <option value="">{t('bgOriginal')}</option>
@@ -873,18 +1633,27 @@
           {/if}
           <span class="divider"></span>
         {/if}
-        <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}>{t('splitAt')}</button>
+        <button class="sm" onclick={addText} disabled={!hasMedia} title={t('addTextTip')}><Icon name="title" /> {t('addText')}</button>
+        <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
+        <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}><Icon name="content_cut" /> {t('splitAt')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
-        <button class="sm icon" onclick={undo} disabled={!past.length} title={t('undo')} aria-label={t('undo')}>↶</button>
-        <button class="sm icon" onclick={redo} disabled={!future.length} title={t('redo')} aria-label={t('redo')}>↷</button>
-        <button class="sm icon" onclick={() => (tlZoom = Math.max(1, tlZoom / 1.5))} disabled={tlZoom <= 1} aria-label={t('zoomOut')}>−</button>
-        <button class="sm icon" onclick={() => (tlZoom = Math.min(16, tlZoom * 1.5))} aria-label={t('zoomIn')}>+</button>
+        <button class="sm icon" class:on={snapOn} aria-pressed={snapOn} title={t('snapTip')} aria-label={t('snap')}
+          onclick={() => (snapOn = !snapOn)}><Icon name="magnet" /></button>
+        <button class="sm icon" class:on={autoSelect} aria-pressed={autoSelect} title={t('autoSelectTip')} aria-label={t('autoSelect')}
+          onclick={() => (autoSelect = !autoSelect)}><Icon name="ads_click" /></button>
+        <button class="sm icon" onclick={undo} disabled={!past.length} title={t('undo')} aria-label={t('undo')}><Icon name="undo" /></button>
+        <button class="sm icon" onclick={redo} disabled={!future.length} title={t('redo')} aria-label={t('redo')}><Icon name="redo" /></button>
+        <button class="sm icon" onclick={() => (tlZoom = Math.max(1, tlZoom / 1.5))} disabled={tlZoom <= 1} aria-label={t('zoomOut')}><Icon name="zoom_out" /></button>
+        <button class="sm icon" onclick={() => (tlZoom = Math.min(16, tlZoom * 1.5))} aria-label={t('zoomIn')}><Icon name="zoom_in" /></button>
+        <button class="sm icon" onclick={() => (showKeys = true)} title={t('keysTitle') + ' (?)'} aria-label={t('keysTitle')}><Icon name="keyboard" /></button>
       </div>
     </div>
     <Timeline {segments} {time} {clips} {durations} {names} {thumbs} {peaks} {duration} {captions} {audios}
       zoom={tlZoom} bind:selected bind:selectedAudio selectedCapIds={selectedSet} onselectcap={selectCap}
       animLabel={t('allCaptions', { name: animName })}
-      onseek={(o) => seek(toSource(segments, o))}
+      out={outClock} onseek={(o) => seekOut(o)} onseeksrc={seek} snap={snapOn} range={marks} pending={pendingCuts} beats={beatMap}
+      {overlays} bind:selectedOverlay
+      onoverlay={(id, patch) => setOverlay(id, patch, false)}
       oncommit={commit}
       ontrim={(i, s, e) => (segments = trim(segments, i, s, e, duration))}
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
@@ -897,31 +1666,62 @@
 
   <nav class="dock" aria-label={t('tools')}>
     <button class:on={sheet === 'assets'} onclick={() => openSheet('assets')}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m10 9 5 3-5 3z" /></svg>
+      <Icon name="video_library" size={24} />
       <span>{t('assets')}</span>
     </button>
     <button class:on={sheet === 'text' && tab === 'transcript'} onclick={() => openSheet('text', 'transcript')}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 11h16M4 16h10" /></svg>
+      <Icon name="description" size={24} />
       <span>{t('transcript')}</span>
     </button>
     <button class:on={sheet === 'text' && tab === 'captions'} onclick={() => openSheet('text', 'captions')}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M10 10a2 2 0 1 0 0 4M17 10a2 2 0 1 0 0 4" /></svg>
+      <Icon name="closed_caption" size={24} />
       <span>{t('captions')}</span>
     </button>
     <button class:on={sheet === 'style'} onclick={() => openSheet('style')}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 20 10 4h2l6 16M7 14h8" /></svg>
+      <Icon name="text_fields" size={24} />
       <span>{t('style')}</span>
     </button>
     <button onclick={() => saveToFile()} disabled={!assets.length}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14" /></svg>
+      <Icon name="download" size={24} />
       <span>{fileStatus ? t(fileStatus) : t('saveFile')}</span>
     </button>
   </nav>
 </div>
 
 {#if hasMedia}
-  <ExportDialog bind:this={exporter} {name} {segments} {captions} {style} srcW={frameW} srcH={frameH}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), clipVolume })} />
+  <div class="sr-only" aria-live="polite" role="status">{liveMsg}</div>
+  <dialog class="hist" bind:this={histDialog} aria-label={t('history')}>
+    <div class="lhead"><h3>{t('history')}</h3><button class="sm icon" onclick={() => histDialog?.close()} aria-label={t('ex.close')}><Icon name="close" /></button></div>
+    <p class="muted small">{t('historyHint')}</p>
+    {#if !versions.length}<p class="muted">{t('noVersions')}</p>{/if}
+    <ol>
+      {#each versions as v (v.time)}
+        <li>
+          <span><b>{ago(v.time)}</b>{#if v.label} · <em>{v.label}</em>{/if}<br />
+            <span class="muted small">{t('versionInfo', { caps: v.doc.captions?.length ?? 0, strips: v.doc.segments?.length ?? 0, layers: v.doc.overlays?.length ?? 0, secs: Math.round((v.doc.segments ?? []).reduce((a, s) => a + s.end - s.start, 0)) })}</span></span>
+          <button class="sm" onclick={() => restoreVersion(v)}>{t('restore')}</button>
+        </li>
+      {/each}
+    </ol>
+  </dialog>
+  {#if showKeys}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="keys-bg" onclick={() => (showKeys = false)}>
+      <div class="keys" role="dialog" aria-modal="true" aria-label={t('keysTitle')} tabindex="-1" onclick={(e) => e.stopPropagation()}>
+        <h3>{t('keysTitle')}</h3>
+        <dl>
+          {#each [['Space', 'k.play'], ['J / K / L', 'k.jkl'], ['← / →', 'k.frame'], ['Shift + ← / →', 'k.second'], ['Home / End', 'k.ends'],
+            ['S', 'k.split'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['Shift + Del', 'k.lift'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
+            ['A', 'k.auto'], ['T', 'k.text'], ['Ctrl/⌘ + Z', 'undo'], ['Ctrl/⌘ + Shift + Z', 'redo'], ['Ctrl/⌘ + S', 'k.save'], ['Esc', 'k.esc'], ['?', 'keysTitle']] as [k, d]}
+            <dt><kbd>{k}</kbd></dt><dd>{t(d)}</dd>
+          {/each}
+        </dl>
+        <button class="sm" onclick={() => (showKeys = false)}>OK</button>
+      </div>
+    </div>
+  {/if}
+  <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} {style} {srcW} {srcH} {canvasAspect}
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume })} />
 {/if}
 
 <style>
@@ -946,11 +1746,12 @@
   .panel { background: var(--panel); min-height: 0; display: flex; flex-direction: column; }
   .assets { grid-area: assets; border-right: 1px solid var(--border-soft); padding: 16px; gap: 12px; overflow: auto; }
   .phead { display: flex; justify-content: space-between; align-items: center; }
-  .import { display: flex; align-items: center; justify-content: center; height: 42px; border: 1px dashed var(--border);
+  .import { display: flex; align-items: center; justify-content: center; gap: 6px; height: 42px; border: 1px dashed var(--border);
     border-radius: 10px; cursor: pointer; }
   .import:hover { border-color: var(--accent); }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .asset { display: grid; gap: 4px; min-width: 0; }
+  .ph { display: inline-flex; align-items: center; gap: 4px; }
   .thumb { position: relative; aspect-ratio: 16 / 11; background: var(--tab-on); border-radius: 8px; overflow: hidden;
     display: grid; place-items: center; outline: 2px solid var(--accent); }
   .thumb img { width: 100%; height: 100%; object-fit: cover; }
@@ -1104,5 +1905,41 @@
     .scrim { display: block; position: fixed; inset: 0; z-index: 19; background: rgb(0 0 0 / .45); border: 0; border-radius: 0; height: auto; padding: 0; }
     .tools, .acts { display: flex; }
   }
+  .layer { display: grid; gap: 10px; padding: 12px; margin: 0 0 12px; border: 1px solid #6ab8ff55; border-radius: 10px; background: var(--card); }
+  .layer .lhead { display: flex; justify-content: space-between; align-items: center; }
+  .layer h3 { margin: 0; font-size: 13px; color: #6ab8ff; }
+  .layer textarea { width: 100%; resize: vertical; }
+  .layer .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+  .layer .keyrow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .layer .key.on { color: #ffd84d; border-color: #ffd84d; }
+  .layer .keyhint { margin: -4px 0 0; }
+  .layer .crop { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .layer input[type=color] { width: 44px; height: 28px; padding: 0; border: 0; background: none; }
+  .tpl { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 10px; display: grid; gap: 8px; }
+  .tpl summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+  .tpl[open] summary { margin-bottom: 4px; }
+  .tpl-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tpl-item { display: flex; gap: 2px; }
+  .hist { width: min(460px, calc(100vw - 32px)); max-height: 80vh; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .hist::backdrop { background: rgb(0 0 0 / .55); }
+  .hist .lhead { display: flex; justify-content: space-between; align-items: center; }
+  .hist h3 { margin: 0; }
+  .hist ol { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+  .hist li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; background: var(--card); border-radius: 8px; font-size: 13px; }
+  .proxybar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .2s; }
+  .zonewarn { font-size: 12px; color: #ffb86b; }
+  .ratio { height: 30px; font-size: 12px; }
+  .trbox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
+  .trbox select { height: 32px; font-size: 12px; }
+  textarea.tr { margin-top: 4px; font-size: 12px; color: #9fd0ff; border-style: dashed; }
+  .chk { display: flex; gap: 6px; align-items: center; font-size: 12px; white-space: nowrap; }
+  .keys-bg { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .55); display: grid; place-items: center; padding: 16px; }
+  .keys { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; width: min(440px, 100%);
+    max-height: 90vh; overflow: auto; display: grid; gap: 12px; }
+  .keys h3 { margin: 0; font-size: 15px; }
+  .keys dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 13px; align-items: center; }
+  .keys dd { margin: 0; color: var(--muted); }
+  .keys kbd { font: 12px ui-monospace, monospace; background: var(--tab-on); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+  .keys > button { justify-self: end; }
   @keyframes up { from { transform: translateY(100%); } }
 </style>

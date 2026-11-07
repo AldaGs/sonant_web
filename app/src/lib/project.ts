@@ -2,13 +2,16 @@ import type { Caption } from './captions';
 import type { Segment } from './cuts';
 
 // Media the user imported. Files live in IndexedDB under `asset:<id>`.
-export type Asset = { id: string; name: string; kind: 'video' | 'audio'; duration: number; width?: number; height?: number };
+// beats/bpm: detected beat times (file time) for music, once the user asks for them.
+export type Asset = { id: string; name: string; kind: 'video' | 'audio' | 'image'; duration: number; width?: number; height?: number; beats?: number[]; bpm?: number; proxy?: boolean };
 // A video clip on the video track. Clips play back to back; together they form the "sequence".
 // Sequence time is what segments, captions and words are measured in.
 export type Clip = { id: string; assetId: string };
 // An extra audio item (music, voiceover), placed in OUTPUT time so word cuts don't move it.
 // offset/len trim the file: it plays [offset, offset + len) of the asset, starting at `at`.
-export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number };
+// duck: lower this item's volume while someone is speaking (see DUCK_LEVEL).
+export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number; duck?: boolean };
+export const DUCK_LEVEL = 0.25; // ≈ −12 dB under speech
 
 // How long an audio item plays (its trimmed length, or the rest of the file).
 export const itemLen = (a: AudioItem, assetDur: number) => Math.max(0, Math.min(a.len ?? Infinity, assetDur - (a.offset ?? 0)));
