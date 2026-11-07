@@ -9,6 +9,7 @@ export type Fx = { behind?: boolean; bg?: 'color' | 'blur' | 'image'; bgColor?: 
   speed?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number;
   color?: import('./grade').Color; focus?: import('./reframe').Focus;
   shake?: number; /* handheld camera shake 0..1 */
+  stab?: import('./stabilize').Stab; /* stabilization corrections */
   key?: import('./layerfx').ChromaKey /* green screen on the strip: keyed area shows the background (bg) */ };
 
 // How long a strip lasts in the output, and the source time `o` seconds into it.

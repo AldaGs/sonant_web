@@ -21,7 +21,14 @@
   let progress = $state(0);
   let running = $state(false);
   let error = $state('');
-  let result = $state<{ url: string; name: string; mb: string; secs: string } | null>(null);
+  let result = $state<{ url: string; name: string; mb: string; secs: string; file: File } | null>(null);
+  // Web Share with files (phones, Safari, Chrome on Windows/ChromeOS/Android): send the MP4 straight to an app.
+  const canShare = (f: File) => typeof navigator !== 'undefined' && !!navigator.canShare?.({ files: [f] });
+  async function share() {
+    if (!result) return;
+    try { await navigator.share({ files: [result.file], title: result.name }); }
+    catch (e) { if ((e as Error).name !== 'AbortError') error = 'ex.shareFail'; }
+  }
   let abort: AbortController | null = null;
 
   const QUALITIES: Quality[] = ['draft', 'standard', 'high'];
@@ -83,6 +90,7 @@
         name: (name || 'sonant') + '-captioned.mp4',
         mb: (blob.size / 1e6).toFixed(1),
         secs: ((performance.now() - t0) / 1000).toFixed(1),
+        file: new File([blob], (name || 'sonant') + '-captioned.mp4', { type: 'video/mp4' }),
       };
       download(result.url, result.name);
     } catch (e) {
@@ -163,6 +171,7 @@
   {#if result}
     <p>{t('ex.done', { s: result.secs, mb: result.mb })}</p>
     <a class="dl" href={result.url} download={result.name}>{t('ex.download', { name: result.name })}</a>
+    {#if canShare(result.file)}<button class="sm" onclick={share}>{t('ex.share')}</button>{/if}
   {/if}
 
   <div class="actions">

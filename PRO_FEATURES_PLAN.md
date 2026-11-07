@@ -104,6 +104,16 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - Limits: one speaker per caption, so overlapping speech or a speaker change mid-caption isn't split. Split the caption first.
 - Later: split captions at speaker changes using pyannote segmentation. Tune the threshold on real recordings.
 
-## Phase 8: Stabilization and the rest ⬜
-- Stabilization: estimate motion frame to frame (block matching on the proxy), smooth it, then crop. Run once and cache it like the proxy.
-- Voice changer (pitch via `stretch.ts`). Pack LUTs into `.sonant` files. Web Share for the exported MP4.
+## Phase 8: Stabilization and the rest ✅
+- ✅ **Stabilization** (`lib/stabilize.ts`): the **Stabilize** button on a strip analyses it at 15 fps on 160px greyscale frames (from the proxy when there is one).
+  - Measures how the whole picture moves between frames: coarse-to-fine block matching on the frame centre, translation only.
+  - Smooths the camera path with a Gaussian, point-reflected at the ends so steady pans stay straight.
+  - Stores per-frame corrections plus the zoom that hides the edges (capped at ±8% shift). Preview and export apply them before punch-in, auto-zoom and shake. Click again to remove.
+  - Seeks land a few ms inside a frame (seeking exactly onto frame boundaries gave wrong frames).
+  - Browser check on a shaken still scene: **~95% of the shake removed**, deliberate pans kept. A scene with moving content, like the test pattern, is noisier, because moving objects look like camera motion.
+  - Limits: no rotation or rolling-shutter correction.
+- ✅ **Voice changer** on Music & VO items: Deep, Higher, Chipmunk (pitch shift = WSOLA stretch + resample, same length), Robot (60 Hz ring modulation), Radio and Phone (band-limited, saturation). It's rendered once into a new audio file, so preview and export match. The original file is kept, and **Original** switches back (`lib/voicefx.ts`). In a browser test, Deep on a voice item made a "· Deep.wav" copy and the item switched to it.
+- ✅ **LUTs inside `.sonant` files**: saved in the header (base64 RGBA). On opening, they're checked (size³·4 bytes, size 2–128) and stored in the browser.
+- ✅ **Fix found on the way**: opening a `.sonant` file didn't update the media ids of image/video layers or of strip background images, so those layers pointed at missing media. `reassignIds` now covers them.
+- ✅ **Share** button after export (Web Share with files: phones, Safari, Chrome on Windows/ChromeOS/Android). It's hidden where the browser can't share files.
+- ✅ Tests: `stabilize.test.ts` (shift measurement, smoothing, pans, shaky-pan reduction, placing), `voicefx.test.ts` (pitch within 4%, every effect safe), `projects.test.ts` (LUT round trip and rejection, layer/background remapping).

@@ -1,5 +1,6 @@
 import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
+import { stabPlace } from './stabilize.ts';
 import { autoZoomAt, scalePlace, shakePlace, zoomShake, type ZoomMoment } from './autozoom.ts';
 import { keptCaptions, zoomPlace, outLen, srcIn, type Segment } from './cuts.ts';
 import { stretch } from './stretch.ts';
@@ -274,7 +275,7 @@ export async function exportVideo(
         const bgB = piece.fx?.bg === 'image' && piece.fx.bgImage ? await stillFor(piece.fx.bgImage) : null;
         const bgImg = bgB ? { src: bgB, w: bgB.width, h: bgB.height } : null;
         const img = raw && color ? grader.apply(raw, sw, sh, color, lutOf(color.lut), t) : raw;
-        drawFrame(ctx, img, sw, sh, shakePlace(scalePlace(zoomPlace(coverPlace(width, height, sw, sh, piece.fx?.focus), width, height, piece.fx, t - segStart), width, height, autoZoomAt(src.zooms ?? [], src.zoomScale ?? 1, t)), width, height, Math.max(piece.fx?.shake ?? 0, src.zoomShake ? zoomShake(src.zooms ?? [], t) : 0), t), piece.fx, !!cap, () => {
+        drawFrame(ctx, img, sw, sh, shakePlace(scalePlace(zoomPlace(stabPlace(coverPlace(width, height, sw, sh, piece.fx?.focus), width, height, piece.fx?.stab, t), width, height, piece.fx, t - segStart), width, height, autoZoomAt(src.zooms ?? [], src.zoomScale ?? 1, t)), width, height, Math.max(piece.fx?.shake ?? 0, src.zoomShake ? zoomShake(src.zooms ?? [], t) : 0), t), piece.fx, !!cap, () => {
           paintLayers(i);
           if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
         }, hasBehind ? () => paintLayers(i, true) : undefined, bgImg);

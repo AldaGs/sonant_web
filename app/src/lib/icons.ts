@@ -61,6 +61,7 @@ import auto_awesome_motion from '@material-symbols/svg-400/rounded/auto_awesome_
 import refresh from '@material-symbols/svg-400/rounded/refresh.svg?raw';
 import open_in_new from '@material-symbols/svg-400/rounded/open_in_new.svg?raw';
 import groups from '@material-symbols/svg-400/rounded/groups.svg?raw';
+import videocam from '@material-symbols/svg-400/rounded/videocam.svg?raw';
 import tune from '@material-symbols/svg-400/rounded/tune.svg?raw';
 import colorize from '@material-symbols/svg-400/rounded/colorize.svg?raw';
 import block from '@material-symbols/svg-400/rounded/block.svg?raw';
@@ -131,6 +132,7 @@ export const ICONS = {
   filter_vintage: m(filter_vintage),
   colorize: m(colorize),
   tune: m(tune),
+  videocam: m(videocam),
   groups: m(groups),
   auto_awesome_motion: m(auto_awesome_motion),
   refresh: m(refresh),

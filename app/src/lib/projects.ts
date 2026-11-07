@@ -1,6 +1,7 @@
 // Projects: each one is a doc in IndexedDB (`doc:<id>`) plus media files (`asset:<assetId>`),
 // listed in `projects`. A project can also be packed into a single `.sonant` file and opened anywhere.
 import * as store from './store.ts';
+import type { Lut } from './grade.ts';
 import type { Caption, Word } from './captions';
 import type { Segment } from './cuts';
 import type { Style } from './render';
@@ -131,21 +132,25 @@ export async function migrateLegacy(probe: (f: File) => Promise<Omit<Asset, 'id'
 // Layout: "SONANT1\n" (8 bytes) · header length (uint32 LE) · header JSON · media bytes back to back.
 // The header holds the doc and the list of media files (id, name, type, size) in the order they follow.
 const MAGIC = 'SONANT1\n';
-type Header = { version: 1; doc: ProjectDoc; files: { id: string; name: string; type: string; size: number }[] };
+// luts: the project's colour LUTs (stored per browser otherwise), RGBA8 data as base64.
+type PackedLut = { id: string; name: string; size: number; data: string };
+type Header = { version: 1; doc: ProjectDoc; files: { id: string; name: string; type: string; size: number }[]; luts?: PackedLut[] };
+const b64 = (u: Uint8Array) => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-export function packProject(doc: ProjectDoc, files: Map<string, Blob & { name?: string }>): Blob {
+export function packProject(doc: ProjectDoc, files: Map<string, Blob & { name?: string }>, luts: Lut[] = []): Blob {
   const list = (doc.assets ?? []).filter((a) => files.has(a.id)).map((a) => {
     const f = files.get(a.id)!;
     return { id: a.id, name: f.name ?? a.name, type: f.type, size: f.size };
   });
-  const head = new TextEncoder().encode(JSON.stringify({ version: 1, doc, files: list } satisfies Header));
+  const head = new TextEncoder().encode(JSON.stringify({ version: 1, doc, files: list, ...(luts.length && { luts: luts.map((l) => ({ id: l.id, name: l.name, size: l.size, data: b64(l.data) })) }) } satisfies Header));
   const len = new Uint8Array(4);
   new DataView(len.buffer).setUint32(0, head.length, true);
   return new Blob([MAGIC, len, head, ...list.map((f) => files.get(f.id)!)], { type: 'application/octet-stream' });
 }
 
 // Read a .sonant file. Everything in it is untrusted: shapes and sizes are checked before use.
-export async function unpackProject(file: Blob): Promise<{ doc: ProjectDoc; files: Map<string, File> }> {
+export async function unpackProject(file: Blob): Promise<{ doc: ProjectDoc; files: Map<string, File>; luts: Lut[] }> {
   const bad = () => new Error('err.badProject');
   if (file.size < 12 || (await file.slice(0, 8).text()) !== MAGIC) throw bad();
   const n = new DataView(await file.slice(8, 12).arrayBuffer()).getUint32(0, true);
@@ -166,7 +171,16 @@ export async function unpackProject(file: Blob): Promise<{ doc: ProjectDoc; file
     files.set(f.id, new File([file.slice(at, at + f.size)], f.name, { type: typeof f.type === 'string' ? f.type : '' }));
     at += f.size;
   }
-  return { doc: h.doc, files };
+  const luts: Lut[] = [];
+  for (const l of Array.isArray(h.luts) ? h.luts : []) {
+    // Checked like everything else: an id, a name and exactly size³ RGBA texels.
+    if (typeof l?.id !== 'string' || typeof l.name !== 'string' || !Number.isInteger(l.size) || l.size < 2 || l.size > 128 || typeof l.data !== 'string') throw bad();
+    let data: Uint8Array;
+    try { data = unb64(l.data); } catch { throw bad(); }
+    if (data.length !== l.size ** 3 * 4) throw bad();
+    luts.push({ id: l.id, name: l.name, size: l.size, data });
+  }
+  return { doc: h.doc, files, luts };
 }
 
 // Give every media file a fresh id (so an opened project never clashes with existing ones) and update references.
@@ -177,6 +191,8 @@ export function reassignIds(doc: ProjectDoc, map: Map<string, string>): ProjectD
     assets: (doc.assets ?? []).map((a) => ({ ...a, id: id(a.id) })),
     clips: (doc.clips ?? []).map((c) => ({ ...c, assetId: id(c.assetId) })),
     audios: (doc.audios ?? []).map((a) => ({ ...a, assetId: id(a.assetId) })),
+    overlays: (doc.overlays ?? []).map((o) => (o.assetId ? { ...o, assetId: id(o.assetId) } : o)),
+    segments: (doc.segments ?? []).map((s) => (s.fx?.bgImage ? { ...s, fx: { ...s.fx, bgImage: id(s.fx.bgImage) } } : s)),
     words: Object.fromEntries(Object.entries(doc.words ?? {}).map(([k, v]) => {
       const [aid, lang] = k.split('|');
       return [`${id(aid)}|${lang}`, v];
@@ -192,11 +208,13 @@ export async function exportProjectFile(id: string): Promise<Blob> {
     const f = await store.get<File>('asset:' + a.id);
     if (f) files.set(a.id, f);
   }
-  return packProject(doc, files);
+  const luts = (await Promise.all((doc.luts ?? []).map((l) => store.get<Lut>('lut:' + l.id)))).filter((l): l is Lut => !!l);
+  return packProject(doc, files, luts);
 }
 
 export async function importProjectFile(file: Blob): Promise<ProjectMeta> {
-  const { doc, files } = await unpackProject(file);
+  const { doc, files, luts } = await unpackProject(file);
+  for (const l of luts) await store.set('lut:' + l.id, l);
   const map = new Map([...files.keys()].map((k) => [k, crypto.randomUUID()]));
   const fresh = reassignIds(doc, map);
   // Drop media the file didn't include, so nothing points at a missing file.

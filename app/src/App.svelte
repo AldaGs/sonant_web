@@ -29,6 +29,9 @@
   import { embed, cluster, smooth, spanOf, applySpeakers } from './lib/diarize';
   import { decodeAudio } from './lib/transcribe';
   import { gpuFor } from './lib/perf';
+  import { shiftOf, planStab, stabPlace, grey, STAB_FPS, STAB_W } from './lib/stabilize';
+  import { applyVoiceFx, VOICE_FX, type VoiceFx } from './lib/voicefx';
+  import { wav } from './lib/denoise';
   import { findHighlights, shortOf, DEFAULT_HL, type Highlight } from './lib/highlights';
   import { cleanAudio, cleanKey, DENOISE_LEVELS } from './lib/denoise';
   import { zoomMoments, autoZoomAt, scalePlace, shakePlace, zoomShake, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
@@ -444,6 +447,79 @@
     selectedAudio = added[0].id;
     announce(t('voAdded', { n: added.length }));
   }
+  // ---- Stabilization: measure the camera's shake on small greyscale frames, then shift it out ----
+  let stabPct = $state<number | null>(null);
+  async function stabilize(i: number) {
+    const s = segments[i];
+    if (!s || s.fx?.hold) return;
+    if (s.fx?.stab) return setFx({ stab: undefined }); // toggle off
+    const starts = clipStarts(clips, durations), at = clipAt(clips, durations, (s.start + s.end) / 2);
+    if (!at || kindOf(clips[at.index].assetId) !== 'video') return;
+    const off = starts[at.index];
+    stabPct = 0;
+    error = '';
+    const v = document.createElement('video');
+    v.muted = true;
+    v.src = previewUrl(clips[at.index].assetId); // the proxy seeks much faster when there is one
+    try {
+      await new Promise((r, j) => ((v.onloadeddata = r), (v.onerror = j)));
+      const w = STAB_W, h = Math.max(2, Math.round((STAB_W * v.videoHeight) / v.videoWidth / 2) * 2);
+      const c = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true })!;
+      const n = Math.max(2, Math.ceil((s.end - s.start) * STAB_FPS));
+      const shifts: [number, number][] = [];
+      let prev: Uint8Array | null = null;
+      for (let k = 0; k < n; k++) {
+        // A few ms past the sample time, so the seek lands inside a frame rather than on the boundary between two.
+        v.currentTime = Math.min(s.end - 0.01, s.start + k / STAB_FPS + 0.008) - off;
+        await new Promise((r) => (v.onseeked = r));
+        const g = grey(c, v, w, h);
+        if (prev) shifts.push(shiftOf(prev, g, w, h));
+        prev = g;
+        stabPct = ((k + 1) / n) * 100;
+      }
+      const stab = planStab(shifts, w, h, STAB_FPS, s.start);
+      commit();
+      segments = segments.with(i, { ...segments[i], fx: { ...segments[i].fx, stab } });
+    } catch {
+      error = 'err.stab';
+    } finally {
+      v.removeAttribute('src');
+      stabPct = null;
+    }
+  }
+
+  // ---- Voice changer on a Music & VO item: rendered into a new audio file (the original is kept) ----
+  let vfxBusy = $state(false);
+  async function setVoiceFx(item: AudioItem, fx: VoiceFx | '') {
+    const orig = item.src ?? item.assetId;
+    if (!fx) {
+      if (item.src) (commit(), setAudio(item.id, { assetId: item.src, src: undefined, vfx: undefined }));
+      return;
+    }
+    const f = files.get(orig);
+    if (!f) return;
+    vfxBusy = true;
+    error = '';
+    try {
+      const ctx = new AudioContext();
+      let buf: AudioBuffer;
+      try { buf = await ctx.decodeAudioData(await f.arrayBuffer()); } finally { ctx.close(); }
+      await new Promise((r) => setTimeout(r)); // let the "working" state paint
+      const out = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, c) => applyVoiceFx(buf.getChannelData(c), buf.sampleRate, fx));
+      const base = (names.get(orig) ?? 'audio').replace(/\.[^.]+$/, '');
+      const file = new File([wav(out, buf.sampleRate)], `${base} · ${t('vfx.' + fx)}.wav`, { type: 'audio/wav' });
+      const r = await importFile(file);
+      assets = [...assets, r.asset];
+      register(r.asset, file);
+      commit();
+      setAudio(item.id, { assetId: r.asset.id, src: orig, vfx: fx });
+    } catch {
+      error = 'err.badMedia';
+    } finally {
+      vfxBusy = false;
+    }
+  }
+
   // ---- Speaker detection: a voice fingerprint per caption, grouped by similarity ----
   let spkCount = $state(0); // 0 = auto
   let spkBusy = $state(false), spkStatus = $state(''), spkPct = $state(0), spkMsg = $state('');
@@ -784,7 +860,7 @@
       capBox = null;
       let below: Placed[] = [];
       const anyBehind = overlaysAt(overlays, player.o).some((o) => o.behind);
-      drawFrame(ctx, f, f ? fw : w, f ? fh : h, f ? shakePlace(scalePlace(zoomPlace(coverPlace(w, h, fw, fh, fx?.focus), w, h, fx, tNow - (strip?.start ?? 0)), w, h, autoZoomAt(zooms, autoZoom?.scale ?? 1, tNow)), w, h, Math.max(fx?.shake ?? 0, autoZoom?.shake ? zoomShake(zooms, tNow) : 0), tNow) : [0, 0, w, h], fx, !!cap,
+      drawFrame(ctx, f, f ? fw : w, f ? fh : h, f ? shakePlace(scalePlace(zoomPlace(stabPlace(coverPlace(w, h, fw, fh, fx?.focus), w, h, fx?.stab, tNow), w, h, fx, tNow - (strip?.start ?? 0)), w, h, autoZoomAt(zooms, autoZoom?.scale ?? 1, tNow)), w, h, Math.max(fx?.shake ?? 0, autoZoom?.shake ? zoomShake(zooms, tNow) : 0), tNow) : [0, 0, w, h], fx, !!cap,
         () => {
           placed = [...below, ...drawLayers(ctx, tNow, false)];
           capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
@@ -2061,6 +2137,13 @@
           {:else}
             <button class="sm" onclick={() => detectBeatsFor(selAudio.assetId)} disabled={beatBusy}>{beatBusy ? t('detecting') : t('detectBeats')}</button>
           {/if}
+          <label class="vol inline" title={t('vfxTip')}>{t('vfx')}
+            <select value={selAudio.vfx ?? ''} disabled={vfxBusy} onchange={(e) => setVoiceFx(selAudio, e.currentTarget.value as VoiceFx | '')}>
+              <option value="">{t('vfx.none')}</option>
+              {#each VOICE_FX as v}<option value={v}>{t('vfx.' + v)}</option>{/each}
+            </select>
+          </label>
+          {#if vfxBusy}<span class="small muted">{t('vfxBusy')}</span>{/if}
           <label class="chk" title={t('duckTip')}><input type="checkbox" checked={!!selAudio.duck}
             onchange={(e) => (commit(), setAudio(selAudio.id, { duck: e.currentTarget.checked || undefined }))} /> {t('duck')}</label>
           <button class="sm" onclick={removeAudioItem}>{t('removeAudio')}</button>
@@ -2094,6 +2177,8 @@
               {#each [0, 0.3, 0.6, 1] as v}<option value={v}>{t('shake.' + v)}</option>{/each}
             </select>
           </label>
+          <button class="sm" class:on={!!selFx.stab} aria-pressed={!!selFx.stab} title={t('stabTip')} disabled={stabPct !== null || !!selFx.hold}
+            onclick={() => stabilize(selected)}><Icon name="videocam" size={16} /> {stabPct !== null ? `${t('stabBusy')} ${Math.round(stabPct)}%` : t('stab')}</button>
           <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
             onclick={() => setFx({ lift: !selFx.lift || undefined })}>{t('lift')}</button>
           <button class="sm icon" class:on={selFx.behind} aria-pressed={!!selFx.behind} title={t('textBehind')} aria-label={t('textBehind')}
