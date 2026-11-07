@@ -1769,7 +1769,8 @@
           <TranscriptView bind:this={transcriptView} {captions} {segments} {time} {duration}
             {speakers} onseek={seek} oncut={cutRanges} onkeep={keepRanges}
             onspeaker={(ids, k) => { if (k === speakers.length) speakers = [...speakers, '']; setCaps(setSpeaker(captions, new Set(ids), k)); }}
-            onrename={(k, n) => (speakers = speakers.with(k, n))} />
+            onrename={(k, n) => (speakers = speakers.with(k, n))}
+            onemphasis={(starts, on) => { const set = new Set(starts); setCaps(captions.map((c) => (c.words.some((w) => set.has(w.start)) ? { ...c, words: c.words.map((w) => (set.has(w.start) ? (on ? { ...w, em: true } : (({ em: _, ...r }) => r)(w)) : w)) } : c))); }} />
         {/if}
       {:else}
         <p class="muted small">{t('captionsHint')} {t('selectHint')}</p>
@@ -1788,7 +1789,10 @@
             <button class="sm" onclick={() => setCaps(autoEmphasis(captions))} title={t('emHint')}>{t('autoEm')}</button>
             {#if hasEmphasis(captions)}
               <button class="sm" onclick={() => setCaps(clearEmphasis(captions))}>{t('clearEm')}</button>
+              <label class="sl">{t('emSize')} <span class="mono">{Math.round((style.emScale ?? 1) * 100)}%</span>
+                <input type="range" min="1" max="1.5" step="0.05" value={style.emScale ?? 1} oninput={(e) => (style = { ...style, emScale: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })} /></label>
             {/if}
+            <span class="muted small">{t('emHandHint')}</span>
           </div>
           <div class="trbox">
             <label class="chk"><input type="checkbox" checked={!!autoZoom} onchange={(e) => (autoZoom = e.currentTarget.checked ? { ...DEFAULT_AUTOZOOM } : null)} /> {t('autoZoom')}</label>

@@ -12,7 +12,9 @@ Captions already have word timings and a highlight color. This phase adds the pa
 - ✅ `lib/keywords.ts`: scores each word using numbers and money, proper nouns, long words, words in caps and words after "!". It skips English and Spanish stop words and fillers. It marks up to *N* words per caption (1 by default).
 - ✅ **Auto-emphasis** and **Clear** buttons in the Captions tab, each one undo step.
 - ✅ Tests: `node src/lib/keywords.test.ts`.
-- Later: let users mark or unmark one word by clicking it in the caption list. Optional scale or colour for emphasized words (an `emScale` style field). Translated captions don't carry the emphasis over yet.
+- ✅ (follow-up) **By hand**: select words in the Transcript and press **E**, or ★ in the selection bar, to emphasize them or remove it. Emphasized words are underlined in the transcript.
+- ✅ (follow-up) **Emphasis size** slider (100–150%, `Style.emScale`): emphasized words are drawn bigger, and the line layout makes room for them.
+- ✅ (follow-up) **Translated captions keep emphasis**: a caption with *n* emphasized words gets the *n* best key words of its translation (`translate.ts`).
 
 ## Phase 1: Smart auto-zoom ✅
 Builds on Phase 0.

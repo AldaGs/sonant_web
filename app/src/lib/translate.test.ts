@@ -17,4 +17,10 @@ assert.equal(three.at(-1)!.end, 2);
 // A word straddling a long gap keeps its midpoint inside the word it starts in.
 const st = spreadWords('a b c', [w('x', 0, 1), w('y', 10, 11)]);
 assert.ok(st.every((x) => [[0, 1], [10, 11]].some(([s, e]) => (x.start + x.end) / 2 >= s && (x.start + x.end) / 2 < e)), JSON.stringify(st));
+// emphasis carries over to the translation (same number of words, the key ones)
+import { translated as tr2 } from './translate.ts';
+const emCap = { id: 'e', tr: 'Gané 500 dólares hoy', words: [{ text: 'I', start: 0, end: 0.3 }, { text: 'made', start: 0.3, end: 0.6 }, { text: '500', start: 0.6, end: 1, em: true }, { text: 'dollars', start: 1, end: 1.4 }] };
+const te = tr2([emCap])[0].words;
+assert.deepEqual(te.filter((w) => w.em).map((w) => w.text), ['500']);
+assert.ok(!tr2([{ ...emCap, words: emCap.words.map(({ em: _, ...w }) => w) }])[0].words.some((w) => w.em));
 console.log('translate ok');

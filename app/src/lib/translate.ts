@@ -1,4 +1,5 @@
 import type { Caption, Word } from './captions.ts';
+import { pickEmphasis } from './keywords.ts';
 import type { Dir, In, Out } from './translate.worker.ts';
 export type { Dir };
 
@@ -46,5 +47,11 @@ export function spreadWords(text: string, words: Word[]): Word[] {
 }
 
 // Captions as shown with translation on: translated ones get their new words; others stay as they are.
+// Emphasis carries over: a caption with n emphasized words gets the n best key words of its translation.
 export const translated = (caps: Caption[]) =>
-  caps.map((c) => (c.tr ? { ...c, words: spreadWords(c.tr, c.words) } : c)).filter((c) => c.words.length);
+  caps.map((c) => {
+    if (!c.tr) return c;
+    const words = spreadWords(c.tr, c.words), n = c.words.filter((w) => w.em).length;
+    if (n) for (const i of pickEmphasis(words, { perCaption: n })) words[i] = { ...words[i], em: true };
+    return { ...c, words };
+  }).filter((c) => c.words.length);
