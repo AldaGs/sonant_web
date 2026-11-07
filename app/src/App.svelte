@@ -5,7 +5,8 @@
   import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
   import { splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment } from './lib/cuts';
-  import { clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
+  import { drawSubject } from './lib/segment';
+  import { clipAt, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
@@ -379,14 +380,19 @@
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
       const f = player.frame();
+      let place: number[] | null = null;
       if (f && f.videoWidth) {
         const k = Math.max(w / f.videoWidth, h / f.videoHeight);
         const dw = f.videoWidth * k, dh = f.videoHeight * k;
-        ctx.drawImage(f, (w - dw) / 2, (h - dh) / 2, dw, dh);
+        place = [(w - dw) / 2, (h - dh) / 2, dw, dh];
+        ctx.drawImage(f, place[0], place[1], dw, dh);
       }
       const cap = visibleCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
       capOnScreen = cap ?? null;
       capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
+      const at = clipAt(clips, durations, tNow);
+      if (cap && f && place && at && clips[at.index].behind)
+        drawSubject(ctx, f, f.videoWidth, f.videoHeight, place[0], place[1], place[2], place[3]);
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
       if (capBox && (paused || hover || drag?.onBox)) drawDragBox(ctx, capBox, cv.width / (cv.getBoundingClientRect().width || cv.width));
       id = requestAnimationFrame(tick);
@@ -667,6 +673,8 @@
             <li>
               <span class="mono muted small">{i + 1}</span>
               <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
+              <button class="sm icon" class:on={c.behind} aria-pressed={!!c.behind} title={t('textBehind')} aria-label={t('textBehind')}
+                onclick={() => setClips(clips.with(i, { ...c, behind: !c.behind }))}>👤</button>
               <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}>↑</button>
               <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}>↓</button>
               <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}>✕</button>
@@ -881,6 +889,7 @@
   .pname:hover:not(:disabled) { border-color: var(--border); }
   .pill { background: var(--raised); color: var(--muted); font-size: 12px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
   .actions { display: flex; gap: 8px; align-items: center; }
+  .seq button.on { border-color: var(--accent); background: rgb(200 245 96 / .12); }
   .actions button.on { border-color: var(--accent); background: rgb(200 245 96 / .06); }
   .lang { height: 36px; padding: 0 8px; }
   .panel { background: var(--panel); min-height: 0; display: flex; flex-direction: column; }

@@ -2,6 +2,7 @@ import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
 import { keptCaptions, type Segment } from './cuts.ts';
 import { drawCaption, resolveStyle, type Style } from './render.ts';
+import { drawSubject, loadSegmenter } from './segment.ts';
 import { clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
 
 export type Aspect = 'source' | '16:9' | '9:16' | '1:1';
@@ -110,6 +111,7 @@ export async function exportVideo(
     throw new Error('err.noH264');
   const aCodec = (await canEncodeAudio('aac')) ? 'aac' : 'opus';
 
+  if (src.clips.some((c) => c.behind)) await loadSegmenter(); // every exported frame must be segmented
   const total = frameCount(segs, opts.fps);
   const mix = await mixAudio(src, segs, total / opts.fps);
   if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
@@ -143,6 +145,7 @@ export async function exportVideo(
       const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2);
       const offset = at ? starts[at.index] : 0;
       const sink = at ? await sinkFor(src.clips[at.index].assetId) : undefined;
+      const behind = !!(at && src.clips[at.index].behind);
       const times = [...frameTimes([piece], opts.fps)];
       const frames = sink ? sink.canvasesAtTimestamps(times.map((t) => t - offset)) : null;
       for (const t of times) {
@@ -153,6 +156,7 @@ export async function exportVideo(
         if (frame) ctx.drawImage(frame.canvas, 0, 0);
         const cap = sorted.find((c) => t >= startOf(c) && t < endOf(c));
         if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
+        if (cap && frame && behind) drawSubject(ctx, frame.canvas, width, height, 0, 0, width, height);
         await vOut.add(i / opts.fps, 1 / opts.fps);
         onProgress(++i / total);
       }

@@ -5,7 +5,8 @@ import type { Segment } from './cuts';
 export type Asset = { id: string; name: string; kind: 'video' | 'audio'; duration: number; width?: number; height?: number };
 // A video clip on the video track. Clips play back to back; together they form the "sequence".
 // Sequence time is what segments, captions and words are measured in.
-export type Clip = { id: string; assetId: string };
+// behind: captions are drawn behind the person in this clip (person segmentation).
+export type Clip = { id: string; assetId: string; behind?: boolean };
 // An extra audio item (music, voiceover), placed in OUTPUT time so word cuts don't move it.
 // offset/len trim the file: it plays [offset, offset + len) of the asset, starting at `at`.
 export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number };
