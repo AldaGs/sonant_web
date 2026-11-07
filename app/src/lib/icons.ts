@@ -62,6 +62,9 @@ import refresh from '@material-symbols/svg-400/rounded/refresh.svg?raw';
 import open_in_new from '@material-symbols/svg-400/rounded/open_in_new.svg?raw';
 import groups from '@material-symbols/svg-400/rounded/groups.svg?raw';
 import videocam from '@material-symbols/svg-400/rounded/videocam.svg?raw';
+import error from '@material-symbols/svg-400/rounded/error.svg?raw';
+import content_copy from '@material-symbols/svg-400/rounded/content_copy.svg?raw';
+import delete_sweep from '@material-symbols/svg-400/rounded/delete_sweep.svg?raw';
 import tune from '@material-symbols/svg-400/rounded/tune.svg?raw';
 import colorize from '@material-symbols/svg-400/rounded/colorize.svg?raw';
 import block from '@material-symbols/svg-400/rounded/block.svg?raw';
@@ -132,6 +135,9 @@ export const ICONS = {
   filter_vintage: m(filter_vintage),
   colorize: m(colorize),
   tune: m(tune),
+  error: m(error),
+  content_copy: m(content_copy),
+  delete_sweep: m(delete_sweep),
   videocam: m(videocam),
   groups: m(groups),
   auto_awesome_motion: m(auto_awesome_motion),

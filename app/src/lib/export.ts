@@ -1,3 +1,4 @@
+import { decodeFileAudio } from './audiodecode.ts';
 import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
 import { stabPlace } from './stabilize.ts';
@@ -70,20 +71,16 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
   const durations = new Map(src.assets.map((a) => [a.id, a.duration]));
   const ovAudio = (src.overlays ?? []).filter((o) => o.kind === 'video' && o.assetId && (o.volume ?? 0) > 0);
   const needed = new Set([...src.clips.map((c) => c.assetId), ...segs.flatMap((s) => (s.fx?.rev ? [s.fx.rev.assetId] : [])), ...src.audios.map((a) => a.assetId), ...ovAudio.map((o) => o.assetId!)]);
-  const decoder = new AudioContext({ sampleRate: sr });
   const decoded = new Map<string, AudioBuffer>();
-  try {
-    for (const id of needed) {
-      // Main clips use their noise-reduced copy when there is one.
+  for (const id of needed) {
       // Main clips and video layers use their noise-reduced copy when there is one.
       const f = ((src.clips.some((c) => c.assetId === id) || ovAudio.some((o) => o.assetId === id)) && src.clean?.get(id)) || src.files.get(id);
       if (!f) continue;
       try {
-        decoded.set(id, await decoder.decodeAudioData(await f.arrayBuffer()));
+        // Streams the audio track only: a long phone video no longer has to fit in memory as a whole file.
+        const b = await decodeFileAudio(f);
+        if (b) decoded.set(id, b);
       } catch {} // no audio track in this file
-    }
-  } finally {
-    decoder.close();
   }
   if (!decoded.size || seconds <= 0) return null;
 

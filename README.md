@@ -72,6 +72,38 @@ Everything runs locally in the browser. No server, no account, and your media ne
 - **Interface:** English and Spanish. Works on desktop and phone-sized screens.
 - **Help page:** a user guide in English and Spanish at `#/help`, linked from the home page and the editor header.
 
+### Pro features (free, on the device)
+Details and status: [`PRO_FEATURES_PLAN.md`](PRO_FEATURES_PLAN.md).
+- **Emphasis:** **Auto-emphasis** colours the key word of each caption (numbers, names, long or shouted words). Select words in the Transcript and press **E** to do it by hand. **Emphasis size** makes them bigger. Translations keep the emphasis.
+- **Smart auto-zoom:** a quick punch-in on each emphasized word (and optionally at sentence starts), with an optional shake as it lands.
+  - Zooms show as ◎ on the timeline: drag to move one, double-click to remove it.
+  - **Aim at the person** zooms towards the speaker.
+- **Green screen:** chroma key on layers and on main-video strips, with tolerance, softness and spill removal, and an eyedropper that picks from the preview. On a strip, the keyed area shows the strip's Background.
+- **Layers:** blend modes (multiply, screen, overlay…) and masks (ellipse, rectangle, linear) with feather and invert. Masks can be animated with keyframes, or with the **Wipe reveal** and **Spotlight reveal** presets.
+- **Effects:** vignette, film grain, glow and RGB split, plus Film, Dreamy, Glitch and VHS looks. Camera shake per strip, and zoom blur on the zoom transition.
+- **Templates:** progress bar, and emoji stickers (🔥, 😱 WOW, 👍 Like & subscribe, 👉).
+- **Stabilize** a shaky strip (moves only; zooms in slightly to hide the edges). **Reverse** a strip (picture and sound).
+- **AI noise reduction** (RNNoise) on the clips' sound, video layers, and each Music & VO item: Light, Medium or Strong.
+- **Voice changer** on Music & VO items: Deep, Higher, Chipmunk, Robot, Radio, Phone.
+- **AI voiceover:**
+  - Engines: Kokoro (natural English) and Piper (English and Spanish).
+  - Type a script, or **dub** the captions: each line is placed at its caption's time and fitted to it. With translation on, this makes a dubbed version.
+- **Auto-clips:** finds the best 15–60s moments of a long video from its transcript (hooks, questions, numbers, emphasis, loudness). **Make short** turns one into a new 9:16 project with the person kept in frame, and **Make all shorts** does every suggestion.
+- **Detect speakers:** tells voices apart and tags each caption, splitting lines where the speaker changes.
+- **Performance** (header ⚙): Auto, GPU or CPU for transcription, speaker detection, person detection and chroma key, plus chroma key resolution. Set per device.
+- **Share** the exported MP4 straight to an app (phones, Safari, Chrome on Windows and Android). LUTs travel inside `.sonant` files.
+
+**First-use downloads**, cached afterwards:
+
+| Feature | Download |
+|---|---|
+| Whisper | ~80 MB |
+| RNNoise | ~5 MB |
+| Kokoro | ~90 MB, or ~330 MB on WebGPU |
+| Piper | ~60–120 MB per voice |
+| WeSpeaker | ~26 MB |
+| Person detection | MediaPipe, a few MB |
+
 ## Projects and saving
 
 - **Home page** (`#/`): every project as a card. Click to open it (`#/p/<id>`). The ⋯ menu renames, duplicates, saves to file or deletes it. Duplicates share media files, so they take no extra space.
@@ -110,7 +142,7 @@ The logic modules have small assert-based tests that run directly in Node (TypeS
 
 ```bash
 cd app
-for t in audio beats captions autozoom cuts denoise diarize export grade highlights keywords layerfx perf reverse stabilize tts voicefx overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
+for t in audio beats captions autozoom cuts denoise diarize export grade highlights keywords layerfx audiodecode crash perf reverse stabilize tts voicefx overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
 ```
 
 ## Stack
@@ -122,7 +154,9 @@ for t in audio beats captions autozoom cuts denoise diarize export grade highlig
 | Preview and caption rendering | Canvas 2D, shared by preview and export |
 | Playback | One clock driving a hidden `<video>` per clip and an `<audio>` per music/VO item |
 | Export | WebCodecs + [Mediabunny](https://github.com/Vanilagy/mediabunny); audio mixed with `OfflineAudioContext` |
-| Voiceover | [Kokoro](https://github.com/hexgrad/kokoro) via kokoro-js, and [Piper](https://github.com/rhasspy/piper) via @mintplex-labs/piper-tts-web |
+| Voiceover | [Kokoro](https://github.com/hexgrad/kokoro) via kokoro-js (worker), and [Piper](https://github.com/rhasspy/piper) via @mintplex-labs/piper-tts-web (its ONNX runtime files are served with the app) |
+| Speaker detection | WeSpeaker ResNet34 embeddings (transformers.js, worker) + clustering |
+| Stabilization, reverse, voice changer | Own code: block-matching motion estimate; WebCodecs re-encode via Mediabunny; WSOLA pitch shift |
 | Noise reduction | [RNNoise](https://github.com/xiph/rnnoise) via [@shiguredo/rnnoise-wasm](https://github.com/shiguredo/rnnoise-wasm) in a Web Worker |
 | Color picker | [vanilla-colorful](https://github.com/web-padawan/vanilla-colorful) |
 | Storage | IndexedDB; `.sonant` files for backup and sharing |
@@ -162,6 +196,9 @@ app/src/
     stabilize.ts          stabilization: motion estimation, path smoothing, corrections
     voicefx.ts            voice changer (pitch shift, robot, radio, phone)
     reverse.ts            reversed copy of a strip (picture + sound)
+    audiodecode.ts        streamed audio decoding (only the audio track, never the whole file)
+    crash.ts              crash notes, error log and reports (CrashReport.svelte)
+    models.ts             list / remove downloaded AI models
     render.ts             caption drawing, presets, animations, easing, drag box
     export.ts             MP4 export (video + captions + mixed audio)
     transcribe.ts         audio decode + worker bridge

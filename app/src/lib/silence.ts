@@ -1,3 +1,4 @@
+import { decodeMono } from './audiodecode.ts';
 // Silence detection straight from the audio, no transcript needed.
 type Range = [number, number];
 
@@ -33,11 +34,7 @@ export function quietRanges(data: Float32Array, sr: number, thresholdDb = -35, m
 
 // Decode a file's audio (mono, 16 kHz is plenty for loudness) and find its quiet ranges.
 export async function fileSilences(file: File, thresholdDb: number, min: number, pad: number): Promise<Range[]> {
-  const ctx = new AudioContext({ sampleRate: 16000 });
-  try {
-    const buf = await ctx.decodeAudioData(await file.arrayBuffer());
-    return quietRanges(buf.getChannelData(0), buf.sampleRate, thresholdDb, min, pad);
-  } finally {
-    ctx.close();
-  }
+  const x = await decodeMono(file, 16000); // streams the audio track only (see audiodecode.ts)
+  if (!x) throw new Error('err.noAudio');
+  return quietRanges(x, 16000, thresholdDb, min, pad);
 }

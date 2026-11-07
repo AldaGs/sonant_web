@@ -84,9 +84,23 @@ async function kokoro(text: string, voice: string, speed: number, gpu: boolean, 
   });
 }
 
+// Piper's package loads the app's own onnxruntime-web but points it at an older runtime on a CDN (1.18), whose
+// files don't match: the WASM engine must come from the installed version, so it's served with the app.
+let piperVoice = '';
 async function piper(text: string, voice: string, onStatus: (s: string, p: number) => void): Promise<{ audio: Float32Array; sr: number }> {
-  const tts = await import('@mintplex-labs/piper-tts-web');
-  const blob = await tts.predict({ text, voiceId: voice }, (p) => p.total && onStatus('st.voiceDownload', (p.loaded / p.total) * 100));
+  const [{ TtsSession }, mjs, wasm] = await Promise.all([
+    import('@mintplex-labs/piper-tts-web'),
+    import('onnxruntime-web/ort-wasm-simd-threaded.mjs?url').then((m) => m.default as string),
+    import('onnxruntime-web/ort-wasm-simd-threaded.wasm?url').then((m) => m.default as string),
+  ]);
+  // The package keeps one session per page and never reloads the model: start a new one when the voice changes.
+  if (piperVoice !== voice) ((TtsSession as unknown as { _instance: unknown })._instance = null), (piperVoice = voice);
+  const session = await TtsSession.create({
+    voiceId: voice,
+    progress: (p) => p.total && onStatus('st.voiceDownload', (p.loaded / p.total) * 100),
+    wasmPaths: { ...TtsSession.WASM_LOCATIONS, onnxWasm: { mjs, wasm } as unknown as string },
+  });
+  const blob = await session.predict(text);
   const ctx = new AudioContext();
   try {
     const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
