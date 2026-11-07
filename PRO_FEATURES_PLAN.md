@@ -61,7 +61,12 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - ✅ **Progress bar** template: a layer across the whole video. Its colour, track, thickness and top/bottom position can be changed.
 - ✅ **Stickers** templates: 🔥, 😱 WOW, 👍 Like & subscribe and 👉. These are emoji text layers that pop in. Stickers and the progress bar leave the caption style alone.
 - ✅ Tests: shake bounds and coverage (`autozoom.test.ts`), bar placement and progress (`templates.test.ts`). In a browser test, every shader effect changed the pixels as expected, and the bar and sticker rendered over a video.
-- ⬜ **Reverse strip**: postponed. The browser can't play a `<video>` backwards, so the preview would have to step through frames one at a time, which is choppy without decoding to a reversed proxy first. Plan: build a reversed proxy (WebCodecs, like `proxy.ts`) and reversed audio, then use them in both preview and export.
+- ✅ **Reverse strip** (follow-up): **Reverse** on a strip renders a reversed copy of its range once (`lib/reverse.ts`).
+  - Picture: decoded half a second at a time from the end and encoded backwards at up to 1080p, so memory stays small.
+  - Sound: reversed sample by sample.
+  - The strip stores `fx.rev` (copy + range). The player plays the copy forwards in place of the clip, so the clock and lip sync work as usual, and export reads frames and sound from the copy. Click again to play forwards (the copy stays in the library).
+  - Browser check: a 3s clip reversed in 1.1s, and copy time t matched original time 3 − t at every sampled point.
+  - Captions inside a reversed strip keep their forward timing.
 
 ## Phase 5: Text-to-speech voiceover ✅ (synthesis not tested here)
 - ✅ **Two local engines** (`lib/tts.ts`). Both download on first use and are cached by the browser.

@@ -10,6 +10,7 @@ export type Fx = { behind?: boolean; bg?: 'color' | 'blur' | 'image'; bgColor?: 
   color?: import('./grade').Color; focus?: import('./reframe').Focus;
   shake?: number; /* handheld camera shake 0..1 */
   stab?: import('./stabilize').Stab; /* stabilization corrections */
+  rev?: { assetId: string; start: number; end: number }; /* reversed: plays this copy, made of [start, end) sequence time backwards */
   key?: import('./layerfx').ChromaKey /* green screen on the strip: keyed area shows the background (bg) */ };
 
 // How long a strip lasts in the output, and the source time `o` seconds into it.

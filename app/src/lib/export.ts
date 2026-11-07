@@ -69,7 +69,7 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
   const sr = 48000;
   const durations = new Map(src.assets.map((a) => [a.id, a.duration]));
   const ovAudio = (src.overlays ?? []).filter((o) => o.kind === 'video' && o.assetId && (o.volume ?? 0) > 0);
-  const needed = new Set([...src.clips.map((c) => c.assetId), ...src.audios.map((a) => a.assetId), ...ovAudio.map((o) => o.assetId!)]);
+  const needed = new Set([...src.clips.map((c) => c.assetId), ...segs.flatMap((s) => (s.fx?.rev ? [s.fx.rev.assetId] : [])), ...src.audios.map((a) => a.assetId), ...ovAudio.map((o) => o.assetId!)]);
   const decoder = new AudioContext({ sampleRate: sr });
   const decoded = new Map<string, AudioBuffer>();
   try {
@@ -113,14 +113,16 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
   const starts = clipStarts(src.clips, durations);
   let out = 0;
   for (const s of splitAtBoundaries(segs, starts)) {
-    const at = clipAt(src.clips, durations, (s.start + s.end) / 2);
-    const buf = at && decoded.get(src.clips[at.index].assetId);
+    const at0 = clipAt(src.clips, durations, (s.start + s.end) / 2), rev = s.fx?.rev;
+    // A reversed strip takes its sound from the reversed copy, which starts at the strip's rev.start.
+    const at = at0 && rev ? { ...at0, base: rev.start } : at0 && { ...at0, base: starts[at0.index] };
+    const buf = at && decoded.get(rev ? rev.assetId : src.clips[at.index].assetId);
     const speed = s.fx?.speed ?? 1;
     if (buf && !s.fx?.lift && !s.fx?.hold) { // lifted gaps and freeze frames are silent
-      if (speed === 1) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume, voice);
+      if (speed === 1) play(buf, out, s.start - at.base, s.end - s.start, src.clipVolume, voice);
       else {
         // Sped-up / slowed-down strips: time-stretched so voices keep their pitch.
-        const a = Math.floor((s.start - starts[at.index]) * buf.sampleRate), z = Math.min(buf.length, Math.ceil((s.end - starts[at.index]) * buf.sampleRate));
+        const a = Math.floor((s.start - at.base) * buf.sampleRate), z = Math.min(buf.length, Math.ceil((s.end - at.base) * buf.sampleRate));
         const ch = stretch(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c).subarray(a, z)), speed);
         const piece = new AudioBuffer({ length: ch[0].length, numberOfChannels: ch.length, sampleRate: buf.sampleRate });
         ch.forEach((d, c) => piece.copyToChannel(d as Float32Array<ArrayBuffer>, c));
@@ -251,9 +253,10 @@ export async function exportVideo(
     const grader = new Grader(), lutOf = (id?: string) => src.luts?.find((l) => l.id === id);
     let i = 0;
     for (const piece of splitAtBoundaries(segs, starts)) {
-      const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2);
-      const offset = at ? starts[at.index] : 0;
-      const clipId = at ? src.clips[at.index].assetId : undefined;
+      const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2), rev = piece.fx?.rev;
+      // Reversed strip: frames come from the reversed copy, which starts at rev.start.
+      const offset = rev ? rev.start : at ? starts[at.index] : 0;
+      const clipId = rev ? rev.assetId : at ? src.clips[at.index].assetId : undefined;
       const still = clipId && assets.get(clipId)?.kind === 'image' ? await stillFor(clipId) : null;
       const decoded = clipId && !still ? await sinkFor(clipId) : undefined, sink = decoded?.sink;
       const sw = still?.width ?? decoded?.w ?? width, sh = still?.height ?? decoded?.h ?? height;      const times = [...frameTimes([piece], opts.fps)];

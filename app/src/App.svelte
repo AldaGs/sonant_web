@@ -30,6 +30,7 @@
   import { decodeAudio } from './lib/transcribe';
   import { gpuFor } from './lib/perf';
   import { shiftOf, planStab, stabPlace, grey, STAB_FPS, STAB_W } from './lib/stabilize';
+  import { makeReversed } from './lib/reverse';
   import { applyVoiceFx, VOICE_FX, type VoiceFx } from './lib/voicefx';
   import { wav } from './lib/denoise';
   import { findHighlights, shortOf, DEFAULT_HL, type Highlight } from './lib/highlights';
@@ -72,7 +73,6 @@
   const names = $derived(new Map(assets.map((a) => [a.id, a.name])));
   const duration = $derived(seqDuration(clips, durations)); // whole sequence, before cuts
   const hasMedia = $derived(clips.length > 0);
-  const videoIds = $derived([...new Set(clips.map((c) => c.assetId))]);
   const firstVideo = $derived(clips.map((c) => assets.find((a) => a.id === c.assetId)).find((a) => a?.width));
   const srcW = $derived(firstVideo?.width || 1280);
   const srcH = $derived(firstVideo?.height || 720);
@@ -99,6 +99,8 @@
   let fonts = $state<Font[]>([...BUNDLED]);
   let fontError = $state('');
   let segments = $state<Segment[]>([]);
+  // Hidden <video> per clip file, plus reversed copies of reversed strips.
+  const videoIds = $derived([...new Set([...clips.map((c) => c.assetId), ...segments.flatMap((s) => (s.fx?.rev ? [s.fx.rev.assetId] : []))])]);
   let selected = $state(-1);
   // Selected captions for per-caption styling. The last one clicked is the "primary": the style panel shows its look.
   let selectedCapIds = $state<string[]>([]);
@@ -522,6 +524,32 @@
     } finally {
       v.removeAttribute('src');
       stabPct = null;
+    }
+  }
+
+  // ---- Reverse a strip: a reversed copy of its range is made once and played in its place ----
+  let revPct = $state<number | null>(null);
+  async function reverseStrip(i: number) {
+    const s = segments[i];
+    if (!s || s.fx?.hold) return;
+    if (s.fx?.rev) return setFx({ rev: undefined }); // toggle off (the copy stays in the library)
+    const starts = clipStarts(clips, durations), at = clipAt(clips, durations, (s.start + s.end) / 2);
+    const id = at && clips[at.index].assetId, f = id && files.get(id);
+    if (!at || !f || kindOf(id!) !== 'video') return;
+    revPct = 0;
+    error = '';
+    try {
+      const blob = await makeReversed(f, s.start - starts[at.index], s.end - starts[at.index], (p) => (revPct = p));
+      const file = new File([blob], `${(names.get(id!) ?? 'clip').replace(/\.[^.]+$/, '')} · ${t('reversed')}.mp4`, { type: 'video/mp4' });
+      const r = await importFile(file);
+      assets = [...assets, r.asset];
+      register(r.asset, file);
+      commit();
+      segments = segments.with(i, { ...segments[i], fx: { ...segments[i].fx, rev: { assetId: r.asset.id, start: s.start, end: s.end } } });
+    } catch {
+      error = 'err.reverse';
+    } finally {
+      revPct = null;
     }
   }
 
@@ -2263,6 +2291,8 @@
               {#each [0, 0.3, 0.6, 1] as v}<option value={v}>{t('shake.' + v)}</option>{/each}
             </select>
           </label>
+          <button class="sm" class:on={!!selFx.rev} aria-pressed={!!selFx.rev} title={t('reverseTip')} disabled={revPct !== null || !!selFx.hold}
+            onclick={() => reverseStrip(selected)}><Icon name="history" size={16} /> {revPct !== null ? `${t('reversing')} ${Math.round(revPct)}%` : t('reverse')}</button>
           <button class="sm" class:on={!!selFx.stab} aria-pressed={!!selFx.stab} title={t('stabTip')} disabled={stabPct !== null || !!selFx.hold}
             onclick={() => stabilize(selected)}><Icon name="videocam" size={16} /> {stabPct !== null ? `${t('stabBusy')} ${Math.round(stabPct)}%` : t('stab')}</button>
           <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
