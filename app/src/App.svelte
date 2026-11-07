@@ -1512,6 +1512,8 @@
     {#if sheet === 'color'}
       <ColorGrader color={selColor} {luts} onset={setColor} ondone={() => (colorEditing = false)} />
     {:else}
+    <!-- A selected layer gets its own settings only; caption templates and styles come back when it's deselected. -->
+    {#if !selOverlay}
     <details class="tpl">
       <summary>{t('templates')}</summary>
       <div class="tpl-list">
@@ -1525,6 +1527,7 @@
       </div>
       <button class="sm" onclick={saveTemplate} disabled={!hasMedia} title={t('saveTemplateTip')}><Icon name="add" /> {t('saveTemplate')}</button>
     </details>
+    {/if}
     {#if selected >= 0 && segments[selected] && !selOverlay}
       {@const c = selColor}
       <section class="layer strip" aria-label={t('stripColor')} onchange={() => (colorEditing = false)} onpointerup={() => (colorEditing = false)}>
@@ -1582,7 +1585,7 @@
       <!-- Layer inspector: live edits are one undo step each (snapshot on first input, closed on change). -->
       <section class="layer" class:vlayer={o.kind !== 'text'} aria-label={t('layer')} onchange={doneEditing} onpointerup={doneEditing}>
         <div class="lhead">
-          <h3>{o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
+          <h3>{o.motion ? t('addTitle') : o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
           <button class="sm icon" onclick={() => (selectedOverlay = '')} aria-label={t('ex.close')}><Icon name="close" /></button>
         </div>
         {#if o.kind === 'text'}
@@ -1676,6 +1679,7 @@
         </div>
       </section>
     {/if}
+    {#if !selOverlay}
     <StylePanel
       bind:style
       {selectedCap}
@@ -1691,6 +1695,7 @@
       onclearcapselection={clearCapSelection}
       onclearfields={clearCapFields}
     />
+    {/if}
     {/if}
   </aside>
 

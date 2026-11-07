@@ -1,5 +1,5 @@
 import type { Caption } from './captions.ts';
-import { drawCaption, resolveStyle, PRESETS, type Style } from './render.ts';
+import { drawCaption, drawText, fontString, resolveStyle, PRESETS, type Style } from './render.ts';
 
 // A layer drawn over the main video: picture-in-picture video, an image, or a text/sticker.
 // Placed in OUTPUT time (like music), so word cuts on the main video don't move it.
@@ -90,6 +90,22 @@ const bounce = (u: number) => { const n = 7.5625, d = 2.75;
 const ease = (u: number) => 1 - (1 - Math.max(0, Math.min(1, u))) ** 3; // ease-out cubic
 // Transform actually drawn at output time t: keyframes, then the title's motion on top.
 export function liveTf(o: Overlay, t: number, aspect = 16 / 9): Transform {
+  const out = styledTf(o, t), m = o.motion;
+  if (!m || m.path === 'none') return out;
+  const u = pathU(o, t), p = sPoint(m, u);
+  out.x += p.dx;
+  out.y += p.dy;
+  // Tilted along the curve's tangent.
+  const q = sPoint(m, Math.min(1, u + 1e-3)), q0 = sPoint(m, Math.max(0, u - 1e-3));
+  const ang = Math.atan2((q.dy - q0.dy) / aspect, q.dx - q0.dx || 1e-9) * 180 / Math.PI; // tangent in px
+  out.rotation += Math.max(-35, Math.min(35, ang * 0.5));
+  return out;
+}
+// How far along its path (0..1) a title is at output time t: an even pace, easing at the ends.
+export const pathU = (o: Overlay, t: number) =>
+  0.5 - Math.cos((Math.PI * Math.max(0, Math.min(o.len, t - o.at))) / Math.max(1e-6, o.len)) / 2;
+// Keyframes plus the title's in/out style, without the path.
+export function styledTf(o: Overlay, t: number): Transform {
   const tf = tfAt(o, t), m = o.motion;
   if (!m) return tf;
   const r = Math.max(0, Math.min(o.len, t - o.at));
@@ -103,16 +119,6 @@ export function liveTf(o: Overlay, t: number, aspect = 16 / 9): Transform {
     case 'swing': out.rotation = tf.rotation + 40 * Math.exp(-5 * ri) * Math.cos(12 * ri) * (ri < 1 ? 1 : 0) - 30 * (1 - ease(ro)); break;
     case 'stretch': out.sx = 1 + 2 * (1 - inU) + 1.5 * (1 - outU); out.scale = tf.scale / Math.sqrt(out.sx); break;
     case 'flip': out.sx = Math.max(0.02, Math.min(Math.sin((Math.PI / 2) * ri), Math.sin((Math.PI / 2) * ro))); break;
-  }
-  if (m.path === 'none') return out;
-  {
-    // Travel at an even pace (sine in-out), tilted along the curve's tangent.
-    const u = 0.5 - Math.cos((Math.PI * r) / Math.max(1e-6, o.len)) / 2, p = sPoint(m, u);
-    out.x += p.dx;
-    out.y += p.dy;
-    const q = sPoint(m, Math.min(1, u + 1e-3)), q0 = sPoint(m, Math.max(0, u - 1e-3));
-    const ang = Math.atan2((q.dy - q0.dy) / aspect, q.dx - q0.dx || 1e-9) * 180 / Math.PI; // tangent in px
-    out.rotation += Math.max(-35, Math.min(35, ang * 0.5));
   }
   return out;
 }
@@ -180,7 +186,9 @@ function textCaption(o: Overlay): Caption {
 
 // Draw one overlay at output time t. `src` is the decoded frame/image (null for text or not ready).
 export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number, src: CanvasImageSource | null, sw: number, sh: number): Placed | null {
-  const W = ctx.canvas.width, H = ctx.canvas.height, tf = liveTf(o, t, W / H);
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  if (o.kind === 'text' && hasPath(o.motion)) return drawOnPath(ctx, o, t);
+  const tf = liveTf(o, t, W / H);
   ctx.save();
   ctx.globalAlpha *= Math.max(0, Math.min(1, tf.opacity));
   let placed: Placed | null = null;
@@ -225,3 +233,62 @@ export const newMedia = (kind: 'video' | 'image', assetId: string, at: number, l
     tf: { ...DEFAULT_TF, x: 0.72, y: 0.28, scale: 0.4 } });
 export const newTitle = (at: number, text: string, len = 4): Overlay =>
   ({ ...newText(at, text), len, motion: { ...DEFAULT_MOTION }, tf: { ...DEFAULT_TF, y: 0.25, scale: 1.2 } });
+
+// A title on a path: each letter sits on the curve, turned to its tangent, and the word slides along it.
+// The in/out style (scale, spin, drop, stretch…) is applied to the whole word around its middle.
+function drawOnPath(ctx: CanvasRenderingContext2D, o: Overlay, t: number): Placed {
+  const W = ctx.canvas.width, H = ctx.canvas.height, m = o.motion!, base = tfAt(o, t), st = styledTf(o, t);
+  const s = textStyle(o), px = Math.max(1, Math.round(s.size * H * base.scale));
+  // The path in canvas px, measured by length.
+  const N = 200, pts: { x: number; y: number }[] = [], len = [0];
+  for (let i = 0; i <= N; i++) {
+    const p = sPoint(m, i / N);
+    pts.push({ x: (base.x + p.dx) * W, y: (base.y + p.dy) * H });
+    if (i) len.push(len[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+  }
+  const total = len[N];
+  // Point and angle at arc length d; past either end, carry on straight along the end's tangent.
+  const at = (d: number) => {
+    let i = 1;
+    if (d >= total) i = N;
+    else while (i < N && len[i] < d) i++;
+    const a = pts[i - 1], b = pts[i], seg = len[i] - len[i - 1] || 1e-6, f = (d - len[i - 1]) / seg;
+    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, a: Math.atan2(b.y - a.y, b.x - a.x) };
+  };
+  ctx.save();
+  ctx.globalAlpha *= Math.max(0, Math.min(1, st.opacity));
+  ctx.font = fontString(s, px);
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.lineJoin = 'round';
+  if ('letterSpacing' in ctx) (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = '0px';
+  const text = (o.text ?? '').replace(/\s+/g, ' ').trim();
+  const chars = [...(s.uppercase ? text.toUpperCase() : text)];
+  const gap = (s.letterSpacing ?? 0) * px, widths = chars.map((c) => ctx.measureText(c).width + gap);
+  const tw = widths.reduce((a, w) => a + w, 0);
+  const mid = at(pathU(o, t) * total);
+  // Style transform around the word's middle: drop offset, spin/swing, scale, stretch, flip.
+  const k = base.scale ? st.scale / base.scale : 1;
+  ctx.translate(mid.x + (st.x - base.x) * W, mid.y + (st.y - base.y) * H);
+  ctx.rotate((st.rotation * Math.PI) / 180);
+  ctx.scale(k * (st.sx ?? 1) * (st.flipX ? -1 : 1), k);
+  ctx.translate(-mid.x, -mid.y);
+  let d = pathU(o, t) * total - tw / 2, x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const [i, ch] of chars.entries()) {
+    const w = widths[i], p = at(d + w / 2);
+    d += w;
+    x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+    if (ch === ' ') continue;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.a);
+    drawText(ctx, s, px, ch, -(w - gap) / 2, s.color, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+  // Hit box: the letters' bounds, unrotated, with the style transform's offset and scale.
+  const kx = k * (st.sx ?? 1), pad = px * 0.6;
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  return { id: o.id, cx: mid.x + (st.x - base.x) * W + (cx - mid.x) * kx, cy: mid.y + (st.y - base.y) * H + (cy - mid.y) * k,
+    w: Math.max(px, (x1 - x0 + pad * 2) * Math.abs(kx)), h: Math.max(px, (y1 - y0 + pad * 2) * k), rot: 0 };
+}
