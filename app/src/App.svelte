@@ -603,7 +603,21 @@
   let hlOpts = $state({ ...DEFAULT_HL });
   let highlights = $state<Highlight[] | null>(null);
   let shortsMade = $state<Record<number, string>>({}); // highlight start → new project id
-  const findClips = () => ((highlights = findHighlights(keptCaptions(captions, segments), $state.snapshot(hlOpts))), (shortsMade = {}));
+  // Loudness from the waveform peaks (sequence time): mean peak over the range, or null without audio.
+  function loudness(a: number, b: number): number | null {
+    const at = clipAt(clips, durations, (a + b) / 2);
+    if (!at) return null;
+    const id = clips[at.index].assetId, pk = peaks[id], dur = durations.get(id);
+    if (!pk || !dur) return null;
+    const off = clipStarts(clips, durations)[at.index];
+    const i0 = Math.max(0, Math.floor(((a - off) / dur) * pk.length)), i1 = Math.min(pk.length, Math.ceil(((b - off) / dur) * pk.length));
+    let s = 0;
+    for (let i = i0; i < i1; i++) s += pk[i];
+    return i1 > i0 ? s / (i1 - i0) : null;
+  }
+  const findClips = () => ((highlights = findHighlights(keptCaptions(captions, segments), $state.snapshot(hlOpts), loudness)), (shortsMade = {}));
+  let hlReframe = $state(true); // keep the person in the 9:16 frame on each new short
+  let hlBusy = $state('');
   function previewClip(h: Highlight) {
     seek(h.start);
     if (!player.playing) toggle();
@@ -611,6 +625,15 @@
   async function makeShort(h: Highlight, n: number) {
     const durOf = (id: string) => durations.get(id) ?? 0;
     const cut = shortOf($state.snapshot({ segments, overlays, audios, captions }), h.start, h.end, (x) => itemLen(x, durOf(x.assetId)));
+    if (hlReframe) {
+      // Find the person in each strip of the short (the segmenter downloads once), so 9:16 keeps them in frame.
+      hlBusy = t('hlReframing');
+      for (const [k, sg] of cut.segments.entries()) {
+        const f = await focusOfSeg(sg).catch(() => null);
+        if (f) cut.segments[k] = { ...sg, fx: { ...sg.fx, focus: f } };
+      }
+      hlBusy = '';
+    }
     const title = `${name || t('untitled')} · ${t('short')} ${n}`;
     const doc: Doc = {
       ...$state.snapshot({ style, language, speakers, assets, clips, clipVolume, showTr, autoZoom, denoise }),
@@ -967,8 +990,9 @@
   }
   // Auto-reframe: find the person in a few frames of the strip and centre on them (median, so one miss doesn't matter).
   let reframing = $state(false);
-  async function focusOf(i: number): Promise<{ x: number; y: number } | null> {
-    const s = segments[i], starts = clipStarts(clips, durations);
+  const focusOf = (i: number) => focusOfSeg(segments[i]);
+  async function focusOfSeg(s: Segment): Promise<{ x: number; y: number } | null> {
+    const starts = clipStarts(clips, durations);
     const ci = clips.findIndex((_, k) => s.start >= starts[k] - 1e-6 && s.start < starts[k] + clipLen(durations, clips[k]));
     if (ci < 0) return null;
     const v = document.createElement('video');
@@ -1721,7 +1745,13 @@
                 </select>
               </label>
               <button class="sm" onclick={findClips}><Icon name="refresh" size={16} /> {t('hlFind')}</button>
+              <label class="chk" title={t('hlReframeTip')}><input type="checkbox" bind:checked={hlReframe} /> {t('hlReframe')}</label>
+              {#if highlights?.length}
+                <button class="sm" disabled={!!hlBusy} onclick={async () => { for (const [i, h] of (highlights ?? []).entries()) if (!shortsMade[h.start]) { hlBusy = t('hlMaking', { n: i + 1 }); await makeShort(h, i + 1); } hlBusy = ''; }}>
+                  <Icon name="add" size={16} /> {t('hlMakeAll')}</button>
+              {/if}
             </div>
+            {#if hlBusy}<p class="muted small" role="status">{hlBusy}</p>{/if}
             {#if highlights && !highlights.length}<p class="muted small">{t('hlNone')}</p>{/if}
             <ol class="hls">
               {#each highlights ?? [] as h, i (h.start)}
@@ -1734,7 +1764,7 @@
                     {#if shortsMade[h.start]}
                       <a class="btn sm" href={`#/p/${shortsMade[h.start]}`}><Icon name="open_in_new" size={16} /> {t('hlOpen')}</a>
                     {:else}
-                      <button class="sm primary" onclick={() => makeShort(h, i + 1)}><Icon name="add" size={16} /> {t('hlMake')}</button>
+                      <button class="sm primary" disabled={!!hlBusy} onclick={() => makeShort(h, i + 1)}><Icon name="add" size={16} /> {t('hlMake')}</button>
                     {/if}
                   </div>
                 </li>

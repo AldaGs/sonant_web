@@ -7,7 +7,9 @@ import { toOutput, type Segment } from './cuts.ts';
 import type { Overlay } from './overlay.ts';
 import type { AudioItem } from './project.ts';
 
-export type Sentence = { start: number; end: number; text: string; words: Word[]; score: number; hook: number };
+export type Sentence = { start: number; end: number; text: string; words: Word[]; score: number; hook: number; loud?: number };
+// Loudness of a time range (sequence time), any scale; null when unknown. Louder-than-usual delivery scores higher.
+export type LoudFn = (a: number, b: number) => number | null;
 export type Highlight = { start: number; end: number; score: number; title: string; reasons: string[] };
 export type HighlightOpts = { min: number; max: number; count: number };
 export const DEFAULT_HL: HighlightOpts = { min: 15, max: 60, count: 5 };
@@ -61,11 +63,21 @@ const median = (a: number[]) => {
 
 // Best clips: windows of whole sentences between min and max seconds, ranked by a strong opening line,
 // the average content score and how full the window is; then the top `count` that don't overlap.
-export function findHighlights(caps: Caption[], o: HighlightOpts = DEFAULT_HL): Highlight[] {
+export function findHighlights(caps: Caption[], o: HighlightOpts = DEFAULT_HL, loud?: LoudFn): Highlight[] {
   const words = caps.flatMap((c) => c.words).sort((a, b) => a.start - b.start);
   const raw = sentences(words);
   const rate = median(raw.map((s) => s.words.length / Math.max(0.3, s.end - s.start)));
   const ss = raw.map((s) => scoreSentence(s, rate));
+  // Energy: each sentence's loudness against the talk's median, −1..1, worth up to ±0.8.
+  if (loud) {
+    const ls = ss.map((s) => loud(s.start, s.end)), known = ls.filter((v): v is number => v !== null && v > 0);
+    const med = median(known);
+    if (med > 0) ss.forEach((s, i) => {
+      if (ls[i] === null) return;
+      s.loud = Math.max(-1, Math.min(1, (ls[i]! - med) / med));
+      s.score += 0.8 * s.loud;
+    });
+  }
   const cands: Highlight[] = [];
   for (let i = 0; i < ss.length; i++) {
     let sum = 0;
@@ -81,6 +93,7 @@ export function findHighlights(caps: Caption[], o: HighlightOpts = DEFAULT_HL): 
         ...(ss[i].hook >= 2 ? ['hook'] : []), ...(/[?¿]/.test(ss[i].text) ? ['question'] : []),
         ...(ss.slice(i, j + 1).some((s) => s.words.some((w) => /\p{N}/u.test(w.text))) ? ['numbers'] : []),
         ...(ss.slice(i, j + 1).some((s) => s.words.some((w) => w.em)) ? ['emphasis'] : []),
+        ...(ss.slice(i, j + 1).reduce((a, s) => a + (s.loud ?? 0), 0) / k > 0.25 ? ['energy'] : []),
       ];
       cands.push({ start: ss[i].start, end: ss[j].end, score, title: ss[i].text, reasons });
     }

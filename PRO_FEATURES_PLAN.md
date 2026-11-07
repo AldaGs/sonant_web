@@ -94,7 +94,10 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - ✅ The **Auto-clips** section in the Transcript tab lists each clip's time, length, reasons (hook, question, numbers, emphasis) and opening line, with **Preview** and **Make short** (which then becomes **Open short**).
 - ✅ Tests: `node src/lib/highlights.test.ts`. In a browser test on a 60s video with a prepared transcript, the hook passage was found first, and Make short created a 19s 9:16 project with the trimmed title layer and transcript.
 - Scoring is transcript-only for now: no audio energy or visual cues. "Follow person" isn't run automatically on the short; use **Follow person → All strips** after opening it.
-- Later: add audio loudness and laughter peaks to the score. Auto-reframe on creation. Make every suggestion a short in one click.
+- ✅ (follow-up) **Loudness in the score**: each sentence's loudness, from the waveform peaks, is compared with the talk's median and is worth up to ±0.8. Louder passages get an **energy** tag.
+- ✅ (follow-up) **Keep the person in frame** (on by default): each strip of a new short gets a focus point from the segmenter, so the 9:16 crop follows the person. If the model can't load, it's skipped.
+- ✅ (follow-up) **Make all shorts** in one click. Tested in a browser: two suggestions became two projects.
+- Later: laughter detection.
 
 ## Phase 7: Automatic speaker detection ✅ (model not run here)
 - ✅ `lib/diarize.ts` and `diarize.worker.ts`:

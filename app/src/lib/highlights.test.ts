@@ -35,6 +35,15 @@ for (const h of hl) assert.ok(h.end - h.start >= 15 && h.end - h.start <= 30);
 for (let i = 0; i < hl.length; i++) for (let j = i + 1; j < hl.length; j++) assert.ok(hl[i].end <= hl[j].start || hl[j].end <= hl[i].start);
 assert.deepEqual(findHighlights([{ id: 'x', words: script('Too short.') }]), []);
 
+// loudness: with two equally worded passages, the louder one wins and is tagged 'energy'
+const twice = script((boring + ' ').repeat(3) + strong + ' ' + (boring + ' ').repeat(3) + strong + ' ' + (boring + ' ').repeat(3));
+const second = twice.filter((w, i) => w.text === 'Why' && twice[i + 1].text === 'does')[1].start;
+const loudFn = (a: number, b: number) => (a >= second - 0.01 && b <= second + 12 ? 2 : 1);
+const hl2 = findHighlights([{ id: 'l', words: twice }], { min: 15, max: 30, count: 1 }, loudFn);
+assert.equal(hl2[0].start, second);
+assert.ok(hl2[0].reasons.includes('energy'));
+assert.notEqual(findHighlights([{ id: 'l', words: twice }], { min: 15, max: 30, count: 1 })[0].reasons.includes('energy'), true);
+
 // clipping a project to [a, b)
 const segs = [{ start: 0, end: 10 }, { start: 12, end: 20, fx: { speed: 2 } }];
 assert.deepEqual(clipSegments(segs, 5, 15), [{ start: 5, end: 10 }, { start: 12, end: 15, fx: { speed: 2 } }]);
