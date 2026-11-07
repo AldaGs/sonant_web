@@ -20,12 +20,15 @@ Everything runs locally in the browser. No server, no account, and your media ne
   - Transcribe **all clips or one clip**. One clip only replaces captions on that clip.
 - **Text-based editing:**
   - Delete words to cut them from the video; struck words can be restored.
-  - Remove filler words and trim silences.
+  - **Clean up** removes filler words and long pauses, with a preview, adjustable thresholds and optional auto-clean after transcribing. Silences can also be removed from the audio alone, without a transcript.
   - Search the transcript.
   - Tag speakers by hand.
 - **Captions:**
   - Edit text and timing per line; split, merge, add and delete lines.
   - Download SRT or VTT, which follow your cuts.
+  - Translate captions between English and Spanish with a local model, and show the translation in the preview, files and export.
+  - **Templates**: built-in hook title, lower third and follow CTA, or save your own caption look plus text layers.
+  - High-contrast preset, a small-text warning, and TikTok / Reels / Shorts **safe zones** on the preview.
 - **Caption styles:** the style panel has three tabs.
   - **Style:** presets. Viral pop, Active pill, Smooth rise, Cyber glitch, Neon pulse, Kinetic wave, Bold pop, Boxed, Minimal, Editorial, Tall, Marker.
   - **Animation:** None, Fade up, Pop, Elastic pop, Slide up, Slide in, Wave, Glitch, Active pill, Neon pulse, Karaoke, Typewriter (letter by letter), Bounce. Each has a duration and an easing.
@@ -46,23 +49,33 @@ Everything runs locally in the browser. No server, no account, and your media ne
   - Drag the caption box (or its round handle) to move it. Touch gets a larger grab area.
   - Arrow keys nudge it; Shift moves it further.
 - **Animated titles:** **Animated title** in the toolbar adds a text layer on top of the stack that animates in and out while travelling along a path, each letter bending to follow the curve. Paths: S curve, Wave, Arc, Loop-the-loop, Zigzag, or none. In & out styles: Pop, Drop & bounce, Spin, Swing, Stretch, Flip. In the layer inspector, set the in and out times, how far it travels and how deep the curve bends. The path is shown as a dashed guide in the preview; drag the layer to move the whole path. While a layer is selected, the Style panel shows only that layer's settings.
+- **Layers:** picture-in-picture video, images and text over the main video, with move/scale/rotate handles, crop, flip, opacity and **keyframes** (position, size, rotation, opacity). Punch-in presets for layers and strips.
+- **Clip tools (per strip):** speed 0.25×–4× (pitch preserved), freeze frame, transitions (fade, dip to black/white, zoom, whip, slide), lift to leave a gap, color (brightness, contrast, saturation, temperature, presets, `.cube` LUTs) and background removal / captions behind the person.
+- **Canvas shape:** Original, 9:16, 1:1, 4:5 or 16:9, with a focus point per strip and auto-reframe that follows the person.
 - **Fonts:** bundled free OFL fonts, plus your own fonts from your PC (Chrome/Edge) or uploaded files.
 - **Timeline:**
   - Rows for video thumbnails, clip waveform, caption blocks, text animation, and Music & VO lanes. Overlapping audio stacks into lanes.
-  - Time ruler and zoom.
-  - Split, delete, trim and undo/redo.
+  - Time ruler and zoom (wheel scrubs, pinch or Ctrl+wheel zooms; on phones, swipe to scrub under a fixed centre playhead).
+  - Split, delete, trim and undo/redo; snapping to edges, the playhead and music beats.
+  - Keyboard and screen-reader friendly: focusable items with spoken labels.
   - Drag caption and audio blocks to move them, or drag their **edges** to retime captions and trim audio.
+- **Audio:** duck music under speech, find beats and cut the video on them.
 - **Export:**
+  - Presets for TikTok, Reels, Shorts, Instagram feed and YouTube (1080p, 4K).
+  - Loudness normalizing to −14 LUFS and voice cleanup.
   - MP4 (H.264) via WebCodecs. Audio mixes the clips' sound with the music and voiceover.
   - Quality: Draft, Standard or High.
   - Resolution: Original, 1080p, 720p, 540p or 480p.
-  - Shape: 9:16, 16:9 or 1:1.
+  - Shape: 9:16, 1:1, 4:5 or 16:9.
   - Frame rate: 24, 30 or 60 fps.
+- **Proxy media:** a 540p copy for smooth scrubbing on large or long footage; export always uses the original.
 - **Interface:** English and Spanish. Works on desktop and phone-sized screens.
+- **Help page:** a user guide in English and Spanish at `#/help`, linked from the home page and the editor header.
 
 ## Projects and saving
 
 - **Home page** (`#/`): every project as a card. Click to open it (`#/p/<id>`). The ⋯ menu renames, duplicates, saves to file or deletes it. Duplicates share media files, so they take no extra space.
+- **Version history**: a snapshot every ~2 minutes of editing (last 30). **History** lists them and **Restore** brings one back.
 - **Autosave**: each project is saved in the browser (IndexedDB) about half a second after every change.
 - **Project files** (`.sonant`): one file with the media and all edits.
   - **Save file** (Ctrl/⌘+S) writes it.
@@ -97,7 +110,7 @@ The logic modules have small assert-based tests that run directly in Node (TypeS
 
 ```bash
 cd app
-for t in captions render cuts export transcript waveform project projects; do node src/lib/$t.test.ts; done
+for t in audio beats captions cuts export grade overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
 ```
 
 ## Stack
@@ -117,10 +130,13 @@ for t in captions render cuts export transcript waveform project projects; do no
 ```
 app/src/
   main.ts                 mounts Root
-  Root.svelte             routing: home (#/) or editor (#/p/<id>); first-run migration
+  Root.svelte             routing: home (#/), editor (#/p/<id>) or help (#/help); first-run migration
   App.svelte              the editor: layout, state, playback loop, autosave, shortcuts
   lib/
     Home.svelte           project list, open/new/import, storage status
+    Help.svelte           user guide (EN/ES)
+    ColorGrader.svelte    phone color sheet
+    Icon.svelte, icons.ts inline Material Symbols icons
     TranscriptView.svelte transcript with word cutting, search, fillers, speakers
     Timeline.svelte       ruler, video/audio/caption/animation/music rows, drag & trim
     StylePanel.svelte     Style / Animation / Text tabs, per-caption scope
@@ -137,6 +153,20 @@ app/src/
     export.ts             MP4 export (video + captions + mixed audio)
     transcribe.ts         audio decode + worker bridge
     whisper.worker.ts     Whisper in a Web Worker
+    translate.ts          EN↔ES caption translation (translate.worker.ts)
+    overlay.ts            layers: transform, keyframes, drawing
+    templates.ts          built-in and saved templates
+    cleanup.svelte.ts     clean-up settings for fillers and pauses
+    silence.ts            silence detection from audio
+    audio.ts              ducking and loudness (BS.1770)
+    beats.ts              beat tracking
+    stretch.ts            pitch-preserving time-stretch (WSOLA)
+    transitions.ts        strip transitions
+    grade.ts              color grading and LUTs (WebGL2)
+    reframe.ts            canvas shape fitting and focus point
+    segment.ts            person segmentation (MediaPipe)
+    safezones.ts          platform safe zones
+    proxy.ts              proxy media for preview
     waveform.ts           audio peaks, ruler ticks
     thumbs.ts             video thumbnails
     fonts.ts              bundled, installed and uploaded fonts
@@ -146,14 +176,23 @@ public/                   favicon, app icon, web app manifest
 icon/                     (repo root) Sonant mark, lockups and usage guide
 ```
 
-`PLAN.md` holds the original implementation plan. `DESIGN_FEATURES.md` tracks progress against the design mock (`Video Editor — Transcript, Captions & Animation.html`).
+`PLAN.md` holds the original implementation plan, and `ROADMAP.md` tracks the pro-editor features. `DESIGN_FEATURES.md` tracks progress against the design mock (`Video Editor — Transcript, Captions & Animation.html`).
 
 ## Keyboard shortcuts
 
 | Key | Action |
 |---|---|
-| Space | Play/pause |
+| Space / K | Play/pause |
+| J / L | Back 1s (Shift: 5s) / play |
+| ← / → (timeline) | Step a frame; Shift steps a second |
+| Home / End | Go to start / end |
 | S | Split at playhead |
+| I / O, X | Mark in / out, cut the marked range |
+| Shift+Delete | Lift a strip (leave a gap) |
+| N | Toggle snapping (hold Alt to drag freely) |
+| T | Add a text layer |
+| A | Toggle auto-select at playhead |
+| ? | Shortcut cheat-sheet |
 | Delete | Cut or restore selected words (Transcript tab), remove the selected audio item, or delete the selected timeline segment |
 | ← / → | Move the word selection in the transcript (Shift extends it) |
 | Arrows (preview focused) | Nudge the caption; Shift for bigger steps |
@@ -164,6 +203,7 @@ icon/                     (repo root) Sonant mark, lockups and usage guide
 
 ## Known limits
 
+- Color LUTs are stored in the browser per project and are not packed into `.sonant` files yet.
 - Speaker labels are manual; there is no automatic speaker detection.
 - Clips play whole and in sequence (cut inside them with the transcript or timeline); there are no overlaps or transitions between clips.
 - Music and voiceover play in output time, so cutting words does not move them, and they are not transcribed.

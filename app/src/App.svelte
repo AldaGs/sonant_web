@@ -1253,6 +1253,7 @@
         <option value="es">ES</option>
       </select>
       <a class="btn mob-close icon" href="#/" title={t('allProjects')} aria-label={t('allProjects')}><Icon name="close" /></a>
+      <a class="btn desk icon" href="#/help" target="_blank" rel="noopener" title={t('help')} aria-label={t('help')}><Icon name="help" /></a>
       <a class="btn desk" href="#/" title={t('allProjects')}>
         <Icon name="grid_view" />
         {t('projects')}
