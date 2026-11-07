@@ -371,6 +371,10 @@
     const ctx = canvas.getContext('2d')!;
     const cv = canvas;
     let id = 0;
+    // Last good video frame (downscaled): shown while the element is seeking instead of black.
+    const hold = document.createElement('canvas');
+    const hctx = hold.getContext('2d')!;
+    let held = false;
     const tick = () => {
       const w = frameW, h = frameH;
       if (cv.width !== w || cv.height !== h) ((cv.width = w), (cv.height = h));
@@ -380,14 +384,24 @@
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
       const p = player.frame();
-      const f = p && p.videoWidth ? p : null;
-      const k = f ? Math.max(w / f.videoWidth, h / f.videoHeight) : 1;
-      const dw = f ? f.videoWidth * k : w, dh = f ? f.videoHeight * k : h;
+      let f: HTMLVideoElement | HTMLCanvasElement | null = p && p.videoWidth ? p : null;
+      let fw = p?.videoWidth ?? 0, fh = p?.videoHeight ?? 0;
+      if (p && f && !p.seeking) {
+        const s = Math.min(1, 720 / Math.max(fw, fh));
+        const hw = Math.round(fw * s), hh = Math.round(fh * s);
+        if (hold.width !== hw || hold.height !== hh) ((hold.width = hw), (hold.height = hh));
+        hctx.drawImage(p, 0, 0, hw, hh);
+        held = true;
+      } else if (held && player.clipsAt()) {
+        f = hold; fw = hold.width; fh = hold.height;
+      }
+      const k = f ? Math.max(w / fw, h / fh) : 1;
+      const dw = f ? fw * k : w, dh = f ? fh * k : h;
       const cap = visibleCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
       capOnScreen = cap ?? null;
       const fx = segments.find((s) => tNow >= s.start && tNow < s.end)?.fx;
       capBox = null;
-      drawFrame(ctx, f, f?.videoWidth ?? w, f?.videoHeight ?? h, [(w - dw) / 2, (h - dh) / 2, dw, dh], fx, !!cap,
+      drawFrame(ctx, f, f ? fw : w, f ? fh : h, [(w - dw) / 2, (h - dh) / 2, dw, dh], fx, !!cap,
         () => (capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
       if (capBox && (paused || hover || drag?.onBox)) drawDragBox(ctx, capBox, cv.width / (cv.getBoundingClientRect().width || cv.width));

@@ -17,6 +17,23 @@ export class Player {
   t = 0;
   playing = false;
   private last = 0;
+  // While a <video> is still seeking, newer targets wait here so a fast scrub doesn't queue
+  // dozens of seeks; only the latest one runs once the current seek lands.
+  private pending = new Map<HTMLVideoElement, number>();
+
+  private seekTo(el: HTMLVideoElement, local: number) {
+    if (el.seeking) {
+      if (!this.pending.has(el))
+        el.addEventListener('seeked', () => {
+          const t = this.pending.get(el);
+          this.pending.delete(el);
+          if (t !== undefined && Math.abs(el.currentTime - t) > 0.01) this.seekTo(el, t);
+        }, { once: true });
+      this.pending.set(el, local);
+      return;
+    }
+    el.currentTime = local;
+  }
 
   constructor(private state: () => PlayerState) {}
 
@@ -66,6 +83,12 @@ export class Player {
     return this.t;
   }
 
+  // True when the clock is inside a video clip (vs. an empty sequence).
+  clipsAt(): boolean {
+    const s = this.state();
+    return !!clipAt(s.clips, s.durations, this.t);
+  }
+
   // The video element showing the current frame, if it has one.
   frame(): HTMLVideoElement | null {
     const s = this.state();
@@ -85,8 +108,9 @@ export class Player {
         continue;
       }
       el.volume = Math.min(1, Math.max(0, s.clipVolume));
-      const drift = Math.abs(el.currentTime - at!.local);
-      if (drift > (this.playing && !exact ? 0.3 : 0.01)) el.currentTime = at!.local;
+      const target = this.pending.get(el) ?? el.currentTime;
+      const drift = Math.abs(target - at!.local);
+      if (drift > (this.playing && !exact ? 0.3 : 0.01)) this.seekTo(el, at!.local);
       if (this.playing && el.paused) el.play().catch(() => {});
       if (!this.playing && !el.paused) el.pause();
     }
