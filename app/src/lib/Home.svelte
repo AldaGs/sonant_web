@@ -99,10 +99,13 @@
       </svg>
       <span class="logo">Sonant</span>
     </div>
+    <div class="right">
+    <a class="btn" href="#/help"><Icon name="help" size={16} /> {t('help')}</a>
     <select class="lang" value={ui.lang} onchange={(e) => setLang(e.currentTarget.value as 'en' | 'es')} aria-label="Interface language / Idioma">
       <option value="en">EN</option>
       <option value="es">ES</option>
     </select>
+    </div>
   </header>
 
   <main>
@@ -186,6 +189,7 @@
   .brand { display: flex; align-items: center; gap: 10px; }
   .logo { font-family: var(--display); font-weight: 700; font-size: 18px; }
   .lang { height: 36px; padding: 0 8px; }
+  .right { display: flex; align-items: center; gap: 8px; }
   main { max-width: 1200px; margin: 0 auto; padding: 32px 24px 48px; display: grid; gap: 24px; }
   .hero { display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; }
   h1 { font-family: var(--display); font-size: 28px; margin: 0 0 4px; }

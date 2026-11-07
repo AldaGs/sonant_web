@@ -33,6 +33,7 @@ import redo from '@material-symbols/svg-400/rounded/redo.svg?raw';
 import image from '@material-symbols/svg-400/rounded/image.svg?raw';
 import transition_fade from '@material-symbols/svg-400/rounded/transition_fade.svg?raw';
 import more_horiz from '@material-symbols/svg-400/rounded/more_horiz.svg?raw';
+import help from '@material-symbols/svg-400/rounded/help.svg?raw';
 import keyboard from '@material-symbols/svg-400/rounded/keyboard.svg?raw';
 import title from '@material-symbols/svg-400/rounded/title.svg?raw';
 import ads_click from '@material-symbols/svg-400/rounded/ads_click.svg?raw';
@@ -99,6 +100,7 @@ export const ICONS = {
   image: m(image),
   transition_fade: m(transition_fade),
   more_horiz: m(more_horiz),
+  help: m(help),
   keyboard: m(keyboard),
   title: m(title),
   ads_click: m(ads_click),
