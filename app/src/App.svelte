@@ -555,6 +555,24 @@
   const keepRanges = (r: [number, number][]) => setSegs(r.reduce((s, [a, b]) => keepRange(s, a, b), segments));
   const visibleCaps = $derived(keptCaptions(captions, segments)); // what the preview draws
 
+  // Auto-select: follow the playhead. The caption under it becomes the selection (none in a gap),
+  // and with more than one video strip the strip under it is selected too. Only acts when the
+  // thing under the playhead changes, so a manual pick stays until the playhead moves on.
+  let autoSelect = $state((() => { try { return localStorage.getItem('sonant.autoSelect') !== '0'; } catch { return true; } })());
+  $effect(() => { try { localStorage.setItem('sonant.autoSelect', autoSelect ? '1' : '0'); } catch {} });
+  const capUnder = $derived(visibleCaps.find((c) => time >= startOf(c) && time < endOf(c))?.id ?? null);
+  const stripUnder = $derived(segments.length > 1 ? segments.findIndex((g) => time >= g.start && time < g.end) : -2);
+  $effect(() => {
+    const id = capUnder;
+    if (!autoSelect) return;
+    if (id) { if (selectedCapIds.length !== 1 || selectedCapIds[0] !== id) selectedCapIds = [id]; }
+    else if (selectedCapIds.length) selectedCapIds = [];
+  });
+  $effect(() => {
+    const i = stripUnder;
+    if (autoSelect && i !== -2 && selected !== i) selected = i;
+  });
+
   // Add a 2-second line at the playhead, kept in time order.
   function addLine() {
     const s = time, e = Math.min(duration || s + 2, s + 2);
@@ -889,6 +907,8 @@
         {/if}
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}>{t('splitAt')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
+        <button class="sm icon" class:on={autoSelect} aria-pressed={autoSelect} title={t('autoSelectTip')} aria-label={t('autoSelect')}
+          onclick={() => (autoSelect = !autoSelect)}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v4M12 18v4"/><path d="M5 9l3 3-3 3"/><path d="M19 9l-3 3 3 3"/></svg></button>
         <button class="sm icon" onclick={undo} disabled={!past.length} title={t('undo')} aria-label={t('undo')}>↶</button>
         <button class="sm icon" onclick={redo} disabled={!future.length} title={t('redo')} aria-label={t('redo')}>↷</button>
         <button class="sm icon" onclick={() => (tlZoom = Math.max(1, tlZoom / 1.5))} disabled={tlZoom <= 1} aria-label={t('zoomOut')}>−</button>
