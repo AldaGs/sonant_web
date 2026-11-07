@@ -14,10 +14,13 @@ Captions already have word timings and a highlight color. This phase adds the pa
 - ✅ Tests: `node src/lib/keywords.test.ts`.
 - Later: let users mark or unmark one word by clicking it in the caption list. Optional scale or colour for emphasized words (an `emScale` style field). Translated captions don't carry the emphasis over yet.
 
-## Phase 1: Smart auto-zoom ⬜
+## Phase 1: Smart auto-zoom ✅
 Builds on Phase 0.
-- Add a punch-in (reuse the strip punch-in from `overlay.ts`/`reframe.ts`) on emphasized words and at sentence starts, with a minimum gap between zooms.
-- Settings: strength (1.1–1.3×), frequency and ease. Each zoom becomes a normal keyframe that can be edited.
+- ✅ `lib/autozoom.ts`: a zoom moment at each emphasized word, and optionally at sentence starts, with a minimum gap. Each one eases in over 0.18s, holds until 0.6s after the word, then eases out over 0.35s. Zooms never overlap.
+- ✅ It stacks on top of the strip punch-in and focus point, and it's the same in preview and export. Moments are in sequence time, so cutting a word drops its zoom.
+- ✅ Captions tab: **Auto-zoom on key words**, with strength (+5–35%), minimum gap (1–8s), "also at sentence starts" and a zoom count. Saved with the project.
+- ✅ Tests: `node src/lib/autozoom.test.ts`.
+- Later: show the zooms on the timeline, and let a single zoom be removed or nudged. Zoom toward the speaker's face (reuse the segmenter) instead of the frame centre.
 
 ## Phase 2: Chroma key, blend modes, masks ⬜
 These live in the shader and layer code.

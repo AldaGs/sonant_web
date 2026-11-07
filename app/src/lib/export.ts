@@ -1,5 +1,6 @@
 import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
+import { autoZoomAt, scalePlace, type ZoomMoment } from './autozoom.ts';
 import { keptCaptions, zoomPlace, outLen, srcIn, type Segment } from './cuts.ts';
 import { stretch } from './stretch.ts';
 import { Transitioner, TRANS_DUR } from './transitions.ts';
@@ -55,6 +56,8 @@ export type ExportSource = {
   luts?: Lut[];
   speech?: [number, number][]; // output time ranges where someone talks (music ducks under these)
   clipVolume: number;
+  zooms?: ZoomMoment[]; // smart auto-zoom moments, sequence time
+  zoomScale?: number;
 };
 
 // Mix the kept parts of each clip's audio plus the extra audio items into one buffer, `seconds` long.
@@ -268,7 +271,7 @@ export async function exportVideo(
         const bgB = piece.fx?.bg === 'image' && piece.fx.bgImage ? await stillFor(piece.fx.bgImage) : null;
         const bgImg = bgB ? { src: bgB, w: bgB.width, h: bgB.height } : null;
         const img = raw && color ? grader.apply(raw, sw, sh, color, lutOf(color.lut)) : raw;
-        drawFrame(ctx, img, sw, sh, zoomPlace(coverPlace(width, height, sw, sh, piece.fx?.focus), width, height, piece.fx, t - segStart), piece.fx, !!cap, () => {
+        drawFrame(ctx, img, sw, sh, scalePlace(zoomPlace(coverPlace(width, height, sw, sh, piece.fx?.focus), width, height, piece.fx, t - segStart), width, height, autoZoomAt(src.zooms ?? [], src.zoomScale ?? 1, t)), piece.fx, !!cap, () => {
           paintLayers(i);
           if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
         }, hasBehind ? () => paintLayers(i, true) : undefined, bgImg);

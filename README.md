@@ -110,7 +110,7 @@ The logic modules have small assert-based tests that run directly in Node (TypeS
 
 ```bash
 cd app
-for t in audio beats captions cuts export grade keywords overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
+for t in audio beats captions autozoom cuts export grade keywords overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
 ```
 
 ## Stack
@@ -150,6 +150,7 @@ app/src/
     cuts.ts               kept segments, sequence↔output time mapping, word cuts
     transcript.ts         filler words, silences, search
     keywords.ts           auto-emphasis: picks the key word of each caption
+    autozoom.ts           smart auto-zoom on emphasized words
     render.ts             caption drawing, presets, animations, easing, drag box
     export.ts             MP4 export (video + captions + mixed audio)
     transcribe.ts         audio decode + worker bridge

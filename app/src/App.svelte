@@ -22,6 +22,7 @@
   import { beatsOfFile } from './lib/beats';
   import { translateTexts, translated, type Dir } from './lib/translate';
   import { autoEmphasis, clearEmphasis, hasEmphasis } from './lib/keywords';
+  import { zoomMoments, autoZoomAt, scalePlace, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
@@ -78,6 +79,7 @@
   let error = $state('');
   let notice = $state('');
   let captions = $state<Caption[]>([]);
+  let autoZoom = $state<AutoZoom | null>(null); // smart auto-zoom on emphasized words; null = off
   let canvas = $state<HTMLCanvasElement>();
   let style = $state<Style>({ ...DEFAULT_STYLE });
   let fonts = $state<Font[]>([...BUNDLED]);
@@ -276,6 +278,7 @@
     style = migrateStyle(doc.style ?? {});
     language = doc.language ?? null;
     showTr = doc.showTr ?? false;
+    autoZoom = doc.autoZoom ?? null;
     canvasAspect = doc.aspect ?? 'source';
     Promise.all((doc.luts ?? []).map((l) => store.get<Lut>('lut:' + l.id))).then((r) => (luts = r.filter((x): x is Lut => !!x)));
     // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
@@ -293,7 +296,7 @@
 
 
   async function saveNow() {
-    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), luts: luts.map((l) => ({ id: l.id, name: l.name })), aspect: canvasAspect, words: wordCache };
+    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr, autoZoom }), luts: luts.map((l) => ({ id: l.id, name: l.name })), aspect: canvasAspect, words: wordCache };
     const meta: Partial<ProjectMeta> = { duration: outDuration(segments), clips: clips.length };
     if (Date.now() - lastThumb > 10000) {
       const th = thumbnail();
@@ -303,7 +306,7 @@
     addVersion(projectId, doc).catch(() => {}); // a snapshot every ~2 minutes of editing
   }
   $effect(() => {
-    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr });
+    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr, autoZoom });
     void luts.length, canvasAspect;
     void (clips.length && thumbs[clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
     if (!ready) return;
@@ -321,7 +324,7 @@
   }
   async function restoreVersion(v: Version) {
     // Keep the current state as a version first, so restoring can itself be undone from here.
-    await addVersion(projectId, { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), aspect: canvasAspect } as Doc, { force: true, label: t('beforeRestore') });
+    await addVersion(projectId, { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr, autoZoom }), aspect: canvasAspect } as Doc, { force: true, label: t('beforeRestore') });
     commit();
     const d = v.doc;
     const have = new Set(assets.map((a) => a.id)); // media deleted since then can't come back
@@ -650,7 +653,7 @@
       capBox = null;
       let below: Placed[] = [];
       const anyBehind = overlaysAt(overlays, player.o).some((o) => o.behind);
-      drawFrame(ctx, f, f ? fw : w, f ? fh : h, zoomPlace(f ? coverPlace(w, h, fw, fh, fx?.focus) : [0, 0, w, h], w, h, fx, tNow - (strip?.start ?? 0)), fx, !!cap,
+      drawFrame(ctx, f, f ? fw : w, f ? fh : h, f ? scalePlace(zoomPlace(coverPlace(w, h, fw, fh, fx?.focus), w, h, fx, tNow - (strip?.start ?? 0)), w, h, autoZoomAt(zooms, autoZoom?.scale ?? 1, tNow)) : [0, 0, w, h], fx, !!cap,
         () => {
           placed = [...below, ...drawLayers(ctx, tNow, false)];
           capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
@@ -1081,6 +1084,8 @@
   let trBusy = $state(false);
   const hasTr = $derived(captions.some((c) => c.tr));
   // What the preview, SRT/VTT files and export show.
+  // Zoom moments come from the original captions (translated ones don't carry emphasis).
+  const zooms = $derived(autoZoom ? zoomMoments(keptCaptions(captions, segments), autoZoom) : []);
   const displayCaps = $derived(showTr ? translated(visibleCaps) : visibleCaps);
   async function translateAll() {
     if (!captions.length) return;
@@ -1444,6 +1449,17 @@
             <button class="sm" onclick={() => setCaps(autoEmphasis(captions))} title={t('emHint')}>{t('autoEm')}</button>
             {#if hasEmphasis(captions)}
               <button class="sm" onclick={() => setCaps(clearEmphasis(captions))}>{t('clearEm')}</button>
+            {/if}
+          </div>
+          <div class="trbox">
+            <label class="chk"><input type="checkbox" checked={!!autoZoom} onchange={(e) => (autoZoom = e.currentTarget.checked ? { ...DEFAULT_AUTOZOOM } : null)} /> {t('autoZoom')}</label>
+            {#if autoZoom}
+              <label class="sl">{t('azStrength')} <span class="mono">+{Math.round((autoZoom.scale - 1) * 100)}%</span>
+                <input type="range" min="1.05" max="1.35" step="0.05" bind:value={autoZoom.scale} /></label>
+              <label class="sl">{t('azGap')} <span class="mono">{autoZoom.gap}s</span>
+                <input type="range" min="1" max="8" step="0.5" bind:value={autoZoom.gap} /></label>
+              <label class="chk"><input type="checkbox" bind:checked={autoZoom.sentences} /> {t('azSentences')}</label>
+              <span class="muted small">{zooms.length ? t('azCount').replace('{n}', String(zooms.length)) : t('azNone')}</span>
             {/if}
           </div>
         {/if}
@@ -1919,7 +1935,7 @@
     </div>
   {/if}
   <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} {style} {srcW} {srcH} {canvasAspect}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume })} />
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
 {/if}
 
 <style>
