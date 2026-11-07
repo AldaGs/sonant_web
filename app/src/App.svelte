@@ -9,6 +9,7 @@
   import { itemLen, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
   import { Transitioner, TRANSITIONS, TRANS_DUR } from './lib/transitions';
+  import { Grader, COLOR_PRESETS, parseCube, type Color, type Lut } from './lib/grade';
   import { cleanup, cleanupRanges } from './lib/cleanup.svelte';
   import { speechRanges } from './lib/audio';
   import { beatsOfFile } from './lib/beats';
@@ -227,6 +228,7 @@
     style = migrateStyle(doc.style ?? {});
     language = doc.language ?? null;
     showTr = doc.showTr ?? false;
+    Promise.all((doc.luts ?? []).map((l) => store.get<Lut>('lut:' + l.id))).then((r) => (luts = r.filter((x): x is Lut => !!x)));
     // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
     if (!fonts.some((f) => f.family === style.family)) fonts = [...fonts, { family: style.family, weight: style.weight }];
   }
@@ -242,7 +244,7 @@
 
 
   async function saveNow() {
-    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), words: wordCache };
+    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), luts: luts.map((l) => ({ id: l.id, name: l.name })), words: wordCache };
     const meta: Partial<ProjectMeta> = { duration: outDuration(segments), clips: clips.length };
     if (Date.now() - lastThumb > 10000) {
       const th = thumbnail();
@@ -252,6 +254,7 @@
   }
   $effect(() => {
     $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr });
+    void luts.length;
     void (clips.length && thumbs[clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
     if (!ready) return;
     saving = true;
@@ -499,7 +502,7 @@
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
       const p = player.frame();
-      let f: HTMLVideoElement | HTMLCanvasElement | null = p && p.videoWidth ? p : null;
+      let f: CanvasImageSource | null = p && p.videoWidth ? p : null;
       let fw = p?.videoWidth ?? 0, fh = p?.videoHeight ?? 0;
       if (p && f && !p.seeking) {
         const s = Math.min(1, 720 / Math.max(fw, fh));
@@ -516,6 +519,7 @@
       capOnScreen = cap ?? null;
       const strip = segAt(segments, tNow), fx = strip?.fx;
       if (fx?.lift) f = null; // a lifted strip is a gap: black
+      else if (f && fx?.color) f = grader.apply(f, fw, fh, fx.color, lutMap.get(fx.color.lut ?? ''));
       capBox = null;
       drawFrame(ctx, f, f ? fw : w, f ? fh : h, zoomPlace([(w - dw) / 2, (h - dh) / 2, dw, dh], w, h, fx, tNow - (strip?.start ?? 0)), fx, !!cap,
         () => {
@@ -546,6 +550,36 @@
   // ---- Overlay layers on the preview ----
   let placed: Placed[] = []; // layers drawn this frame, bottom first (for hit tests)
   const trans = new Transitioner();
+  const grader = new Grader();
+
+  // ---- Colour: per-strip grade; LUT files are kept per project (data under lut:<id>) ----
+  let luts = $state<Lut[]>([]);
+  const lutMap = $derived(new Map(luts.map((l) => [l.id, l])));
+  async function importLut(file: File | undefined) {
+    if (!file) return;
+    try {
+      const l = parseCube(await file.text(), file.name.replace(/\.cube$/i, ''));
+      await store.set('lut:' + l.id, l);
+      luts = [...luts, l];
+      setColor({ lut: l.id, lutMix: 1 });
+    } catch {
+      error = 'err.badLut';
+    }
+  }
+  const selColor = $derived<Color>(selected >= 0 ? segments[selected]?.fx?.color ?? {} : {});
+  // Slider drags: one undo step per drag (like layer edits).
+  let colorEditing = false;
+  function setColor(patch: Partial<Color>, replace = false) {
+    if (selected < 0 || !segments[selected]) return;
+    if (!colorEditing) ((colorEditing = true), commit());
+    const color = replace ? patch : { ...segments[selected].fx?.color, ...patch };
+    segments = segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, color } });
+  }
+  function colorToAll() {
+    commit();
+    const color = $state.snapshot(selColor);
+    segments = segments.map((s) => ({ ...s, fx: { ...s.fx, color } }));
+  }
   function drawLayers(ctx: CanvasRenderingContext2D, t: number): Placed[] {
     if (toOutput(segments, t) === null) return [];
     const out = player.o;
@@ -1248,6 +1282,41 @@
       </div>
       <button class="sm" onclick={saveTemplate} disabled={!hasMedia} title={t('saveTemplateTip')}>＋ {t('saveTemplate')}</button>
     </details>
+    {#if selected >= 0 && segments[selected] && !selOverlay}
+      {@const c = selColor}
+      <section class="layer strip" aria-label={t('stripColor')} onchange={() => (colorEditing = false)} onpointerup={() => (colorEditing = false)}>
+        <div class="lhead"><h3>{t('stripColor')}</h3></div>
+        <div class="lrow">
+          <button class="sm" class:on={!Object.keys(c).length} onclick={() => (setColor({}, true), (colorEditing = false))}>{t('col.none')}</button>
+          {#each Object.entries(COLOR_PRESETS) as [k, v]}
+            <button class="sm" onclick={() => (setColor({ ...v, lut: c.lut, lutMix: c.lutMix }, true), (colorEditing = false))}>{t('col.' + k)}</button>
+          {/each}
+        </div>
+        {#each [['b', 'brightness'], ['c', 'contrast'], ['s', 'saturation'], ['temp', 'temperature']] as [k, label]}
+          {@const v = (c as Record<string, number>)[k] ?? 0}
+          <label class="vol">{t(label)} <span class="mono small">{v > 0 ? '+' : ''}{Math.round(v * 100)}</span>
+            <input type="range" min="-1" max="1" step="0.01" value={v} oninput={(e) => setColor({ [k]: +e.currentTarget.value })}
+              ondblclick={() => (setColor({ [k]: 0 }), (colorEditing = false))} />
+          </label>
+        {/each}
+        <div class="lrow">
+          <label class="vol">{t('lut')}
+            <select value={c.lut ?? ''} onchange={(e) => (setColor({ lut: e.currentTarget.value || undefined }), (colorEditing = false))}>
+              <option value="">{t('col.noLut')}</option>
+              {#each luts as l}<option value={l.id}>{l.name}</option>{/each}
+            </select>
+          </label>
+          <label class="btn sm">{t('importLut')}<input type="file" accept=".cube" hidden onchange={(e) => importLut(e.currentTarget.files?.[0])} /></label>
+        </div>
+        {#if c.lut}
+          <label class="vol">{t('lutMix')} <span class="mono small">{Math.round((c.lutMix ?? 1) * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.01" value={c.lutMix ?? 1} oninput={(e) => setColor({ lutMix: +e.currentTarget.value })} />
+          </label>
+        {/if}
+        <button class="sm" onclick={colorToAll} disabled={segments.length < 2}>{t('colorAll')}</button>
+        {#if !grader.ok}<p class="muted small">{t('noWebgl')}</p>{/if}
+      </section>
+    {/if}
     {#if selOverlay}
       {@const o = selOverlay}
       {@const cur = tfAt(o, outTime)}
@@ -1469,7 +1538,7 @@
     </div>
   {/if}
   <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} {style} srcW={frameW} srcH={frameH}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), clipVolume })} />
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume })} />
 {/if}
 
 <style>

@@ -6,7 +6,8 @@ import type { Caption } from './captions';
 // lift: the strip keeps its time on the timeline but shows black, plays silent and hides captions (a gap).
 // speed: playback rate (0.25–4). hold: a freeze frame, the strip's first frame shown for `hold` seconds.
 export type Fx = { behind?: boolean; bg?: 'color' | 'blur'; bgColor?: string; zoom?: number; zoomIn?: boolean; lift?: boolean;
-  speed?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number };
+  speed?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number;
+  color?: import('./grade').Color };
 
 // How long a strip lasts in the output, and the source time `o` seconds into it.
 export const outLen = (s: Segment) => s.fx?.hold ?? (s.end - s.start) / (s.fx?.speed ?? 1);

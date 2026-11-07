@@ -3,6 +3,7 @@ import { startOf, endOf } from './captions.ts';
 import { keptCaptions, zoomPlace, outLen, srcIn, type Segment } from './cuts.ts';
 import { stretch } from './stretch.ts';
 import { Transitioner, TRANS_DUR } from './transitions.ts';
+import { Grader, type Lut } from './grade.ts';
 import { drawCaption, resolveStyle, type Style } from './render.ts';
 import { drawFrame, loadSegmenter } from './segment.ts';
 import { drawOverlay, type Overlay } from './overlay.ts';
@@ -50,6 +51,7 @@ export type ExportSource = {
   clips: Clip[];
   audios: AudioItem[];
   overlays?: Overlay[]; // output time
+  luts?: Lut[];
   speech?: [number, number][]; // output time ranges where someone talks (music ducks under these)
   clipVolume: number;
 };
@@ -223,6 +225,7 @@ export async function exportVideo(
     };
     const starts = clipStarts(src.clips, durations);
     const trans = new Transitioner();
+    const grader = new Grader(), lutOf = (id?: string) => src.luts?.find((l) => l.id === id);
     let i = 0;
     for (const piece of splitAtBoundaries(segs, starts)) {
       const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2);
@@ -241,7 +244,9 @@ export async function exportVideo(
         const cap = sorted.find((c) => t >= startOf(c) && t < endOf(c));
         await advance(i);
         // Same order as the preview: video, layers, caption (and the person over both with "text behind").
-        drawFrame(ctx, frame?.canvas ?? null, width, height, zoomPlace([0, 0, width, height], width, height, piece.fx, t - segStart), piece.fx, !!cap, () => {
+        const color = piece.fx?.color;
+        const img = frame?.canvas && color ? grader.apply(frame.canvas, width, height, color, lutOf(color.lut)) : frame?.canvas ?? null;
+        drawFrame(ctx, img, width, height, zoomPlace([0, 0, width, height], width, height, piece.fx, t - segStart), piece.fx, !!cap, () => {
           paintLayers(i);
           if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
         });
