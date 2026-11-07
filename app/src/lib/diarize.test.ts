@@ -36,4 +36,17 @@ const caps = [{ id: 'a', words: [] }, { id: 'b', words: [] }, { id: 'c', words: 
 const r = applySpeakers(caps, ['a', 'b'], [0, 2], ['Ana']);
 assert.deepEqual(r.captions.map((c) => c.speaker), [0, 2, undefined]);
 assert.deepEqual(r.speakers, ['Ana', '', '']);
+// pieces: ~1.2s of words, never across captions, short tails join the previous piece
+import { units, splitBySpeaker } from './diarize.ts';
+const W = (n: number, t0: number, step = 0.4) => Array.from({ length: n }, (_, i) => ({ text: 'w' + i, start: t0 + i * step, end: t0 + i * step + 0.35 }));
+const capsU = [{ id: 'a', words: W(10, 0) }, { id: 'b', words: W(2, 10) }];
+const us = units(capsU);
+assert.deepEqual(us.map((u) => [u.capId, u.from, u.to]), [['a', 0, 4], ['a', 4, 8], ['a', 8, 10], ['b', 0, 2]]);
+// a speaker change inside caption a (after its 8th word) splits it; b keeps its id
+let n = 0;
+const split = splitBySpeaker(capsU, us, [0, 0, 1, 1], () => 'new' + ++n);
+assert.deepEqual(split.map((c) => [c.id, c.words.length, c.speaker]), [['a', 8, 0], ['new1', 2, 1], ['b', 2, 1]]);
+assert.equal(split.reduce((k, c) => k + c.words.length, 0), 12); // no word lost
+// agreeing pieces: no split
+assert.deepEqual(splitBySpeaker(capsU, us, [1, 1, 1, 0], () => 'x').map((c) => [c.id, c.speaker]), [['a', 1], ['b', 0]]);
 console.log('diarize ok');

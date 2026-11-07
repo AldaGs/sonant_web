@@ -116,7 +116,8 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - ✅ **Detect speakers** button and a Speakers count (Auto or 2–6) above the transcript. It fills `Caption.speaker` in one undo step, keeps names already given and adds new "Speaker N" entries, which can be renamed and corrected by hand as before.
 - ✅ Tests: `node src/lib/diarize.test.ts` (clustering with 1, 2 and 3 synthetic voices, forced count, smoothing, windows, applying). In a browser, the audio is read and a blocked download shows a clear error. The model download from Hugging Face is blocked in this sandbox, so **detection on real voices hasn't been run**, and the 0.5 Auto threshold may need tuning.
 - Limits: one speaker per caption, so overlapping speech or a speaker change mid-caption isn't split. Split the caption first.
-- Later: split captions at speaker changes using pyannote segmentation. Tune the threshold on real recordings.
+- ✅ (follow-up) **Split lines at speaker changes** (on by default): detection fingerprints ~1.2s pieces of each caption (`units`, never across captions; short tails join the previous piece). A caption whose pieces fall into different groups is split where the voice changes, and the later parts get new caption ids (`splitBySpeaker`). No words are lost, which the tests check.
+- Later: tune the Auto threshold on real recordings.
 
 ## Phase 8: Stabilization and the rest ✅
 - ✅ **Stabilization** (`lib/stabilize.ts`): the **Stabilize** button on a strip analyses it at 15 fps on 160px greyscale frames (from the proxy when there is one).

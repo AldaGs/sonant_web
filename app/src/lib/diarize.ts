@@ -66,6 +66,48 @@ export function applySpeakers(caps: Caption[], ids: string[], labels: number[], 
   };
 }
 
+// Pieces of ~`len` seconds of words inside each caption, so a speaker change mid-caption can be found.
+// A piece never crosses a caption; a short tail joins the previous piece.
+export type Unit = { capId: string; from: number; to: number; start: number; end: number }; // word range [from, to)
+export function units(caps: Caption[], len = 1.2): Unit[] {
+  const out: Unit[] = [];
+  for (const c of caps) {
+    const ws = c.words;
+    let from = 0;
+    for (let i = 0; i < ws.length; i++) {
+      const last = i === ws.length - 1;
+      if (ws[i].end - ws[from].start >= len || last) {
+        const tail = !last && ws[ws.length - 1].end - ws[i + 1].start < len * 0.6; // too little left: take it along
+        const to = tail ? ws.length : i + 1;
+        out.push({ capId: c.id, from, to, start: ws[from].start, end: ws[to - 1].end });
+        from = to;
+        if (tail) break;
+      }
+    }
+  }
+  return out;
+}
+
+// Speakers per caption from per-piece labels: a caption whose pieces disagree is split where the speaker
+// changes (later parts get new ids from `newId`). Captions without pieces are left as they are.
+export function splitBySpeaker(caps: Caption[], us: Unit[], labels: number[], newId: () => string): Caption[] {
+  const by = new Map<string, { u: Unit; l: number }[]>();
+  us.forEach((u, i) => by.set(u.capId, [...(by.get(u.capId) ?? []), { u, l: labels[i] }]));
+  return caps.flatMap((c) => {
+    const parts = by.get(c.id);
+    if (!parts?.length) return [c];
+    const runs: { from: number; to: number; l: number }[] = [];
+    for (const { u, l } of parts) {
+      const r = runs.at(-1);
+      if (r && r.l === l) r.to = u.to;
+      else runs.push({ from: u.from, to: u.to, l });
+    }
+    runs[0].from = 0;
+    runs[runs.length - 1].to = c.words.length;
+    return runs.map((r, k) => ({ ...c, id: k ? newId() : c.id, words: c.words.slice(r.from, r.to), speaker: r.l }));
+  });
+}
+
 // ---- Browser side ----
 import type { In, Out } from './diarize.worker.ts';
 let worker: Worker | null = null;

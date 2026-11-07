@@ -26,7 +26,7 @@
   import KeyControls from './lib/KeyControls.svelte';
   import PerfDialog from './lib/PerfDialog.svelte';
   import VoiceoverPanel from './lib/VoiceoverPanel.svelte';
-  import { embed, cluster, smooth, spanOf, applySpeakers } from './lib/diarize';
+  import { embed, cluster, smooth, spanOf, applySpeakers, units, splitBySpeaker, type Unit } from './lib/diarize';
   import { decodeAudio } from './lib/transcribe';
   import { gpuFor } from './lib/perf';
   import { shiftOf, planStab, stabPlace, grey, STAB_FPS, STAB_W } from './lib/stabilize';
@@ -593,16 +593,19 @@
 
   // ---- Speaker detection: a voice fingerprint per caption, grouped by similarity ----
   let spkCount = $state(0); // 0 = auto
+  let spkSplit = $state(true); // split a caption where the speaker changes
   let spkBusy = $state(false), spkStatus = $state(''), spkPct = $state(0), spkMsg = $state('');
   async function detectSpeakers() {
     spkBusy = true;
     spkMsg = error = '';
     try {
       const starts = clipStarts(clips, durations), pcm = new Map<string, Float32Array | null>();
-      const ids: string[] = [], pieces: Float32Array[] = [], spans: number[] = [];
+      const ids: string[] = [], pieces: Float32Array[] = [], spans: number[] = [], used: Unit[] = [];
       spkStatus = 'st.reading';
-      for (const c of captions) {
-        if (!c.words.length) continue;
+      // Whole captions, or ~1.2s pieces of them when lines may be split at speaker changes.
+      const list: Unit[] = spkSplit ? units(captions) : captions.filter((c) => c.words.length).map((c) => ({ capId: c.id, from: 0, to: c.words.length, start: c.words[0].start, end: c.words[c.words.length - 1].end }));
+      for (const u of list) {
+        const c = { id: u.capId, words: [{ text: '', start: u.start, end: u.end }] };
         const [a, b] = spanOf(c), at = clipAt(clips, durations, (a + b) / 2);
         if (!at) continue;
         const id = clips[at.index].assetId, f = files.get(id);
@@ -612,15 +615,16 @@
         if (!x) continue;
         const off = starts[at.index], i0 = Math.max(0, Math.floor((a - off) * 16000)), i1 = Math.min(x.length, Math.ceil((b - off) * 16000));
         if (i1 - i0 < 4000) continue; // under 0.25s of audio
-        ids.push(c.id);
+        ids.push(u.capId);
+        used.push(u);
         pieces.push(x.slice(i0, i1));
-        spans.push(c.words[c.words.length - 1].end - c.words[0].start);
+        spans.push(u.end - u.start);
       }
       if (ids.length < 2) return void (spkMsg = 'spkTooFew');
       const emb = await embed(pieces, gpuFor.whisper(), (s, p) => ((spkStatus = s), (spkPct = p)));
       const labels = smooth(cluster(emb, { k: spkCount || undefined, weights: spans.map((s) => Math.min(4, Math.max(0.5, s))) }), spans);
-      const r = applySpeakers(captions, ids, labels, speakers);
-      setCaps(r.captions);
+      const r = applySpeakers(captions, [], labels, speakers); // speaker list sized to the groups, names kept
+      setCaps(splitBySpeaker(captions, used, labels, () => crypto.randomUUID()));
       speakers = r.speakers;
       spkMsg = 'spkFound';
       spkPct = Math.max(...labels) + 1;
@@ -1828,6 +1832,7 @@
                 {#each [0, 2, 3, 4, 5, 6] as n}<option value={n}>{n ? n : t('spkAuto')}</option>{/each}
               </select>
             </label>
+            <label class="chk" title={t('spkSplitTip')}><input type="checkbox" bind:checked={spkSplit} disabled={spkBusy} /> {t('spkSplit')}</label>
             {#if spkBusy}<span class="muted small" role="status">{t(spkStatus || 'st.spkListening')} {spkStatus === 'st.reading' ? '' : Math.round(spkPct) + '%'}</span>
             {:else if spkMsg}<span class="muted small" role="status">{t(spkMsg, { n: spkPct })}</span>{/if}
           </div>
