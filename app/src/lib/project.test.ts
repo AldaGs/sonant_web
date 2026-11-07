@@ -47,3 +47,16 @@ assert.deepEqual(trimAudio(music, 10, 'start', -5), { at: 2, offset: 0, len: 10 
 assert.deepEqual(trimAudio({ ...music, offset: 4, len: 6 }, 10, 'start', -3), { at: 0, offset: 2, len: 8 }); // nor before 0:00
 assert.equal(trimAudio(music, 10, 'end', 99).len, 10);
 console.log('project ok');
+
+// Image clips: own length, and resizing moves later clips.
+{
+  const { clipLen, resizeClip, clipStarts: cs } = await import('./project.ts');
+  const d = { img: 5, vid: 10 };
+  const cl = [{ id: 'a', assetId: 'img', len: 3 }, { id: 'b', assetId: 'vid' }];
+  assert.equal(clipLen(d, cl[0]), 3);
+  assert.deepEqual(cs(cl, d), [0, 3]);
+  const segs = [{ start: 0, end: 1, fx: { zoom: 1.2 } }, { start: 2, end: 3 }, { start: 3, end: 13 }];
+  const r = resizeClip(cl, 0, 8, d, segs, []);
+  assert.equal(r.clips[0].len, 8);
+  assert.deepEqual(r.segments, [{ start: 0, end: 8, fx: { zoom: 1.2 } }, { start: 8, end: 18 }]);
+}

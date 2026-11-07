@@ -1,4 +1,4 @@
-import { DUCK_LEVEL, clipAt, clipStarts, itemLen, type AudioItem, type Clip } from './project';
+import { DUCK_LEVEL, clipAt, clipLen, clipStarts, itemLen, type AudioItem, type Clip } from './project';
 import { nextKept, toOutput, toSource, outDuration, segAt, type Segment } from './cuts';
 import type { Overlay } from './overlay';
 import { duckGain } from './audio';
@@ -78,7 +78,7 @@ export class Player {
       if (!hold && at && el && !el.paused && !el.seeking && el.readyState >= 2) {
         // The playing video is the clock (keeps lips in sync; its playbackRate carries the strip's speed).
         this.t = starts[at.index] + el.currentTime;
-        const len = s.durations.get(s.clips[at.index].assetId) ?? 0;
+        const len = clipLen(s.durations, s.clips[at.index]);
         if (el.currentTime >= len - 0.04 || el.ended) this.t = Math.max(this.t, starts[at.index] + len); // clip done: next one
         const k = nextKept(segs, this.t);
         if (k === null) this.o = total;

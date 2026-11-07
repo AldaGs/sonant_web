@@ -5,7 +5,7 @@ import type { Caption } from './captions';
 // zoom: punch-in factor (1 = none); zoomIn: ease into it over the strip's first ZOOM_IN seconds.
 // lift: the strip keeps its time on the timeline but shows black, plays silent and hides captions (a gap).
 // speed: playback rate (0.25–4). hold: a freeze frame, the strip's first frame shown for `hold` seconds.
-export type Fx = { behind?: boolean; bg?: 'color' | 'blur'; bgColor?: string; zoom?: number; zoomIn?: boolean; lift?: boolean;
+export type Fx = { behind?: boolean; bg?: 'color' | 'blur' | 'image'; bgColor?: string; bgImage?: string /* image asset id */; zoom?: number; zoomIn?: boolean; lift?: boolean;
   speed?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number;
   color?: import('./grade').Color; focus?: import('./reframe').Focus };
 

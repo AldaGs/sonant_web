@@ -86,25 +86,40 @@ function paintSubject(ctx: CanvasRenderingContext2D, src: CanvasImageSource, [dx
   ctx.drawImage(person, 0, 0);
 }
 
-// One output frame: video (with background swapped if asked), caption, and the person over the caption if asked.
-// Until the model has loaded, effects are skipped and the plain frame is drawn.
+// One output frame, bottom to top: background (original, swapped or blurred), layers marked "behind person"
+// (`under`), the person, then the rest (`caption`: top layers + caption), and the person again over the caption
+// with "captions behind". Until the model has loaded, effects are skipped and the plain frame is drawn.
 // ponytail: segments every frame (~25ms at 1080p); cache masks per strip if preview stutters on slow machines
 export function drawFrame(
   ctx: CanvasRenderingContext2D, src: CanvasImageSource | null, sw: number, sh: number, place: number[],
-  fx: Fx | undefined, hasCaption: boolean, caption: () => void,
+  fx: Fx | undefined, hasCaption: boolean, caption: () => void, under?: () => boolean,
+  bgImg?: { src: CanvasImageSource; w: number; h: number } | null,
 ) {
   const [dx, dy, dw, dh] = place;
-  const ready = !!src && (!!fx?.bg || (!!fx?.behind && hasCaption)) && updateMask(src, sw, sh);
+  const wantsUnder = !!under;
+  const ready = !!src && (!!fx?.bg || wantsUnder || (!!fx?.behind && hasCaption)) && updateMask(src, sw, sh);
   if (src && ready && fx?.bg) {
     const W = ctx.canvas.width, H = ctx.canvas.height;
     if (fx.bg === 'color') ((ctx.fillStyle = fx.bgColor ?? '#00b140'), ctx.fillRect(0, 0, W, H));
-    else {
+    else if (fx.bg === 'image') {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W, H);
+      if (bgImg) { // cover-fit, centred
+        const k = Math.max(W / bgImg.w, H / bgImg.h), iw = bgImg.w * k, ih = bgImg.h * k;
+        ctx.drawImage(bgImg.src, (W - iw) / 2, (H - ih) / 2, iw, ih);
+      }
+    } else {
       ctx.filter = `blur(${Math.round(Math.max(W, H) / 50)}px)`;
       ctx.drawImage(src, dx - dw * 0.05, dy - dh * 0.05, dw * 1.1, dh * 1.1); // oversize so the blur has no dark rim
       ctx.filter = 'none';
     }
+    under?.();
     paintSubject(ctx, src, place);
-  } else if (src) ctx.drawImage(src, dx, dy, dw, dh);
+  } else {
+    if (src) ctx.drawImage(src, dx, dy, dw, dh);
+    // Behind-person layers sit on the video and the person is painted back over them (plain stacking until the model loads).
+    if (under?.() && src && ready) paintSubject(ctx, src, place);
+  }
   caption();
   if (src && ready && fx?.behind && hasCaption) paintSubject(ctx, src, place);
 }

@@ -6,7 +6,9 @@ import type { Segment } from './cuts';
 export type Asset = { id: string; name: string; kind: 'video' | 'audio' | 'image'; duration: number; width?: number; height?: number; beats?: number[]; bpm?: number; proxy?: boolean };
 // A video clip on the video track. Clips play back to back; together they form the "sequence".
 // Sequence time is what segments, captions and words are measured in.
-export type Clip = { id: string; assetId: string };
+// len: how long the clip plays (image clips; videos always play their whole file).
+export type Clip = { id: string; assetId: string; len?: number };
+export const STILL_LEN = 5; // default seconds for an image clip
 // An extra audio item (music, voiceover), placed in OUTPUT time so word cuts don't move it.
 // offset/len trim the file: it plays [offset, offset + len) of the asset, starting at `at`.
 // duck: lower this item's volume while someone is speaking (see DUCK_LEVEL).
@@ -39,24 +41,26 @@ export function trimAudio(a: AudioItem, assetDur: number, side: 'start' | 'end',
 
 type Durations = Record<string, number> | Map<string, number>;
 const dur = (d: Durations, id: string) => (d instanceof Map ? d.get(id) : d[id]) ?? 0;
+// A clip's length in the sequence: its own len if set, otherwise its file's.
+export const clipLen = (d: Durations, c: Clip) => c.len ?? dur(d, c.assetId);
 
 // Sequence start of each clip.
 export function clipStarts(clips: Clip[], d: Durations): number[] {
   let acc = 0;
   return clips.map((c) => {
     const s = acc;
-    acc += dur(d, c.assetId);
+    acc += clipLen(d, c);
     return s;
   });
 }
 
-export const seqDuration = (clips: Clip[], d: Durations) => clips.reduce((a, c) => a + dur(d, c.assetId), 0);
+export const seqDuration = (clips: Clip[], d: Durations) => clips.reduce((a, c) => a + clipLen(d, c), 0);
 
 // Which clip plays at sequence time t, and where inside its asset.
 export function clipAt(clips: Clip[], d: Durations, t: number): { index: number; local: number } | null {
   let acc = 0;
   for (let i = 0; i < clips.length; i++) {
-    const len = dur(d, clips[i].assetId);
+    const len = clipLen(d, clips[i]);
     if (t < acc + len || i === clips.length - 1) return t >= acc - 1e-9 && t <= acc + len + 1e-9 ? { index: i, local: Math.min(len, t - acc) } : null;
     acc += len;
   }
@@ -96,7 +100,7 @@ export function remapProject(
   }
   const oldIds = new Set(oldClips.map((c) => c.id));
   newClips.forEach((c, i) => {
-    if (!oldIds.has(c.id)) segs.push({ start: newStarts[i], end: newStarts[i] + dur(d, c.assetId) });
+    if (!oldIds.has(c.id)) segs.push({ start: newStarts[i], end: newStarts[i] + clipLen(d, c) });
   });
   segs.sort((a, b) => a.start - b.start);
 
@@ -119,3 +123,19 @@ export const move = <T>(list: T[], i: number, dir: -1 | 1): T[] => {
   [out[i], out[j]] = [out[j], out[i]];
   return out;
 };
+
+// Change one clip's length (image clips). The clip comes back as one fully kept strip (keeping its first
+// strip's effects); everything after it moves with the new length.
+export function resizeClip(
+  clips: Clip[], i: number, len: number, d: Durations, segments: Segment[], captions: Caption[],
+): { clips: Clip[]; segments: Segment[]; captions: Caption[] } {
+  const next = clips.with(i, { ...clips[i], len: Math.max(0.5, Math.round(len * 10) / 10) });
+  const old = clipStarts(clips, d), a = old[i], b = a + clipLen(d, clips[i]);
+  const fx = segments.find((s) => s.start >= a - 1e-6 && s.start < b)?.fx;
+  const r = remapProject(clips, next, d, segments, captions);
+  const s0 = clipStarts(next, d)[i], s1 = s0 + clipLen(d, next[i]);
+  const segs = r.segments.filter((s) => s.end <= s0 + 1e-6 || s.start >= s1 - 1e-6);
+  segs.push(fx ? { start: s0, end: s1, fx } : { start: s0, end: s1 });
+  segs.sort((x, y) => x.start - y.start);
+  return { clips: next, segments: segs, captions: r.captions };
+}

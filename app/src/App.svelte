@@ -6,7 +6,7 @@
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
   import { zoomPlace, segAt, PUNCH_IN, freezeAt, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, isCut, keptCaptions, type Segment, type Fx } from './lib/cuts';
   import { drawFrame } from './lib/segment';
-  import { itemLen, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
+  import { itemLen, clipAt, clipLen, resizeClip, STILL_LEN, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
   import { Transitioner, TRANSITIONS, TRANS_DUR } from './lib/transitions';
   import ColorGrader from './lib/ColorGrader.svelte';
@@ -230,6 +230,7 @@
       const img = new Image();
       img.src = url;
       images.set(a.id, img);
+      thumbs[a.id] = Array.from({ length: 120 }, (_, i) => ({ t: i * 5, url })); // a still looks the same all along (up to 10 min)
       return;
     }
     if (a.kind === 'video') thumbnails(url, a.duration).then((th) => (thumbs[a.id] = th)).catch(() => {});
@@ -364,21 +365,34 @@
       register(r.asset, r.f);
       if (!name) name = r.f.name.replace(/\.[^.]+$/, '');
       if (wantsProxy(r.asset)) buildProxy(r.asset); // big or long footage: fast preview copy in the background
-      if (r.asset.kind === 'video') addClip(r.asset.id);
+      // Images start a slideshow on the main track when there's no video yet; over video they're layers.
+      if (r.asset.kind === 'video' || (r.asset.kind === 'image' && !hasVideoClip())) addClip(r.asset.id);
       else if (r.asset.kind === 'image') addOverlay(r.asset, at);
       else addAudio(r.asset.id, at);
     }
   }
 
 
-  const addClip = (assetId: string) => setClips([...clips, { id: crypto.randomUUID(), assetId }]);
+  const addClip = (assetId: string) =>
+    setClips([...clips, { id: crypto.randomUUID(), assetId, ...(kindOf(assetId) === 'image' ? { len: STILL_LEN } : {}) }]);
+  // Set an image clip's length (seconds); cuts inside it are reset, later clips move.
+  function setClipLen(i: number, len: number) {
+    if (!(len > 0) || !clips[i]) return;
+    commit();
+    const r = resizeClip(clips, i, len, durations, segments, captions);
+    ((clips = r.clips), (segments = r.segments), (captions = r.captions), (selected = -1));
+  }
   function addAudio(assetId: string, at = toOutput(segments, time) ?? 0) {
     commit();
     const item = { id: crypto.randomUUID(), assetId, at, volume: 1 };
     audios = [...audios, item];
     selectedAudio = item.id;
   }
-  const addToTimeline = (a: Asset) => (a.kind === 'video' ? addClip(a.id) : a.kind === 'image' ? addOverlay(a) : addAudio(a.id));
+  const kindOf = (id: string) => assets.find((a) => a.id === id)?.kind;
+  const imageAssets = $derived(assets.filter((a) => a.kind === 'image'));
+  const hasVideoClip = () => clips.some((c) => kindOf(c.assetId) === 'video');
+  // "+" puts videos and images on the main track (images play as stills); the layer button makes them overlays.
+  const addToTimeline = (a: Asset) => (a.kind === 'audio' ? addAudio(a.id) : addClip(a.id));
 
   // ---- Overlays (layers over the main video) ----
   const outNow = () => player.o;
@@ -505,7 +519,7 @@
     const lang = language ?? 'auto';
     const chosen = targetClip ? [targetClip] : clips;
     try {
-      const ids = [...new Set(chosen.map((c) => c.assetId))];
+      const ids = [...new Set(chosen.map((c) => c.assetId))].filter((id) => kindOf(id) !== 'image'); // stills have no sound
       for (let k = 0; k < ids.length; k++) {
         const key = `${ids[k]}|${lang}`, f = files.get(ids[k]);
         if (wordCache[key] || !f) continue;
@@ -519,7 +533,7 @@
       const starts = clipStarts(clips, durations);
       // Whisper can hallucinate timestamps past the end of short or silent clips; keep words inside their clip.
       const wordsOf = (c: Clip) => {
-        const i = clips.indexOf(c), len = durations.get(c.assetId) ?? 0;
+        const i = clips.indexOf(c), len = clipLen(durations, c);
         return (wordCache[`${c.assetId}|${lang}`] ?? [])
           .filter((w) => w.start < len)
           .map((w) => ({ ...w, start: w.start + starts[i], end: Math.min(w.end, len) + starts[i] }));
@@ -527,7 +541,7 @@
       const fresh = groupWords(chosen.flatMap(wordsOf));
       if (targetClip) {
         const i = clips.indexOf(targetClip);
-        setCaps(replaceInRange(captions, fresh, starts[i], starts[i] + (durations.get(targetClip.assetId) ?? 0)));
+        setCaps(replaceInRange(captions, fresh, starts[i], starts[i] + clipLen(durations, targetClip)));
         if (!fresh.length) error = 'noSpeech';
       } else {
         setCaps(fresh);
@@ -556,8 +570,8 @@
       const starts = clipStarts(clips, durations), byAsset = new Map<string, [number, number][]>();
       const ranges: [number, number][] = [];
       for (let i = 0; i < clips.length; i++) {
-        const id = clips[i].assetId, f = files.get(id), len = durations.get(id) ?? 0;
-        if (!f) continue;
+        const id = clips[i].assetId, f = files.get(id), len = clipLen(durations, clips[i]);
+        if (!f || kindOf(id) === 'image') continue;
         if (!byAsset.has(id)) byAsset.set(id, await fileSilences(f, cleanup.db, cleanup.min, cleanup.pad).catch(() => []));
         for (const [a, b] of byAsset.get(id)!) if (a < len) ranges.push([starts[i] + a, starts[i] + Math.min(b, len)]);
       }
@@ -614,7 +628,9 @@
       const p = player.frame();
       let f: CanvasImageSource | null = p && p.videoWidth ? p : null;
       let fw = p?.videoWidth ?? 0, fh = p?.videoHeight ?? 0;
-      if (p && f && !p.seeking) {
+      const still = !p ? stillAt() : null; // an image clip on the main track
+      if (still) ((f = still), (fw = still.naturalWidth), (fh = still.naturalHeight));
+      else if (p && f && !p.seeking) {
         const s = Math.min(1, 720 / Math.max(fw, fh));
         const hw = Math.round(fw * s), hh = Math.round(fh * s);
         if (hold.width !== hw || hold.height !== hh) ((hold.width = hw), (hold.height = hh));
@@ -631,11 +647,14 @@
       if (fx?.lift) f = null; // a lifted strip is a gap: black
       else if (f && fx?.color) f = grader.apply(f, fw, fh, fx.color, lutMap.get(fx.color.lut ?? ''));
       capBox = null;
+      let below: Placed[] = [];
+      const anyBehind = overlaysAt(overlays, player.o).some((o) => o.behind);
       drawFrame(ctx, f, f ? fw : w, f ? fh : h, zoomPlace(f ? coverPlace(w, h, fw, fh, fx?.focus) : [0, 0, w, h], w, h, fx, tNow - (strip?.start ?? 0)), fx, !!cap,
         () => {
-          placed = drawLayers(ctx, tNow);
+          placed = [...below, ...drawLayers(ctx, tNow, false)];
           capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
-        });
+        },
+        anyBehind ? () => (below = drawLayers(ctx, tNow, true)).length > 0 : undefined, bgImageOf(fx));
       // Transition into this strip (over the finished frame: video, layers, captions).
       const si = strip ? segments.indexOf(strip) : -1;
       if (si >= 0) {
@@ -644,7 +663,7 @@
       }
       const sel = placed.find((p) => p.id === selectedOverlay);
       const selO = sel && overlays.find((o) => o.id === sel.id);
-      if (hasPath(selO?.motion)) drawSPath(ctx, selO, cv.width / (cv.getBoundingClientRect().width || cv.width));
+      if (selO && hasPath(selO.motion)) drawSPath(ctx, selO, cv.width / (cv.getBoundingClientRect().width || cv.width));
       if (sel) drawLayerBox(ctx, sel, cv.width / (cv.getBoundingClientRect().width || cv.width));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
       // Platform UI zones (preview only): captions under the app's buttons/description get a warning.
@@ -703,7 +722,7 @@
   let reframing = $state(false);
   async function focusOf(i: number): Promise<{ x: number; y: number } | null> {
     const s = segments[i], starts = clipStarts(clips, durations);
-    const ci = clips.findIndex((_, k) => s.start >= starts[k] - 1e-6 && s.start < starts[k] + (durations.get(clips[k].assetId) ?? 0));
+    const ci = clips.findIndex((_, k) => s.start >= starts[k] - 1e-6 && s.start < starts[k] + clipLen(durations, clips[k]));
     if (ci < 0) return null;
     const v = document.createElement('video');
     v.muted = true;
@@ -749,11 +768,24 @@
     const color = $state.snapshot(selColor);
     segments = segments.map((s) => ({ ...s, fx: { ...s.fx, color } }));
   }
-  function drawLayers(ctx: CanvasRenderingContext2D, t: number): Placed[] {
+  // behind: draw only the layers marked "behind person" (true) or only the others (false).
+  // The picture for an "image" background, once loaded.
+  function bgImageOf(fx?: Fx) {
+    const img = fx?.bg === 'image' && fx.bgImage ? images.get(fx.bgImage) : undefined;
+    return img?.complete && img.naturalWidth ? { src: img, w: img.naturalWidth, h: img.naturalHeight } : null;
+  }
+  // The image of the image clip under the playhead, once it has loaded.
+  function stillAt(): HTMLImageElement | null {
+    const at = clipAt(clips, durations, time);
+    const img = at ? images.get(clips[at.index].assetId) : undefined;
+    return img?.complete && img.naturalWidth ? img : null;
+  }
+  function drawLayers(ctx: CanvasRenderingContext2D, t: number, behind: boolean): Placed[] {
     if (toOutput(segments, t) === null) return [];
     const out = player.o;
     const res: Placed[] = [];
     for (const o of overlaysAt(overlays, out)) {
+      if (!!o.behind !== behind) continue;
       let src: CanvasImageSource | null = null, sw = 0, sh = 0;
       if (o.kind === 'video') {
         const v = player.overlayFrame(o.id);
@@ -1304,6 +1336,9 @@
               {#if a.id in proxyPct}<span class="proxybar" style:width="{proxyPct[a.id] * 100}%" title={t('proxyBuilding')}></span>{/if}
               <span class="acts">
                 <button class="sm icon" onclick={() => addToTimeline(a)} aria-label={t('addToTimeline', { name: a.name })} title={t('addToTimeline', { name: a.name })}>+</button>
+                {#if a.kind === 'image'}
+                  <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}><Icon name="picture_in_picture_alt" /></button>
+                {/if}
                 {#if a.kind === 'video'}
                   <button class="sm icon" class:on={!!a.proxy} aria-pressed={!!a.proxy} disabled={a.id in proxyPct}
                     onclick={() => (a.proxy ? dropProxy(a) : buildProxy(a))} title={a.proxy ? t('proxyOn') : t('proxyMake')} aria-label={a.proxy ? t('proxyOn') : t('proxyMake')}><Icon name="bolt" /></button>
@@ -1325,6 +1360,10 @@
             <li>
               <span class="mono muted small">{i + 1}</span>
               <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
+              {#if kindOf(c.assetId) === 'image'}
+                <input class="clen mono" type="number" min="0.5" max="600" step="0.5" value={clipLen(durations, c)}
+                  aria-label={t('clipDuration')} title={t('clipDuration')} onchange={(e) => setClipLen(i, +e.currentTarget.value)} /><span class="muted small">s</span>
+              {/if}
               <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}><Icon name="arrow_upward" /></button>
               <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}><Icon name="arrow_downward" /></button>
               <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}><Icon name="close" /></button>
@@ -1677,6 +1716,8 @@
           </label>
         {/if}
         <div class="lrow">
+          <button class="sm" class:on={o.behind} aria-pressed={!!o.behind} title={t('layerBehind')}
+            onclick={() => (setOverlay(o.id, { behind: !o.behind || undefined }), doneEditing())}><Icon name="person" /> {t('behindPerson')}</button>
           <button class="sm" class:on={o.tf.flipX} aria-pressed={!!o.tf.flipX} onclick={() => (setTf(o.id, { flipX: !o.tf.flipX }), doneEditing())}><Icon name="flip" /> {t('flip')}</button>
           <button class="sm" onclick={() => (setTf(o.id, { x: 0.5, y: 0.5, rotation: 0, crop: undefined, flipX: false, opacity: 1 }), doneEditing())}>{t('resetLayer')}</button>
           <button class="sm icon" onclick={() => restack(1)} disabled={overlays.at(-1)?.id === o.id} title={t('bringForward')} aria-label={t('bringForward')}><Icon name="flip_to_front" /></button>
@@ -1761,8 +1802,15 @@
               <option value="">{t('bgOriginal')}</option>
               <option value="blur">{t('bgBlur')}</option>
               <option value="color">{t('bgColor')}</option>
+              <option value="image" disabled={!imageAssets.length}>{t('bgImage')}</option>
             </select>
           </label>
+          {#if selFx.bg === 'image'}
+            <select value={selFx.bgImage ?? ''} aria-label={t('bgImage')} onchange={(e) => setFx({ bgImage: e.currentTarget.value || undefined })}>
+              <option value="">{t('bgPick')}</option>
+              {#each imageAssets as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+            </select>
+          {/if}
           {#if selFx.bg === 'color'}
             <input type="color" value={selFx.bgColor ?? '#00b140'} aria-label={t('bgColor')}
               onchange={(e) => setFx({ bgColor: e.currentTarget.value })} />
@@ -1911,8 +1959,9 @@
   .filters { display: flex; gap: 4px; }
   .filters button { border: 0; height: 30px; font-size: 13px; color: var(--muted); border-radius: 8px; }
   .filters button.on { background: var(--tab-on); color: var(--text); }
+  .clen { width: 4.5em; }
   .seq { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
-  .seq li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto auto; gap: 4px; align-items: center;
+  .seq li { display: grid; grid-template-columns: 18px minmax(0, 1fr) repeat(5, auto); gap: 4px; align-items: center;
     padding: 4px 6px; background: var(--card); border: 1px solid var(--border-soft); border-radius: 8px; }
   .seq button { width: 26px; height: 26px; }
   .vol { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
