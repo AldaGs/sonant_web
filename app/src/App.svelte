@@ -9,6 +9,7 @@
   import { itemLen, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
   import { Transitioner, TRANSITIONS, TRANS_DUR } from './lib/transitions';
+  import ColorGrader from './lib/ColorGrader.svelte';
   import { Grader, COLOR_PRESETS, parseCube, type Color, type Lut } from './lib/grade';
   import { coverPlace, median } from './lib/reframe';
   import { SAFE_ZONES, drawSafeZones, overlapsZone, type Platform } from './lib/safezones';
@@ -975,7 +976,7 @@
     sheet = sheet === s && (!t || tab === t) ? null : s;
   }
   // Phone: a video strip or video/image layer is selected → color & video styles get their own sheet.
-  const hasVideoSel = $derived((selected >= 0 && !!segments[selected] && !selOverlay) || (!!selOverlay && selOverlay.kind !== 'text'));
+  const hasVideoSel = $derived(selected >= 0 && !!segments[selected] && !selOverlay);
   $effect(() => { if (sheet === 'color' && !hasVideoSel) sheet = null; });
   let zoom = $state(1); // 1 = fit to the stage
   let filter = $state<'all' | 'video' | 'audio' | 'image'>('all');
@@ -1448,6 +1449,9 @@
   <aside class="style panel" class:shown={sheet === 'style' || sheet === 'color'} class:color-only={sheet === 'color'}>
     <div class="grab" aria-hidden="true"></div>
     <div class="sheet-bar"><h2>{sheet === 'color' ? t('grading') : t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button></div>
+    {#if sheet === 'color'}
+      <ColorGrader color={selColor} {luts} onset={setColor} ondone={() => (colorEditing = false)} />
+    {:else}
     <details class="tpl">
       <summary>{t('templates')}</summary>
       <div class="tpl-list">
@@ -1593,6 +1597,7 @@
       onclearcapselection={clearCapSelection}
       onclearfields={clearCapFields}
     />
+    {/if}
   </aside>
 
   <section class="timeline-area" aria-label={t('timelineH')}
@@ -1929,9 +1934,8 @@
       padding-bottom: env(safe-area-inset-bottom); animation: up .22s ease-out;
     }
     .assets.shown, .text.shown, .style.shown { display: flex; }
-    /* Color sheet: only strip grading and video/image layer styles; the style sheet keeps the rest. */
-    .style.color-only > :not(.grab, .sheet-bar, .strip, .vlayer) { display: none; }
-    .style:not(.color-only) > :is(.strip, .vlayer) { display: none; }
+    /* Strip grading lives in its own Color sheet on phones. */
+    .style > .strip { display: none; }
     .text .scroll { max-height: none; flex: 1; min-height: 0; }
     .style { overflow: auto; }
     .grab { display: block; flex: none; width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 8px auto 0; }
