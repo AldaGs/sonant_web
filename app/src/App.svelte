@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { transcribe } from './lib/transcribe';
-  import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Caption, type Word } from './lib/captions';
+  import { groupWords, captionText, setText, setRange, split, toSRT, toVTT, startOf, endOf, replaceInRange, type Caption, type Word } from './lib/captions';
   import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
   import { zoomPlace, segAt, freezeAt, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, isCut, keptCaptions, type Segment, type Fx } from './lib/cuts';
@@ -20,14 +20,14 @@
   import { speechRanges } from './lib/audio';
   import { beatsOfFile } from './lib/beats';
   import { translateTexts, translated, type Dir } from './lib/translate';
-  import { autoEmphasis, clearEmphasis, hasEmphasis } from './lib/keywords';
-  import { BLENDS, DEFAULT_MASK, DEFAULT_KEY, keyBypass, type Blend, type ChromaKey } from './lib/layerfx';
-  import KeyControls from './lib/KeyControls.svelte';
+  import { DEFAULT_KEY, keyBypass, type ChromaKey } from './lib/layerfx';
   import PerfDialog from './lib/PerfDialog.svelte';
   import MediaPanel from './lib/MediaPanel.svelte';
   import AudioPanel from './lib/AudioPanel.svelte';
   import AIToolsPanel from './lib/AIToolsPanel.svelte';
   import ClipInspector from './lib/ClipInspector.svelte';
+  import TextPanel from './lib/TextPanel.svelte';
+  import LayerInspector from './lib/LayerInspector.svelte';
   import { embed, cluster, smooth, spanOf, applySpeakers, units, splitBySpeaker, type Unit } from './lib/diarize';
   import { decodeAudio } from './lib/transcribe';
   import { gpuFor } from './lib/perf';
@@ -40,8 +40,7 @@
   import { cleanAudio, cleanKey } from './lib/denoise';
   import { zoomMoments, autoZoomPlace, zoomKey, shakePlace, zoomShake, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
-  import { maskAt, setMaskKey, maskReveal } from './lib/overlay';
-  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
+  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, newMedia, trimOverlay, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
   import { audioPeaks } from './lib/waveform';
@@ -1748,98 +1747,10 @@
 
   <section class="text panel" class:shown={sheet === 'text'}>
     <div class="grab" aria-hidden="true"></div>
-    <div class="tabs" role="tablist">
-      <button role="tab" aria-selected={tab === 'transcript'} class:on={tab === 'transcript'} onclick={() => (tab = 'transcript')}>{t('transcript')}</button>
-      <button role="tab" aria-selected={tab === 'captions'} class:on={tab === 'captions'} onclick={() => (tab = 'captions')}>{t('captions')}</button>
-      <button class="icon sm sheet-x" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button>
-    </div>
-    <div class="scroll">
-      {#if notice}<p class="notice">{t(notice)}</p>{/if}
-      <div class="row">
-        <select bind:value={language} disabled={busy} aria-label={t('language')}>
-          <option value={null}>{t('auto')}</option>
-          <option value="english">English</option>
-          <option value="spanish">Español</option>
-        </select>
-        <button onclick={run} disabled={!hasMedia || busy}>{captions.length ? t('retranscribe') : t('transcribe')}</button>
-      </div>
-      {#if clips.length > 1}
-        <select class="target" bind:value={transcribeTarget} disabled={busy} aria-label={t('transcribeWhich')}>
-          <option value="all">{t('allClips')}</option>
-          {#each clips as c, i (c.id)}<option value={c.id}>{i + 1}. {names.get(c.assetId)}</option>{/each}
-        </select>
-      {/if}
-      {#if busy}
-        <p class="muted small">{t(status)}</p>
-        <progress max="100" value={pct}></progress>
-      {/if}
-      {#if error}<p class="error small">{t(error)}</p>{/if}
-
-      {#if tab === 'transcript'}
-        {#if !captions.length && !busy}<p class="muted small">{t('transcriptEmpty')}</p>{/if}
-        {#if captions.length}
-          <TranscriptView bind:this={transcriptView} {captions} {segments} {time} {duration}
-            {speakers} onseek={seek} oncut={cutRanges} onkeep={keepRanges}
-            onspeaker={(ids, k) => { if (k === speakers.length) speakers = [...speakers, '']; setCaps(setSpeaker(captions, new Set(ids), k)); }}
-            onrename={(k, n) => (speakers = speakers.with(k, n))}
-            onemphasis={(starts, on) => { const set = new Set(starts); setCaps(captions.map((c) => (c.words.some((w) => set.has(w.start)) ? { ...c, words: c.words.map((w) => (set.has(w.start) ? (on ? { ...w, em: true } : (({ em: _, ...r }) => r)(w)) : w)) } : c))); }} />
-        {/if}
-      {:else}
-        <p class="muted small">{t('captionsHint')} {t('selectHint')}</p>
-        {#if captions.length}
-          <div class="trbox">
-            <select bind:value={trDir} disabled={trBusy} aria-label={t('trDir')}>
-              <option value="en-es">English → Español</option>
-              <option value="es-en">Español → English</option>
-            </select>
-            <button class="sm" onclick={translateAll} disabled={trBusy}>{trBusy ? `${t(status || 'st.translating')} ${Math.round(pct)}%` : hasTr ? t('retranslate') : t('translate')}</button>
-            {#if hasTr}
-              <label class="chk"><input type="checkbox" bind:checked={showTr} /> {t('showTr')}</label>
-            {/if}
-          </div>
-          <div class="trbox">
-            <button class="sm" onclick={() => setCaps(autoEmphasis(captions))} title={t('emHint')}>{t('autoEm')}</button>
-            {#if hasEmphasis(captions)}
-              <button class="sm" onclick={() => setCaps(clearEmphasis(captions))}>{t('clearEm')}</button>
-              <label class="sl">{t('emSize')} <span class="mono">{Math.round((style.emScale ?? 1) * 100)}%</span>
-                <input type="range" min="1" max="1.5" step="0.05" value={style.emScale ?? 1} oninput={(e) => (style = { ...style, emScale: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })} /></label>
-            {/if}
-            <span class="muted small">{t('emHandHint')}</span>
-          </div>
-        {/if}
-        <ol class="caps">
-          {#each captions as c, i (c.id)}
-            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-            <li class:on={active(c)} class:sel-cap={selectedSet.has(c.id)} onclick={(e) => selectCap(c.id, e)}>
-              <div class="times mono">
-                <input type="number" step="0.1" min="0" aria-label={t('start')} value={startOf(c).toFixed(2)}
-                  onchange={(e) => update(i, setRange(c, +e.currentTarget.value, endOf(c)))} />
-                <input type="number" step="0.1" min="0" aria-label={t('end')} value={endOf(c).toFixed(2)}
-                  onchange={(e) => update(i, setRange(c, startOf(c), +e.currentTarget.value))} />
-              </div>
-              <div class="cap-main">
-                <textarea rows="2" aria-label={t('capText')} value={captionText(c)} onfocus={() => { if (!selectedSet.has(c.id)) selectCap(c.id); seek(startOf(c)); }}
-                  onchange={(e) => update(i, setText(c, e.currentTarget.value))}></textarea>
-                {#if c.tr !== undefined}
-                  <textarea class="tr" rows="1" aria-label={t('trText')} value={c.tr} placeholder={t('trText')}
-                    onchange={(e) => update(i, { ...c, tr: e.currentTarget.value.trim() || undefined })}></textarea>
-                {/if}
-                {#if c.style?.animation}
-                  <span class="cap-anim-tag" title={t('animBadge', { name: t('anim.' + c.style.animation) })}><Icon name="animation" size={13} /> {t('anim.' + c.style.animation)}</span>
-                {/if}
-              </div>
-              <span class="tools">
-                <button class="sm icon" title={t('playHere')} aria-label={t('playHere')} onclick={() => seek(startOf(c))}><Icon name="play_arrow" /></button>
-                <button class="sm icon" title={t('splitCap')} aria-label={t('splitCap')} disabled={c.words.length < 2} onclick={() => setCaps(split(captions, i))}><Icon name="content_cut" /></button>
-                <button class="sm icon" title={t('mergeNext')} aria-label={t('mergeNext')} disabled={i === captions.length - 1} onclick={() => setCaps(mergeNext(captions, i))}><Icon name="merge" /></button>
-                <button class="sm icon" title={t('del')} aria-label={t('del')} onclick={() => setCaps(captions.toSpliced(i, 1))}><Icon name="close" /></button>
-              </span>
-            </li>
-          {/each}
-        </ol>
-        <button class="add" onclick={addLine} disabled={!hasMedia}><Icon name="add" /> {t('addLine')}</button>
-      {/if}
-    </div>
+    <TextPanel bind:tab bind:language bind:transcribeTarget bind:transcriptView bind:speakers bind:trDir bind:showTr bind:style
+      {notice} {busy} {status} {pct} {error} {hasMedia} {captions} {clips} {names} {segments} {time} {duration}
+      {trBusy} {hasTr} {selectedSet} {run} {seek} {cutRanges} {keepRanges} {setCaps} {translateAll} {active} {selectCap} {update} {addLine}
+      onclose={() => (sheet = null)} />
   </section>
 
   <section class="center">
@@ -1921,153 +1832,8 @@
         {reframes} {setFocus} {autoReframe} {autoReframeAll} {reframing} webgl={grader.ok} />
     {/if}
     {#if selOverlay}
-      {@const o = selOverlay}
-      {@const cur = tfAt(o, outTime)}
-      {@const onKey = !!keyAt(o.kf, outTime - o.at)}
-      <!-- Layer inspector: live edits are one undo step each (snapshot on first input, closed on change). -->
-      <section class="layer" class:vlayer={o.kind !== 'text'} aria-label={t('layer')} onchange={doneEditing} onpointerup={doneEditing}>
-        <div class="lhead">
-          <h3>{o.motion ? t('addTitle') : o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
-          <button class="sm icon" onclick={closeLayer} aria-label={t('ex.close')}><Icon name="close" /></button>
-        </div>
-        {#if o.bar}
-          {@const b = o.bar}
-          <div class="lrow">
-            <label class="vol">{t('barColor')}<input type="color" value={b.color} oninput={(e) => setOverlay(o.id, { bar: { ...b, color: e.currentTarget.value } })} onchange={doneEditing} /></label>
-            <label class="chk"><input type="checkbox" checked={!!b.track} onchange={(e) => (setOverlay(o.id, { bar: { ...b, track: e.currentTarget.checked ? 'rgba(255,255,255,0.25)' : '' } }), doneEditing())} /> {t('barTrack')}</label>
-            <label class="chk"><input type="checkbox" checked={!!b.top} onchange={(e) => (setOverlay(o.id, { bar: { ...b, top: e.currentTarget.checked || undefined } }), doneEditing())} /> {t('barTop')}</label>
-          </div>
-          <label class="vol">{t('barH')} <span class="mono small">{(b.h * 100).toFixed(1)}%</span>
-            <input type="range" min="0.003" max="0.03" step="0.001" value={b.h} oninput={(e) => setOverlay(o.id, { bar: { ...b, h: +e.currentTarget.value } })} onchange={doneEditing} />
-          </label>
-        {:else if o.kind === 'text'}
-          <label class="vol">{t('text')}
-            <textarea rows="2" value={o.text} oninput={(e) => setOverlay(o.id, { text: e.currentTarget.value })}></textarea>
-          </label>
-          <div class="lrow">
-            <label class="vol">{t('color')}<input type="color" value={textStyle(o).color} oninput={(e) => setOverlay(o.id, { style: { ...o.style, color: e.currentTarget.value } })} /></label>
-            <label class="vol">{t('highlight')}<input type="color" value={textStyle(o).highlight} oninput={(e) => setOverlay(o.id, { style: { ...o.style, highlight: e.currentTarget.value } })} /></label>
-            <label class="vol">{t('font')}
-              <select value={textStyle(o).family} onchange={(e) => setOverlay(o.id, { style: { ...o.style, family: e.currentTarget.value } })}>
-                {#each fonts as f}<option value={f.family}>{f.family}</option>{/each}
-              </select>
-            </label>
-          </div>
-        {/if}
-        {#if o.kind === 'text' && !o.bar}
-          {@const m = o.motion}
-          <div class="lrow">
-            <label class="vol">{t('titleAnim')}
-              <select value={m ? m.path : 'off'} onchange={(e) => { const v = e.currentTarget.value; setMotion(o, v === 'off' ? null : { path: v as Motion['path'] }); doneEditing(); }}>
-                <option value="off">{t('titleOff')}</option>
-                {#each TITLE_PATHS as p}<option value={p}>{t('tpath.' + p)}</option>{/each}
-              </select>
-            </label>
-            {#if m}
-              <label class="vol">{t('titleStyle')}
-                <select value={m.style ?? 'pop'} onchange={(e) => (setMotion(o, { style: e.currentTarget.value as Motion['style'] }), doneEditing())}>
-                  {#each TITLE_STYLES as st}<option value={st}>{t('tstyle.' + st)}</option>{/each}
-                </select>
-              </label>
-            {/if}
-          </div>
-          {#if m}
-            <label class="vol">{t('titleIn')} <span class="mono small">{m.in.toFixed(1)}s</span>
-              <input type="range" min="0" max={Math.max(0.1, o.len / 2)} step="0.1" value={m.in} oninput={(e) => setMotion(o, { in: +e.currentTarget.value })} />
-            </label>
-            <label class="vol">{t('titleOut')} <span class="mono small">{m.out.toFixed(1)}s</span>
-              <input type="range" min="0" max={Math.max(0.1, o.len / 2)} step="0.1" value={m.out} oninput={(e) => setMotion(o, { out: +e.currentTarget.value })} />
-            </label>
-            {#if m.path !== 'none'}
-              <label class="vol">{t('titleSpan')} <span class="mono small">{Math.round(m.span * 100)}%</span>
-                <input type="range" min="0" max="1.2" step="0.01" value={m.span} oninput={(e) => setMotion(o, { span: +e.currentTarget.value })} />
-              </label>
-              <label class="vol">{t('titleCurve')} <span class="mono small">{Math.round(m.amp * 100)}%</span>
-                <input type="range" min="0" max="0.3" step="0.01" value={m.amp} oninput={(e) => setMotion(o, { amp: +e.currentTarget.value })} />
-              </label>
-            {/if}
-          {/if}
-        {/if}
-        <div class="keyrow" role="group" aria-label={t('keyframes')}>
-          <button class="sm icon" onclick={() => jumpKey(o, -1)} disabled={!o.kf?.length} title={t('prevKey')} aria-label={t('prevKey')}><Icon name="chevron_left" /></button>
-          <button class="sm key" class:on={onKey} aria-pressed={onKey} onclick={() => toggleKey(o)}
-            title={onKey ? t('removeKey') : t('addKey')}><Icon name="diamond" size={16} /> {onKey ? t('removeKey') : t('addKey')}</button>
-          <button class="sm icon" onclick={() => jumpKey(o, 1)} disabled={!o.kf?.length} title={t('nextKey')} aria-label={t('nextKey')}><Icon name="chevron_right" /></button>
-          <button class="sm" onclick={() => punchIn(o)} title={t('punchLayerTip')}><Icon name="zoom_in" /> {t('punchIn')}</button>
-          {#if o.kf?.length}<button class="sm" onclick={() => clearKeys(o)}>{t('clearKeys')}</button>{/if}
-        </div>
-        {#if o.kf?.length}<p class="muted small keyhint">{t('keyHint', { n: o.kf.length })}</p>{/if}
-        <label class="vol">{t('scale')} <span class="mono small">{Math.round(cur.scale * 100)}%</span>
-          <input type="range" min="0.05" max={o.kind === 'text' ? 4 : 1.5} step="0.01" value={cur.scale} oninput={(e) => setTf(o.id, { scale: +e.currentTarget.value })} />
-        </label>
-        <label class="vol">{t('rotation')} <span class="mono small">{Math.round(cur.rotation)}°</span>
-          <input type="range" min="-180" max="180" step="1" value={cur.rotation} oninput={(e) => setTf(o.id, { rotation: +e.currentTarget.value })} />
-        </label>
-        <label class="vol">{t('opacity')} <span class="mono small">{Math.round(cur.opacity * 100)}%</span>
-          <input type="range" min="0" max="1" step="0.01" value={cur.opacity} oninput={(e) => setTf(o.id, { opacity: +e.currentTarget.value })} />
-        </label>
-        {#if o.kind !== 'text'}
-          {@const c = o.tf.crop ?? [0, 0, 0, 0]}
-          <div class="crop">
-            {#each [['cropL', 0], ['cropT', 1], ['cropR', 2], ['cropB', 3]] as [label, i]}
-              <label class="vol">{t(label as string)} <span class="mono small">{Math.round(c[i as number] * 100)}%</span>
-                <input type="range" min="0" max="0.45" step="0.01" value={c[i as number]}
-                  oninput={(e) => setTf(o.id, { crop: c.with(i as number, +e.currentTarget.value) as Transform['crop'] })} />
-              </label>
-            {/each}
-          </div>
-        {/if}
-        <label class="vol">{t('blend')}
-          <select value={o.blend ?? 'normal'} onchange={(e) => (setOverlay(o.id, { blend: e.currentTarget.value === 'normal' ? undefined : (e.currentTarget.value as Blend) }), doneEditing())}>
-            {#each BLENDS as b (b)}<option value={b}>{t('bl.' + b)}</option>{/each}
-          </select>
-        </label>
-        {#if o.kind !== 'text'}
-          <KeyControls key={o.key} picking={pickKey === o.id} onpick={() => startPick(o.id)}
-            set={(k, final) => (setOverlay(o.id, { key: k }), final && doneEditing())} />
-          <details class="lfx" open={!!o.mask}>
-            <summary>{t('mask')}</summary>
-            <select value={o.mask?.shape ?? 'none'} aria-label={t('mask')}
-              onchange={(e) => { const v = e.currentTarget.value; setOverlay(o.id, { mask: v === 'none' ? undefined : { ...DEFAULT_MASK, ...o.mask, shape: v as 'rect' } }); doneEditing(); }}>
-              {#each ['none', 'ellipse', 'rect', 'linear'] as m (m)}<option value={m}>{t('mk.' + m)}</option>{/each}
-            </select>
-            <div class="lrow">
-              <button class="sm" onclick={() => (setOverlay(o.id, maskReveal('wipe')), doneEditing())} title={t('mkWipeTip')}>{t('mkWipe')}</button>
-              <button class="sm" onclick={() => (setOverlay(o.id, maskReveal('spot')), doneEditing())} title={t('mkSpotTip')}>{t('mkSpot')}</button>
-            </div>
-            {#if o.mask}
-              {@const m = maskAt(o, outNow())!}
-              {@const lt = layerT(o)}
-              <div class="lrow">
-                <button class="sm" class:on={!!o.maskKf?.some((k) => Math.abs(k.t - lt) <= 1 / 60)} title={t('mkKeyTip')}
-                  onclick={() => { const has = o.maskKf?.find((k) => Math.abs(k.t - lt) <= 1 / 60); setOverlay(o.id, { maskKf: has ? o.maskKf!.filter((k) => k !== has) : setMaskKey(o.maskKf, lt, m) }); doneEditing(); }}>◆ {t('mkKey')}</button>
-                {#if o.maskKf?.length}<button class="sm" onclick={() => (setOverlay(o.id, { mask: m, maskKf: undefined }), doneEditing())}>{t('mkClearKeys', { n: o.maskKf.length })}</button>{/if}
-              </div>
-              {#each (m.shape === 'linear' ? [['mkAngle', 'angle', -180, 180, 1], ['mkPos', 'pos', 0, 1, 0.01]] : [['mkW', 'w', 0.05, 1, 0.01], ['mkH', 'h', 0.05, 1, 0.01]]).concat([['mkFeather', 'feather', 0, 0.5, 0.01]]) as [label, f, lo, hi, st] (f)}
-                <label class="vol">{t(label as string)} <span class="mono small">{f === 'angle' ? `${m.angle}°` : `${Math.round(m[f as 'w'] * 100)}%`}</span>
-                  <input type="range" min={lo} max={hi} step={st} value={m[f as 'w']} onchange={doneEditing}
-                    oninput={(e) => { const nm = { ...m, [f as string]: +e.currentTarget.value }; setOverlay(o.id, o.maskKf?.length ? { maskKf: setMaskKey(o.maskKf, lt, nm) } : { mask: nm }); }} />
-                </label>
-              {/each}
-              <label class="chk"><input type="checkbox" checked={!!o.mask.invert} onchange={(e) => (setOverlay(o.id, { mask: { ...o.mask!, invert: e.currentTarget.checked || undefined } }), doneEditing())} /> {t('mkInvert')}</label>
-            {/if}
-          </details>
-        {/if}
-        {#if o.kind === 'video'}
-          <label class="vol">{t('volume')} <span class="mono small">{Math.round((o.volume ?? 0) * 100)}%</span>
-            <input type="range" min="0" max="1" step="0.05" value={o.volume ?? 0} oninput={(e) => setOverlay(o.id, { volume: +e.currentTarget.value })} />
-          </label>
-        {/if}
-        <div class="lrow">
-          <button class="sm" class:on={o.behind} aria-pressed={!!o.behind} title={t('layerBehind')}
-            onclick={() => (setOverlay(o.id, { behind: !o.behind || undefined }), doneEditing())}><Icon name="person" /> {t('behindPerson')}</button>
-          <button class="sm" class:on={o.tf.flipX} aria-pressed={!!o.tf.flipX} onclick={() => (setTf(o.id, { flipX: !o.tf.flipX }), doneEditing())}><Icon name="flip" /> {t('flip')}</button>
-          <button class="sm" onclick={() => (setTf(o.id, { x: 0.5, y: 0.5, rotation: 0, crop: undefined, flipX: false, opacity: 1 }), doneEditing())}>{t('resetLayer')}</button>
-          <button class="sm icon" onclick={() => restack(1)} disabled={overlays.at(-1)?.id === o.id} title={t('bringForward')} aria-label={t('bringForward')}><Icon name="flip_to_front" /></button>
-          <button class="sm icon" onclick={() => restack(-1)} disabled={overlays[0]?.id === o.id} title={t('sendBackward')} aria-label={t('sendBackward')}><Icon name="flip_to_back" /></button>
-          <button class="sm" onclick={removeOverlay}>{t('del')}</button>
-        </div>
-      </section>
+      <LayerInspector o={selOverlay} {outTime} {fonts} {overlays} {pickKey} {doneEditing} {closeLayer} {setOverlay} {setMotion} {setTf}
+        {jumpKey} {toggleKey} {punchIn} {clearKeys} {startPick} {removeOverlay} {restack} {layerT} {outNow} />
     {/if}
     {#if !selOverlay}
     <StylePanel
@@ -2229,36 +1995,8 @@
   .tabs { display: flex; gap: 4px; padding: 12px 16px; }
   .tabs button { border: 0; height: 36px; color: var(--muted); font-weight: 500; border-radius: 8px; }
   .tabs button.on { background: var(--tab-on); color: var(--text); }
-  .scroll { overflow: auto; padding: 0 16px 16px; display: grid; gap: 10px; align-content: start; }
   .row { display: flex; gap: 8px; align-items: center; }
   .row select { flex: 1; height: 36px; padding: 0 8px; }
-  .target { width: 100%; height: 34px; padding: 0 8px; }
-  progress { width: 100%; accent-color: var(--accent); }
-  .notice { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); margin: 0; }
-  .caps { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-  .caps li { position: relative; display: grid; grid-template-columns: 72px 1fr; gap: 8px; padding: 10px 12px;
-    background: var(--card); border: 1px solid var(--border-soft); border-radius: 10px; cursor: pointer; }
-  .caps li.on { border-color: var(--accent); }
-  .caps li.sel-cap { border-color: var(--accent); background: rgb(200 245 96 / .08); box-shadow: 0 0 0 1px var(--accent); }
-  .cap-main { display: grid; gap: 4px; min-width: 0; }
-  .cap-anim-tag { font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: rgb(200 245 96 / .18); color: var(--accent); display: inline-flex; align-items: center; width: fit-content; }
-  .times { display: grid; gap: 2px; align-content: start; }
-  .times input { width: 100%; font-family: var(--mono); font-size: 12px; color: var(--muted); background: none; border: 1px solid transparent; padding: 1px 2px; }
-  .times input:hover, .times input:focus { border-color: var(--border); color: var(--text); }
-  textarea { resize: vertical; background: none; border: 1px solid transparent; padding: 2px 4px; font-size: 14px; line-height: 1.4; }
-  textarea:hover, textarea:focus { border-color: var(--border); }
-  .tools { position: absolute; top: 6px; right: 6px; display: none; gap: 2px; background: var(--card); }
-  .caps li:hover .tools, .caps li:focus-within .tools { display: flex; }
-  .tools button { width: 26px; height: 26px; font-size: 11px; }
-  /* Touch / narrow screens: no hover, and floating tools would cover the text being edited —
-     put them in their own row under the caption instead. */
-  @media (hover: none), (max-width: 760px) {
-    .tools { position: static; grid-column: 1 / -1; justify-content: flex-end; gap: 6px; background: none; }
-    .caps li:hover .tools { display: none; }
-    .caps li.sel-cap .tools, .caps li:focus-within .tools { display: flex; }
-    .tools button { width: 36px; height: 32px; font-size: 13px; }
-  }
-  .add { border-style: dashed; height: 40px; }
   .center { grid-area: center; display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; }
   .stage { position: relative; min-height: 0; border: 2px dashed transparent; }
   .stage.dragging { border-color: var(--accent); }
@@ -2288,7 +2026,6 @@
     }
     .top { flex-wrap: wrap; position: sticky; top: 0; z-index: 2; background: var(--bg); }
     .assets, .text, .style { border: 0; border-top: 1px solid var(--border-soft); }
-    .text .scroll { max-height: 60vh; }
     .stage { height: 62vh; }
   }
   @media (max-width: 560px) {
@@ -2300,7 +2037,7 @@
   /* Desktop-only / phone-only chrome */
   .ltabs { padding: 0; flex: 1; }
   .ltabs button { flex: 1; padding: 0 6px; white-space: nowrap; font-size: 13px; }
-  .mob-close, .dock, .scrim, .grab, .sheet-x, .sheet-bar { display: none; }
+  .mob-close, .dock, .scrim, .grab, .sheet-bar { display: none; }
 
   /* Phone: preview + transport + timeline fill the screen; panels open as bottom sheets from a tool dock. */
   @media (max-width: 760px) {
@@ -2348,16 +2085,13 @@
       padding-bottom: env(safe-area-inset-bottom); animation: up .22s ease-out;
     }
     .assets.shown, .text.shown, .style.shown { display: flex; }
-    .text .scroll { max-height: none; flex: 1; min-height: 0; }
     .style { overflow: auto; }
     .assets .grab { margin-top: -8px; }
     .grab { display: block; flex: none; width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 8px auto 0; }
     .tabs { align-items: center; }
-    .sheet-x { display: inline-flex; margin-left: auto; border: 0; }
     .sheet-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px 0; }
     .sheet-bar button { border: 0; }
     .scrim { display: block; position: fixed; inset: 0; z-index: 19; background: rgb(0 0 0 / .45); border: 0; border-radius: 0; height: auto; padding: 0; }
-    .tools { display: flex; }
   }
   .tpl { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 10px; display: grid; gap: 8px; }
   .tpl summary { cursor: pointer; font-size: 13px; font-weight: 600; }
@@ -2372,7 +2106,6 @@
   .hist li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; background: var(--card); border-radius: 8px; font-size: 13px; }
   .zonewarn { font-size: 12px; color: #ffb86b; }
   .ratio { height: 30px; font-size: 12px; }
-  textarea.tr { margin-top: 4px; font-size: 12px; color: #9fd0ff; border-style: dashed; }
   .keys-bg { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .55); display: grid; place-items: center; padding: 16px; }
   .keys { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; width: min(440px, 100%);
     max-height: 90vh; overflow: auto; display: grid; gap: 12px; }
