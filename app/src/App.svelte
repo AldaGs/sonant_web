@@ -63,7 +63,10 @@
   let denoise = $state(0); // AI noise reduction on the clips' sound: wet mix, 0 = off
   let overlays = $state<Overlay[]>([]); // picture-in-picture video, images, text layers; output time, bottom first
   let selectedOverlay = $state('');
-  const images = new Map<string, HTMLImageElement>(); // assetId → decoded image
+  // assetId → image decoded once and downscaled for the preview. Drawing a full-size photo (and uploading it
+  // to the GPU for effects) every frame is what made stills slow; a ~1080p bitmap costs about as much as a video frame.
+  const pics = new Map<string, { src: ImageBitmap; w: number; h: number }>();
+  const PIC_MAX = 1920;
   let urls = $state<Record<string, string>>({}); // assetId → object URL
   const files = new Map<string, File>(); // assetId → file
   let thumbs = $state<Record<string, Thumb[]>>({});
@@ -289,9 +292,15 @@
     const url = URL.createObjectURL(f);
     urls[a.id] = url;
     if (a.kind === 'image') {
-      const img = new Image();
-      img.src = url;
-      images.set(a.id, img);
+      createImageBitmap(f).then(async (full) => {
+        const k = Math.min(1, PIC_MAX / Math.max(full.width, full.height));
+        let bmp = full;
+        if (k < 1) {
+          bmp = await createImageBitmap(full, { resizeWidth: Math.round(full.width * k), resizeHeight: Math.round(full.height * k), resizeQuality: 'high' });
+          full.close();
+        }
+        pics.set(a.id, { src: bmp, w: bmp.width, h: bmp.height });
+      }).catch(() => {});
       thumbs[a.id] = Array.from({ length: 120 }, (_, i) => ({ t: i * 5, url })); // a still looks the same all along (up to 10 min)
       return;
     }
@@ -705,6 +714,25 @@
     const r = resizeClip(clips, i, len, durations, segments, captions);
     ((clips = r.clips), (segments = r.segments), (captions = r.captions), (selected = -1));
   }
+  // Timeline edge drag. The end edge of an image clip's last strip retimes the clip itself, so a still
+  // can be made as long as wanted (a still has no file length to run out of); later clips move with it.
+  function trimStrip(i: number, s: number, e: number) {
+    const seg = segments[i];
+    const at = seg && clipAt(clips, durations, (seg.start + seg.end) / 2);
+    if (at && kindOf(clips[at.index].assetId) === 'image') {
+      const c0 = clipStarts(clips, durations)[at.index], end0 = c0 + clipLen(durations, clips[at.index]);
+      if (Math.abs(seg.end - end0) < 1e-6 && Math.abs(e - seg.end) > 1e-6) {
+        const len = Math.min(600, Math.max(seg.start - c0 + 0.1, e - c0));
+        const next = clips.with(at.index, { ...clips[at.index], len });
+        const r = remapProject(clips, next, durations, segments, captions);
+        const j = r.segments.findIndex((x) => Math.abs(x.end - end0) < 1e-6 && x.start >= c0 - 1e-6);
+        if (j >= 0) r.segments[j] = { ...r.segments[j], start: Math.max(c0, s), end: c0 + len };
+        ((clips = next), (segments = r.segments), (captions = r.captions));
+        return;
+      }
+    }
+    segments = trim(segments, i, s, e, duration);
+  }
   function addAudio(assetId: string, at = toOutput(segments, time) ?? 0) {
     commit();
     const item = { id: crypto.randomUUID(), assetId, at, volume: 1 };
@@ -955,7 +983,7 @@
       let f: CanvasImageSource | null = p && p.videoWidth ? p : null;
       let fw = p?.videoWidth ?? 0, fh = p?.videoHeight ?? 0;
       const still = !p ? stillAt() : null; // an image clip on the main track
-      if (still) ((f = still), (fw = still.naturalWidth), (fh = still.naturalHeight));
+      if (still) ((f = still.src), (fw = still.w), (fh = still.h));
       else if (p && f && !p.seeking) {
         const s = Math.min(1, 720 / Math.max(fw, fh));
         const hw = Math.round(fw * s), hh = Math.round(fh * s);
@@ -1098,14 +1126,12 @@
   // behind: draw only the layers marked "behind person" (true) or only the others (false).
   // The picture for an "image" background, once loaded.
   function bgImageOf(fx?: Fx) {
-    const img = fx?.bg === 'image' && fx.bgImage ? images.get(fx.bgImage) : undefined;
-    return img?.complete && img.naturalWidth ? { src: img, w: img.naturalWidth, h: img.naturalHeight } : null;
+    return (fx?.bg === 'image' && fx.bgImage && pics.get(fx.bgImage)) || null;
   }
   // The image of the image clip under the playhead, once it has loaded.
-  function stillAt(): HTMLImageElement | null {
+  function stillAt() {
     const at = clipAt(clips, durations, time);
-    const img = at ? images.get(clips[at.index].assetId) : undefined;
-    return img?.complete && img.naturalWidth ? img : null;
+    return (at && pics.get(clips[at.index].assetId)) || null;
   }
   function drawLayers(ctx: CanvasRenderingContext2D, t: number, behind: boolean): Placed[] {
     if (toOutput(segments, t) === null) return [];
@@ -1118,8 +1144,8 @@
         const v = player.overlayFrame(o.id);
         if (v) ((src = v), (sw = v.videoWidth), (sh = v.videoHeight));
       } else if (o.kind === 'image') {
-        const img = images.get(o.assetId ?? '');
-        if (img?.complete && img.naturalWidth) ((src = img), (sw = img.naturalWidth), (sh = img.naturalHeight));
+        const pic = pics.get(o.assetId ?? '');
+        if (pic) ((src = pic.src), (sw = pic.w), (sh = pic.h));
       }
       const p = drawOverlay(ctx, o, out, src, sw, sh);
       if (p) res.push(p);
@@ -2379,7 +2405,7 @@
       {overlays} bind:selectedOverlay
       onoverlay={(id, patch) => setOverlay(id, patch, false)}
       oncommit={commit}
-      ontrim={(i, s, e) => (segments = trim(segments, i, s, e, duration))}
+      ontrim={trimStrip}
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
       onaudio={(id, patch) => setAudio(id, patch)} />
   </section>
