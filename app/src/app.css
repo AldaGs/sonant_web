@@ -1,0 +1,55 @@
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/space-grotesk/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+
+:root {
+  --bg: #0f0f0f;
+  --panel: #121212;
+  --surface: #181818;
+  --card: #161616;
+  --raised: #1c1c1c;
+  --tab-on: #262626;
+  --border: #303030;
+  --border-soft: #262626;
+  --text: #eaeaea;
+  --muted: #a6a6a6;
+  --accent: #c8f560;
+  --on-accent: #0f0f0f;
+  --speaker-1: #6ab8ff;
+  --speaker-2: #ffa94d;
+  --danger: #ff6b6b;
+  --font: Inter, system-ui, sans-serif;
+  --display: 'Space Grotesk', sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+  color-scheme: dark;
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); }
+button, .btn {
+  font: inherit; color: var(--text); background: transparent;
+  border: 1px solid var(--border); border-radius: 10px; padding: 0 14px; height: 36px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer;
+}
+button:hover:not(:disabled), .btn:hover { border-color: #4a4a4a; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; padding: 0 18px; }
+button.primary:hover:not(:disabled) { filter: brightness(1.05); border-color: var(--accent); }
+button.sm { height: 30px; font-size: 12px; border-radius: 8px; padding: 0 10px; }
+button.icon { width: 36px; padding: 0; }
+input, select, textarea {
+  font: inherit; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+h2, h3 { font-family: var(--display); font-weight: 700; font-size: 15px; margin: 0; }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+.error { color: var(--danger); }
