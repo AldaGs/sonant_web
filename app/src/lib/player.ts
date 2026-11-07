@@ -1,5 +1,6 @@
 import { clipAt, clipStarts, itemLen, type AudioItem, type Clip } from './project';
 import { nextKept, toOutput, type Segment } from './cuts';
+import type { Overlay } from './overlay';
 
 export type PlayerState = {
   clips: Clip[];
@@ -7,6 +8,7 @@ export type PlayerState = {
   segments: Segment[];
   durations: Map<string, number>;
   clipVolume: number;
+  overlays: Overlay[];
 };
 
 // One clock in sequence time that drives a <video> per video asset and an <audio> per audio item.
@@ -14,6 +16,7 @@ export type PlayerState = {
 export class Player {
   videos = new Map<string, HTMLVideoElement>(); // assetId → element
   audios = new Map<string, HTMLAudioElement>(); // audio item id → element
+  overlays = new Map<string, HTMLVideoElement>(); // video overlay id → element
   t = 0;
   playing = false;
   private last = 0;
@@ -97,6 +100,12 @@ export class Player {
     return el && el.readyState >= 2 ? el : null;
   }
 
+  // A video overlay's element, if it has a frame to show.
+  overlayFrame(id: string): HTMLVideoElement | null {
+    const el = this.overlays.get(id);
+    return el && el.readyState >= 2 && el.videoWidth ? el : null;
+  }
+
   // Put every element where the clock says it should be.
   private sync(exact = false) {
     const s = this.state();
@@ -116,6 +125,23 @@ export class Player {
     }
 
     const out = toOutput(s.segments, this.t);
+    // Video overlays run in output time, like audio items. Shown one frame early so they're ready.
+    for (const o of s.overlays) {
+      const el = this.overlays.get(o.id);
+      if (!el || o.kind !== 'video') continue;
+      const into = out === null ? -1 : out - o.at;
+      const inside = into >= 0 && into < o.len;
+      const local = Math.min(o.len, Math.max(0, into)) + (o.offset ?? 0);
+      el.volume = Math.min(1, Math.max(0, o.volume ?? 0));
+      el.muted = !o.volume;
+      if (this.playing && inside) {
+        if (Math.abs(el.currentTime - local) > 0.3) this.seekTo(el, local);
+        if (el.paused) el.play().catch(() => {});
+      } else {
+        if (!el.paused) el.pause();
+        if (Math.abs((this.pending.get(el) ?? el.currentTime) - local) > 0.01 && (exact || !inside)) this.seekTo(el, local);
+      }
+    }
     for (const item of s.audios) {
       const el = this.audios.get(item.id);
       if (!el) continue;

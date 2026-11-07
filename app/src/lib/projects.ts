@@ -5,10 +5,11 @@ import type { Caption, Word } from './captions';
 import type { Segment } from './cuts';
 import type { Style } from './render';
 import type { Asset, AudioItem, Clip } from './project';
+import type { Overlay } from './overlay';
 
 export type ProjectDoc = {
   name: string; captions: Caption[]; segments: Segment[]; style: Style; language: 'english' | 'spanish' | null;
-  speakers?: string[]; assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; words?: Record<string, Word[]>;
+  speakers?: string[]; assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; overlays?: Overlay[]; words?: Record<string, Word[]>;
 };
 export type ProjectMeta = { id: string; name: string; created: number; updated: number; duration: number; clips: number; thumb?: string };
 

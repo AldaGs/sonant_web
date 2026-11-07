@@ -3,6 +3,7 @@ import { startOf, endOf } from './captions.ts';
 import { keptCaptions, type Segment } from './cuts.ts';
 import { drawCaption, resolveStyle, type Style } from './render.ts';
 import { drawFrame, loadSegmenter } from './segment.ts';
+import { drawOverlay, type Overlay } from './overlay.ts';
 import { clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
 
 export type Aspect = 'source' | '16:9' | '9:16' | '1:1';
@@ -39,6 +40,7 @@ export type ExportSource = {
   assets: Asset[];
   clips: Clip[];
   audios: AudioItem[];
+  overlays?: Overlay[]; // output time
   clipVolume: number;
 };
 
@@ -47,7 +49,8 @@ export type ExportSource = {
 async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Promise<AudioBuffer | null> {
   const sr = 48000;
   const durations = new Map(src.assets.map((a) => [a.id, a.duration]));
-  const needed = new Set([...src.clips.map((c) => c.assetId), ...src.audios.map((a) => a.assetId)]);
+  const ovAudio = (src.overlays ?? []).filter((o) => o.kind === 'video' && o.assetId && (o.volume ?? 0) > 0);
+  const needed = new Set([...src.clips.map((c) => c.assetId), ...src.audios.map((a) => a.assetId), ...ovAudio.map((o) => o.assetId!)]);
   const decoder = new AudioContext({ sampleRate: sr });
   const decoded = new Map<string, AudioBuffer>();
   try {
@@ -87,6 +90,13 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Pr
     if (!buf || item.at >= seconds) continue;
     const len = Math.min(itemLen(item, buf.duration), seconds - item.at);
     if (len > 0) play(buf, item.at, item.offset ?? 0, len, item.volume);
+  }
+  // Sound of picture-in-picture layers that aren't muted.
+  for (const o of ovAudio) {
+    const buf = decoded.get(o.assetId!);
+    if (!buf || o.at >= seconds) continue;
+    const len = Math.min(o.len, buf.duration - (o.offset ?? 0), seconds - o.at);
+    if (len > 0) play(buf, o.at, o.offset ?? 0, len, o.volume ?? 0);
   }
   return ctx.startRendering();
 }
@@ -128,6 +138,36 @@ export async function exportVideo(
 
   const sorted = keptCaptions(captions, segs).sort((a, b) => startOf(a) - startOf(b)); // cut words never appear
 
+  // Layers: images decoded once; each video layer gets one decoder that yields its frames in output order.
+  type Layer = { o: Overlay; img?: ImageBitmap; frames?: AsyncGenerator<{ canvas: HTMLCanvasElement | OffscreenCanvas } | null>; first: number; last: number;
+    cur: CanvasImageSource | null; w: number; h: number };
+  const layers: Layer[] = [];
+  for (const o of src.overlays ?? []) {
+    const first = Math.ceil(o.at * opts.fps - 1e-6), last = Math.ceil((o.at + o.len) * opts.fps - 1e-6) - 1; // output frames it covers
+    const f = o.assetId ? src.files.get(o.assetId) : undefined;
+    if (o.kind === 'text') layers.push({ o, first, last, cur: null, w: 0, h: 0 });
+    else if (o.kind === 'image' && f) {
+      const img = await createImageBitmap(f).catch(() => undefined);
+      if (img) layers.push({ o, img, first, last, cur: img, w: img.width, h: img.height });
+    } else if (o.kind === 'video' && f && last >= first) {
+      const track = await new Input({ source: new BlobSource(f), formats: ALL_FORMATS }).getPrimaryVideoTrack();
+      if (!track) continue;
+      // Decode at most 1280 on the long side; a layer rarely fills the frame.
+      const k = Math.min(1, 1280 / Math.max(track.displayWidth, track.displayHeight));
+      const w = Math.max(2, Math.round(track.displayWidth * k)), h = Math.max(2, Math.round(track.displayHeight * k));
+      const sink = new CanvasSink(track, { width: w, height: h, fit: 'fill', poolSize: 2 });
+      const times = Array.from({ length: last - first + 1 }, (_, j) => (o.offset ?? 0) + (first + j) / opts.fps - o.at);
+      layers.push({ o, frames: sink.canvasesAtTimestamps(times) as Layer['frames'], first, last, cur: null, w, h });
+    }
+  }
+  // Pull each active video layer's frame for output frame i (a missing frame keeps the previous one).
+  const advance = async (i: number) => {
+    for (const l of layers) if (l.frames && i >= l.first && i <= l.last) l.cur = (await l.frames.next()).value?.canvas ?? l.cur;
+  };
+  const paintLayers = (i: number) => {
+    for (const l of layers) if (i >= l.first && i <= l.last) drawOverlay(ctx, l.o, i / opts.fps, l.cur, l.w, l.h);
+  };
+
   // Video: for each kept piece, pull its clip's frames (one decoder per asset), draw + caption, encode.
   const videoTask = (async () => {
     const sinks = new Map<string, InstanceType<typeof CanvasSink>>();
@@ -152,13 +192,18 @@ export async function exportVideo(
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, width, height);
         const cap = sorted.find((c) => t >= startOf(c) && t < endOf(c));
-        drawFrame(ctx, frame?.canvas ?? null, width, height, [0, 0, width, height], piece.fx, !!cap,
-          () => cap && drawCaption(ctx, cap, t, resolveStyle(style, cap.style)));
+        await advance(i);
+        // Same order as the preview: video, layers, caption (and the person over both with "text behind").
+        drawFrame(ctx, frame?.canvas ?? null, width, height, [0, 0, width, height], piece.fx, !!cap, () => {
+          paintLayers(i);
+          if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
+        });
         await vOut.add(i / opts.fps, 1 / opts.fps);
         onProgress(++i / total);
       }
       await frames?.return(undefined);
     }
+    for (const l of layers) (await l.frames?.return(null), l.img?.close());
   })();
 
   // Audio: the pre-rendered mix, fed in 1-second chunks.

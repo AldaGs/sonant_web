@@ -8,6 +8,7 @@
   import { drawFrame } from './lib/segment';
   import { clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
+  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newMedia, trimOverlay, textStyle, TEXT_PRESET, type Overlay, type Placed, type Transform } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
   import { audioPeaks } from './lib/waveform';
@@ -27,6 +28,9 @@
   let clips = $state<Clip[]>([]); // video track, in play order
   let audios = $state<AudioItem[]>([]); // music / voiceover, output time
   let clipVolume = $state(1); // volume of the clips' own sound
+  let overlays = $state<Overlay[]>([]); // picture-in-picture video, images, text layers; output time, bottom first
+  let selectedOverlay = $state('');
+  const images = new Map<string, HTMLImageElement>(); // assetId → decoded image
   let urls = $state<Record<string, string>>({}); // assetId → object URL
   const files = new Map<string, File>(); // assetId → file
   let thumbs = $state<Record<string, Thumb[]>>({});
@@ -122,14 +126,14 @@
     });
   }
 
-  const player = new Player(() => ({ clips, audios, segments, durations, clipVolume }));
+  const player = new Player(() => ({ clips, audios, segments, durations, clipVolume, overlays }));
 
   // Undo/redo: snapshots of the editable project.
-  type Snap = { segments: Segment[]; captions: Caption[]; clips: Clip[]; audios: AudioItem[] };
+  type Snap = { segments: Segment[]; captions: Caption[]; clips: Clip[]; audios: AudioItem[]; overlays: Overlay[] };
   let past = $state<Snap[]>([]);
   let future = $state<Snap[]>([]);
-  const snap = (): Snap => $state.snapshot({ segments, captions, clips, audios });
-  const restore = (s: Snap) => ((segments = s.segments), (captions = s.captions), (clips = s.clips), (audios = s.audios), (selected = -1), (selectedCapIds = []));
+  const snap = (): Snap => $state.snapshot({ segments, captions, clips, audios, overlays });
+  const restore = (s: Snap) => ((segments = s.segments), (captions = s.captions), (clips = s.clips), (audios = s.audios), (overlays = s.overlays ?? []), (selected = -1), (selectedCapIds = []));
   function commit() {
     past = [...past.slice(-99), snap()]; // ponytail: 100-step cap, full snapshots; fine at caption-list sizes
     future = [];
@@ -170,6 +174,12 @@
     files.set(a.id, f);
     const url = URL.createObjectURL(f);
     urls[a.id] = url;
+    if (a.kind === 'image') {
+      const img = new Image();
+      img.src = url;
+      images.set(a.id, img);
+      return;
+    }
     if (a.kind === 'video') thumbnails(url, a.duration).then((th) => (thumbs[a.id] = th)).catch(() => {});
     audioPeaks(f).then((p) => (peaks[a.id] = p)).catch(() => {}); // no audio track: no waveform
   }
@@ -193,6 +203,7 @@
       assets = doc.assets ?? [];
       clips = doc.clips ?? [];
       audios = doc.audios ?? [];
+      overlays = doc.overlays ?? [];
       clipVolume = doc.clipVolume ?? 1;
       wordCache = doc.words ?? {};
       restoreDoc(doc);
@@ -224,7 +235,7 @@
 
 
   async function saveNow() {
-    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume }), words: wordCache };
+    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays }), words: wordCache };
     const meta: Partial<ProjectMeta> = { duration: outDuration(segments), clips: clips.length };
     if (Date.now() - lastThumb > 10000) {
       const th = thumbnail();
@@ -233,7 +244,7 @@
     await saveDoc(projectId, doc, meta);
   }
   $effect(() => {
-    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume });
+    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays });
     void (clips.length && thumbs[clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
     if (!ready) return;
     saving = true;
@@ -269,6 +280,7 @@
       register(r.asset, r.f);
       if (!name) name = r.f.name.replace(/\.[^.]+$/, '');
       if (r.asset.kind === 'video') addClip(r.asset.id);
+      else if (r.asset.kind === 'image') addOverlay(r.asset, at);
       else addAudio(r.asset.id, at);
     }
   }
@@ -281,12 +293,54 @@
     audios = [...audios, item];
     selectedAudio = item.id;
   }
-  const addToTimeline = (a: Asset) => (a.kind === 'video' ? addClip(a.id) : addAudio(a.id));
+  const addToTimeline = (a: Asset) => (a.kind === 'video' ? addClip(a.id) : a.kind === 'image' ? addOverlay(a) : addAudio(a.id));
+
+  // ---- Overlays (layers over the main video) ----
+  const outNow = () => toOutput(segments, time) ?? 0;
+  function pushOverlay(o: Overlay) {
+    commit();
+    overlays = [...overlays, o];
+    selectedOverlay = o.id;
+  }
+  // A video or image as a layer at the playhead (videos keep their length, capped by the timeline end).
+  function addOverlay(a: Asset, at = outNow()) {
+    const end = outDuration(segments) || a.duration;
+    const len = a.kind === 'video' ? Math.min(a.duration, Math.max(1, end - at)) : Math.min(5, Math.max(1, end - at));
+    pushOverlay(newMedia(a.kind === 'video' ? 'video' : 'image', a.id, at, len));
+  }
+  const addText = () => pushOverlay(newText(outNow(), t('newText')));
+  const selOverlay = $derived(overlays.find((o) => o.id === selectedOverlay) ?? null);
+  // Live edits (sliders, drags) take one undo step: snapshot on the first change, until the next 'change' event.
+  let ovEditing = false;
+  function setOverlay(id: string, patch: Partial<Overlay>, snapshot = true) {
+    if (snapshot && !ovEditing) ((ovEditing = true), commit());
+    overlays = overlays.map((o) => (o.id === id ? { ...o, ...patch } : o));
+  }
+  const setTf = (id: string, tf: Partial<Transform>, snapshot = true) => {
+    const o = overlays.find((x) => x.id === id);
+    if (o) setOverlay(id, { tf: { ...o.tf, ...tf } }, snapshot);
+  };
+  const doneEditing = () => (ovEditing = false);
+  function removeOverlay() {
+    if (!selectedOverlay) return false;
+    commit();
+    overlays = overlays.filter((o) => o.id !== selectedOverlay);
+    selectedOverlay = '';
+    return true;
+  }
+  // Stacking order: move the selected layer up (drawn later) or down.
+  function restack(dir: -1 | 1) {
+    const i = overlays.findIndex((o) => o.id === selectedOverlay);
+    if (i < 0) return;
+    commit();
+    overlays = move(overlays, i, dir);
+  }
 
   async function removeAsset(a: Asset) {
     if (!confirm(t('confirmRemoveAsset', { name: a.name }))) return;
     setClips(clips.filter((c) => c.assetId !== a.id));
     audios = audios.filter((x) => x.assetId !== a.id);
+    overlays = overlays.filter((x) => x.assetId !== a.id);
     assets = assets.filter((x) => x.id !== a.id);
     past = future = []; // the file is gone, so earlier states can't be restored
     files.delete(a.id);
@@ -296,8 +350,8 @@
   }
 
   // Register each <video>/<audio> with the player.
-  function media(node: HTMLMediaElement, [kind, id]: ['v' | 'a', string]) {
-    const map = (kind === 'v' ? player.videos : player.audios) as Map<string, HTMLMediaElement>;
+  function media(node: HTMLMediaElement, [kind, id]: ['v' | 'a' | 'o', string]) {
+    const map = (kind === 'v' ? player.videos : kind === 'o' ? player.overlays : player.audios) as Map<string, HTMLMediaElement>;
     map.set(id, node);
     return { destroy: () => map.get(id) === node && map.delete(id) };
   }
@@ -402,7 +456,12 @@
       const fx = segments.find((s) => tNow >= s.start && tNow < s.end)?.fx;
       capBox = null;
       drawFrame(ctx, f, f ? fw : w, f ? fh : h, [(w - dw) / 2, (h - dh) / 2, dw, dh], fx, !!cap,
-        () => (capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null));
+        () => {
+          placed = drawLayers(ctx, tNow);
+          capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
+        });
+      const sel = placed.find((p) => p.id === selectedOverlay);
+      if (sel) drawLayerBox(ctx, sel, cv.width / (cv.getBoundingClientRect().width || cv.width));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
       if (capBox && (paused || hover || drag?.onBox)) drawDragBox(ctx, capBox, cv.width / (cv.getBoundingClientRect().width || cv.width));
       id = requestAnimationFrame(tick);
@@ -415,6 +474,65 @@
   $effect(() => {
     document.fonts.load(fontString(style, 40)).catch(() => {});
   });
+
+  // ---- Overlay layers on the preview ----
+  let placed: Placed[] = []; // layers drawn this frame, bottom first (for hit tests)
+  function drawLayers(ctx: CanvasRenderingContext2D, t: number): Placed[] {
+    const out = toOutput(segments, t);
+    if (out === null) return [];
+    const res: Placed[] = [];
+    for (const o of overlaysAt(overlays, out)) {
+      let src: CanvasImageSource | null = null, sw = 0, sh = 0;
+      if (o.kind === 'video') {
+        const v = player.overlayFrame(o.id);
+        if (v) ((src = v), (sw = v.videoWidth), (sh = v.videoHeight));
+      } else if (o.kind === 'image') {
+        const img = images.get(o.assetId ?? '');
+        if (img?.complete && img.naturalWidth) ((src = img), (sw = img.naturalWidth), (sh = img.naturalHeight));
+      }
+      const p = drawOverlay(ctx, o, out, src, sw, sh);
+      if (p) res.push(p);
+    }
+    return res;
+  }
+  // Selection frame: rotated outline, corner squares to scale, a round knob above to rotate.
+  const ROT_GAP = 26; // CSS px from the top edge to the rotate knob
+  function drawLayerBox(ctx: CanvasRenderingContext2D, p: Placed, k: number) {
+    ctx.save();
+    ctx.translate(p.cx, p.cy);
+    ctx.rotate((p.rot * Math.PI) / 180);
+    ctx.strokeStyle = '#6ab8ff';
+    ctx.lineWidth = 2 * k;
+    ctx.strokeRect(-p.w / 2, -p.h / 2, p.w, p.h);
+    ctx.beginPath();
+    ctx.moveTo(0, -p.h / 2);
+    ctx.lineTo(0, -p.h / 2 - ROT_GAP * k);
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    const r = 5 * k;
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      ctx.fillRect(sx * p.w / 2 - r, sy * p.h / 2 - r, r * 2, r * 2);
+      ctx.strokeRect(sx * p.w / 2 - r, sy * p.h / 2 - r, r * 2, r * 2);
+    }
+    ctx.beginPath();
+    ctx.arc(0, -p.h / 2 - ROT_GAP * k, 6 * k, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  // Which part of the selected layer's frame is under a canvas point.
+  function layerHandle(p: Placed, x: number, y: number, k: number, grow: number): 'scale' | 'rotate' | null {
+    const g = (grow + 6) * k;
+    const a = (p.rot * Math.PI) / 180, top = { x: p.cx + Math.sin(a) * (p.h / 2 + ROT_GAP * k), y: p.cy - Math.cos(a) * (p.h / 2 + ROT_GAP * k) };
+    if (Math.hypot(x - top.x, y - top.y) <= g + 4 * k) return 'rotate';
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      const c = corner(p, sx, sy);
+      if (Math.hypot(x - c.x, y - c.y) <= g) return 'scale';
+    }
+    return null;
+  }
+  type LayerDrag = { id: string; mode: 'move' | 'scale' | 'rotate'; x0: number; y0: number; tf: Transform; cx: number; cy: number; d0: number; a0: number; moved: boolean };
+  let layerDrag: LayerDrag | null = null;
 
   // ---- Caption drag box ----
   // Drag inside the box (or its grab handle) to move the caption; a tap elsewhere plays/pauses.
@@ -472,6 +590,10 @@
 
   function pointer(e: PointerEvent) {
     const r = canvas!.getBoundingClientRect();
+    const k = canvas!.width / (r.width || canvas!.width);
+    const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k;
+    const grow = e.pointerType === 'mouse' ? 0 : 14;
+    if (layerPointer(e, x, y, k, grow)) return;
     if (e.type === 'pointerdown') {
       const onBox = onCaption(e);
       const capId = onBox && ownPosition(capOnScreen) ? capOnScreen!.id : null;
@@ -495,12 +617,70 @@
     }
   }
 
+  // Layers: the selected one's handles win, then the caption box, then the topmost layer under the pointer.
+  // Returns true when the event was a layer action.
+  function layerPointer(e: PointerEvent, x: number, y: number, k: number, grow: number): boolean {
+    if (e.type === 'pointerdown') {
+      const sel = placed.find((p) => p.id === selectedOverlay);
+      let mode: LayerDrag['mode'] | null = sel ? layerHandle(sel, x, y, k, grow) : null;
+      let hit = mode ? sel! : null;
+      if (!hit && !onCaption(e)) {
+        hit = [...placed].reverse().find((p) => hitPlaced(p, x, y, grow * k)) ?? null;
+        if (hit) mode = 'move';
+      }
+      if (!hit || !mode) {
+        if (selectedOverlay && !onCaption(e)) selectedOverlay = '';
+        return false;
+      }
+      const o = overlays.find((v) => v.id === hit!.id);
+      if (!o) return false;
+      selectedOverlay = o.id;
+      layerDrag = { id: o.id, mode, x0: x, y0: y, tf: { ...o.tf }, cx: hit.cx, cy: hit.cy,
+        d0: Math.max(1, Math.hypot(x - hit.cx, y - hit.cy)), a0: Math.atan2(y - hit.cy, x - hit.cx), moved: false };
+      canvas!.setPointerCapture(e.pointerId);
+      return true;
+    }
+    if (e.type === 'pointermove') {
+      if (!layerDrag) {
+        const sel = placed.find((p) => p.id === selectedOverlay);
+        const h = sel && layerHandle(sel, x, y, k, grow);
+        if (h) return ((canvas!.style.cursor = h === 'rotate' ? 'grab' : 'nwse-resize'), true);
+        if (!onCaption(e) && placed.some((p) => hitPlaced(p, x, y))) return ((canvas!.style.cursor = 'move'), (hover = false), true);
+        return false;
+      }
+      const d = layerDrag, W = canvas!.width, H = canvas!.height;
+      if (!d.moved && Math.hypot(x - d.x0, y - d.y0) < 4 * k) return true;
+      if (!d.moved) ((d.moved = true), commit());
+      if (d.mode === 'move') {
+        // Snap the centre to the frame's centre lines (Alt to place freely).
+        let nx = d.tf.x + (x - d.x0) / W, ny = d.tf.y + (y - d.y0) / H;
+        if (!e.altKey && Math.abs(nx - 0.5) < 0.015) nx = 0.5;
+        if (!e.altKey && Math.abs(ny - 0.5) < 0.015) ny = 0.5;
+        setTf(d.id, { x: nx, y: ny }, false);
+      } else if (d.mode === 'scale') {
+        setTf(d.id, { scale: Math.max(0.05, Math.min(8, d.tf.scale * (Math.hypot(x - d.cx, y - d.cy) / d.d0))) }, false);
+      } else {
+        let deg = d.tf.rotation + ((Math.atan2(y - d.cy, x - d.cx) - d.a0) * 180) / Math.PI;
+        deg = ((deg % 360) + 540) % 360 - 180; // -180..180
+        if (!e.altKey) for (const s of [-180, -90, 0, 90, 180]) if (Math.abs(deg - s) < 5) deg = s;
+        setTf(d.id, { rotation: Math.round(deg) }, false);
+      }
+      return true;
+    }
+    if (layerDrag && (e.type === 'pointerup' || e.type === 'pointercancel')) {
+      layerDrag = null;
+      return true;
+    }
+    return false;
+  }
+
   // Keyboard: with the preview focused, arrow keys nudge the caption (Shift = bigger steps).
   function nudge(e: KeyboardEvent) {
     const d = e.shiftKey ? 0.05 : 0.01;
     const dir = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] }[e.key];
     if (!dir) return;
     e.preventDefault();
+    if (selOverlay) return setTf(selOverlay.id, { x: selOverlay.tf.x + dir[0], y: selOverlay.tf.y + dir[1] });
     const capId = ownPosition(capOnScreen) ? capOnScreen!.id : null;
     const pos = capId ? resolveStyle(style, capOnScreen!.style) : style;
     moveCaption(capId, pos.x + dir[0], pos.y + dir[1]);
@@ -545,7 +725,7 @@
     sheet = sheet === s && (!t || tab === t) ? null : s;
   }
   let zoom = $state(1); // 1 = fit to the stage
-  let filter = $state<'all' | 'video' | 'audio'>('all');
+  let filter = $state<'all' | 'video' | 'audio' | 'image'>('all');
   const shown = $derived(assets.filter((a) => filter === 'all' || a.kind === filter));
   const used = $derived(new Set([...clips.map((c) => c.assetId), ...audios.map((a) => a.assetId)]));
   const selAudio = $derived(audios.find((a) => a.id === selectedAudio));
@@ -639,9 +819,9 @@
     else if (e.key === '?') showKeys = true;
     else if (e.altKey) return;
     else if (e.key.toLowerCase() === 's') cutHere();
-    else if (e.key === 'Escape') (clearCapSelection(), (marks = [null, null]));
+    else if (e.key === 'Escape') (clearCapSelection(), (marks = [null, null]), (selectedOverlay = ''));
     else if (e.key === 'Delete' || e.key === 'Backspace')
-      cutMarks() || (tab === 'transcript' && transcriptView?.toggleSelection()) || removeAudioItem() || deleteSelected();
+      cutMarks() || removeOverlay() || (tab === 'transcript' && transcriptView?.toggleSelection()) || removeAudioItem() || deleteSelected();
     // The timeline and the preview canvas handle their own arrows (seek / nudge caption).
     else if (e.key.startsWith('Arrow') && (e.target as HTMLElement).closest?.('.tl, canvas')) return;
     else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
@@ -656,6 +836,7 @@
     else if (e.key.toLowerCase() === 'x') cutMarks();
     else if (e.key.toLowerCase() === 'n') snapOn = !snapOn;
     else if (e.key.toLowerCase() === 'a') autoSelect = !autoSelect;
+    else if (e.key.toLowerCase() === 't') addText();
   }
 
   // Drag an asset card onto the timeline (or drop files anywhere on it).
@@ -721,10 +902,10 @@
       </div>
       <label class="import">
         {t('importMedia')}
-        <input type="file" accept="video/*,audio/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
+        <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
       </label>
       <div class="filters" role="group" aria-label={t('assets')}>
-        {#each ['all', 'video', 'audio'] as const as f}
+        {#each ['all', 'video', 'audio', 'image'] as const as f}
           <button class:on={filter === f} aria-pressed={filter === f} onclick={() => (filter = f)}>{t('filter.' + f)}</button>
         {/each}
       </div>
@@ -733,11 +914,15 @@
           <div class="asset" draggable="true" role="listitem"
             ondragstart={(e) => e.dataTransfer?.setData('text/x-asset', a.id)}>
             <div class="thumb" class:used={used.has(a.id)}>
-              {#if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
+              {#if a.kind === 'image' && urls[a.id]}<img src={urls[a.id]} alt="" />
+              {:else if a.kind === 'video' && thumbs[a.id]?.length}<img src={thumbs[a.id][Math.floor(thumbs[a.id].length / 3)].url} alt="" />
               {:else}<span class="muted">{a.kind === 'audio' ? '♪ ' + t('filter.audio') : t('filter.video')}</span>{/if}
-              <span class="dur mono">{fmt(a.duration)}</span>
+              {#if a.kind !== 'image'}<span class="dur mono">{fmt(a.duration)}</span>{/if}
               <span class="acts">
                 <button class="sm icon" onclick={() => addToTimeline(a)} aria-label={t('addToTimeline', { name: a.name })} title={t('addToTimeline', { name: a.name })}>+</button>
+                {#if a.kind === 'video'}
+                  <button class="sm icon" onclick={() => addOverlay(a)} aria-label={t('addOverlay', { name: a.name })} title={t('addOverlay', { name: a.name })}>⧉</button>
+                {/if}
                 <button class="sm icon" onclick={() => removeAsset(a)} aria-label={t('removeAsset', { name: a.name })} title={t('removeAsset', { name: a.name })}>✕</button>
               </span>
             </div>
@@ -850,6 +1035,10 @@
       <!-- svelte-ignore a11y_media_has_caption -->
       <video src={urls[id]} use:media={['v', id]} preload="auto" playsinline hidden></video>
     {/each}
+    {#each overlays.filter((o) => o.kind === 'video') as o (o.id)}
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video src={urls[o.assetId ?? '']} use:media={['o', o.id]} preload="auto" playsinline hidden></video>
+    {/each}
     {#each audios as item (item.id)}
       <audio src={urls[item.assetId]} use:media={['a', item.id]} preload="auto"></audio>
     {/each}
@@ -877,7 +1066,7 @@
       {:else}
         <label class="empty">
           <span>{t('drop')}</span>
-          <input type="file" accept="video/*,audio/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
+          <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
         </label>
       {/if}
     </div>
@@ -900,6 +1089,62 @@
   <aside class="style panel" class:shown={sheet === 'style'}>
     <div class="grab" aria-hidden="true"></div>
     <div class="sheet-bar"><h2>{t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}>✕</button></div>
+    {#if selOverlay}
+      {@const o = selOverlay}
+      <!-- Layer inspector: live edits are one undo step each (snapshot on first input, closed on change). -->
+      <section class="layer" aria-label={t('layer')} onchange={doneEditing} onpointerup={doneEditing}>
+        <div class="lhead">
+          <h3>{o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
+          <button class="sm icon" onclick={() => (selectedOverlay = '')} aria-label={t('ex.close')}>✕</button>
+        </div>
+        {#if o.kind === 'text'}
+          <label class="vol">{t('text')}
+            <textarea rows="2" value={o.text} oninput={(e) => setOverlay(o.id, { text: e.currentTarget.value })}></textarea>
+          </label>
+          <div class="lrow">
+            <label class="vol">{t('color')}<input type="color" value={textStyle(o).color} oninput={(e) => setOverlay(o.id, { style: { ...o.style, color: e.currentTarget.value } })} /></label>
+            <label class="vol">{t('highlight')}<input type="color" value={textStyle(o).highlight} oninput={(e) => setOverlay(o.id, { style: { ...o.style, highlight: e.currentTarget.value } })} /></label>
+            <label class="vol">{t('font')}
+              <select value={textStyle(o).family} onchange={(e) => setOverlay(o.id, { style: { ...o.style, family: e.currentTarget.value } })}>
+                {#each fonts as f}<option value={f.family}>{f.family}</option>{/each}
+              </select>
+            </label>
+          </div>
+        {/if}
+        <label class="vol">{t('scale')} <span class="mono small">{Math.round(o.tf.scale * 100)}%</span>
+          <input type="range" min="0.05" max={o.kind === 'text' ? 4 : 1.5} step="0.01" value={o.tf.scale} oninput={(e) => setTf(o.id, { scale: +e.currentTarget.value })} />
+        </label>
+        <label class="vol">{t('rotation')} <span class="mono small">{o.tf.rotation}°</span>
+          <input type="range" min="-180" max="180" step="1" value={o.tf.rotation} oninput={(e) => setTf(o.id, { rotation: +e.currentTarget.value })} />
+        </label>
+        <label class="vol">{t('opacity')} <span class="mono small">{Math.round(o.tf.opacity * 100)}%</span>
+          <input type="range" min="0" max="1" step="0.01" value={o.tf.opacity} oninput={(e) => setTf(o.id, { opacity: +e.currentTarget.value })} />
+        </label>
+        {#if o.kind !== 'text'}
+          {@const c = o.tf.crop ?? [0, 0, 0, 0]}
+          <div class="crop">
+            {#each [['cropL', 0], ['cropT', 1], ['cropR', 2], ['cropB', 3]] as [label, i]}
+              <label class="vol">{t(label as string)} <span class="mono small">{Math.round(c[i as number] * 100)}%</span>
+                <input type="range" min="0" max="0.45" step="0.01" value={c[i as number]}
+                  oninput={(e) => setTf(o.id, { crop: c.with(i as number, +e.currentTarget.value) as Transform['crop'] })} />
+              </label>
+            {/each}
+          </div>
+        {/if}
+        {#if o.kind === 'video'}
+          <label class="vol">{t('volume')} <span class="mono small">{Math.round((o.volume ?? 0) * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.05" value={o.volume ?? 0} oninput={(e) => setOverlay(o.id, { volume: +e.currentTarget.value })} />
+          </label>
+        {/if}
+        <div class="lrow">
+          <button class="sm" class:on={o.tf.flipX} aria-pressed={!!o.tf.flipX} onclick={() => (setTf(o.id, { flipX: !o.tf.flipX }), doneEditing())}>⇋ {t('flip')}</button>
+          <button class="sm" onclick={() => (setTf(o.id, { x: 0.5, y: 0.5, rotation: 0, crop: undefined, flipX: false, opacity: 1 }), doneEditing())}>{t('resetLayer')}</button>
+          <button class="sm icon" onclick={() => restack(1)} disabled={overlays.at(-1)?.id === o.id} title={t('bringForward')} aria-label={t('bringForward')}>⤒</button>
+          <button class="sm icon" onclick={() => restack(-1)} disabled={overlays[0]?.id === o.id} title={t('sendBackward')} aria-label={t('sendBackward')}>⤓</button>
+          <button class="sm" onclick={removeOverlay}>{t('del')}</button>
+        </div>
+      </section>
+    {/if}
     <StylePanel
       bind:style
       {selectedCap}
@@ -947,6 +1192,7 @@
           {/if}
           <span class="divider"></span>
         {/if}
+        <button class="sm" onclick={addText} disabled={!hasMedia} title={t('addTextTip')}>T+ {t('addText')}</button>
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}>{t('splitAt')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
         <button class="sm icon" class:on={snapOn} aria-pressed={snapOn} title={t('snapTip')} aria-label={t('snap')}
@@ -964,6 +1210,8 @@
       zoom={tlZoom} bind:selected bind:selectedAudio selectedCapIds={selectedSet} onselectcap={selectCap}
       animLabel={t('allCaptions', { name: animName })}
       onseek={(o) => seek(toSource(segments, o))} onseeksrc={seek} snap={snapOn} range={marks}
+      {overlays} bind:selectedOverlay
+      onoverlay={(id, patch) => setOverlay(id, patch, false)}
       oncommit={commit}
       ontrim={(i, s, e) => (segments = trim(segments, i, s, e, duration))}
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
@@ -1007,7 +1255,7 @@
         <dl>
           {#each [['Space', 'k.play'], ['J / K / L', 'k.jkl'], ['← / →', 'k.frame'], ['Shift + ← / →', 'k.second'], ['Home / End', 'k.ends'],
             ['S', 'k.split'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
-            ['A', 'k.auto'], ['Ctrl/⌘ + Z', 'undo'], ['Ctrl/⌘ + Shift + Z', 'redo'], ['Ctrl/⌘ + S', 'k.save'], ['Esc', 'k.esc'], ['?', 'keysTitle']] as [k, d]}
+            ['A', 'k.auto'], ['T', 'k.text'], ['Ctrl/⌘ + Z', 'undo'], ['Ctrl/⌘ + Shift + Z', 'redo'], ['Ctrl/⌘ + S', 'k.save'], ['Esc', 'k.esc'], ['?', 'keysTitle']] as [k, d]}
             <dt><kbd>{k}</kbd></dt><dd>{t(d)}</dd>
           {/each}
         </dl>
@@ -1016,7 +1264,7 @@
     </div>
   {/if}
   <ExportDialog bind:this={exporter} {name} {segments} {captions} {style} srcW={frameW} srcH={frameH}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), clipVolume })} />
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), clipVolume })} />
 {/if}
 
 <style>
@@ -1199,6 +1447,13 @@
     .scrim { display: block; position: fixed; inset: 0; z-index: 19; background: rgb(0 0 0 / .45); border: 0; border-radius: 0; height: auto; padding: 0; }
     .tools, .acts { display: flex; }
   }
+  .layer { display: grid; gap: 10px; padding: 12px; margin: 0 0 12px; border: 1px solid #6ab8ff55; border-radius: 10px; background: var(--card); }
+  .layer .lhead { display: flex; justify-content: space-between; align-items: center; }
+  .layer h3 { margin: 0; font-size: 13px; color: #6ab8ff; }
+  .layer textarea { width: 100%; resize: vertical; }
+  .layer .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+  .layer .crop { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .layer input[type=color] { width: 44px; height: 28px; padding: 0; border: 0; background: none; }
   .keys-bg { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .55); display: grid; place-items: center; padding: 16px; }
   .keys { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; width: min(440px, 100%);
     max-height: 90vh; overflow: auto; display: grid; gap: 12px; }

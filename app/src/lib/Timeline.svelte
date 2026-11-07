@@ -5,12 +5,17 @@
   import { tickStep } from './waveform';
   import { clipAt, clipStarts, itemLen, audioLanes, trimAudio, type AudioItem, type Clip } from './project';
   import { t } from './i18n.svelte';
+  import { lanes as stackLanes, trimOverlay, type Overlay } from './overlay';
 
   let {
     segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = 1,
     selected = $bindable(-1), selectedCapIds = new Set<string>(), selectedAudio = $bindable(''), onselectcap,
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
+    overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
   }: {
+    overlays?: Overlay[]; // layers over the video, output time
+    selectedOverlay?: string;
+    onoverlay?: (id: string, patch: Partial<Overlay>) => void; // move or trim a layer, live
     segments: Segment[];
     time: number; // sequence time
     clips: Clip[];
@@ -65,6 +70,25 @@
     const x = side === 'start' ? item.at : item.at + audLen(item);
     drag(e, (d, on) => onaudio(item.id, trimAudio(item, dur, side, d + nearest([x + d], pts, on, idOut))));
   }
+  // Layers: same gestures as audio items (drag to move, edges to trim), snapping in output time.
+  function moveOverlay(e: PointerEvent, o: Overlay) {
+    selectedOverlay = o.id;
+    const a = o.at, pts = outPoints(o.id);
+    drag(e, (d, on) => {
+      const at = a + d;
+      onoverlay(o.id, { at: Math.max(0, Math.min(total - 0.1, at + nearest([at, at + o.len], pts, on, idOut))) });
+    });
+  }
+  function ovEdge(e: PointerEvent, o: Overlay, side: 'start' | 'end') {
+    selectedOverlay = o.id;
+    const dur = o.kind === 'video' ? durations.get(o.assetId ?? '') ?? Infinity : Infinity, pts = outPoints(o.id);
+    const x = side === 'start' ? o.at : o.at + o.len;
+    drag(e, (d, on) => onoverlay(o.id, trimOverlay(o, side, d + nearest([x + d], pts, on, idOut), dur)));
+  }
+  const ovLanes = $derived(stackLanes(overlays));
+  const ovCount = $derived(Math.max(1, ...[...ovLanes.values()].map((l) => l + 1)));
+  const ovLabel = (o: Overlay) => (o.kind === 'text' ? 'T ' + (o.text ?? '') : (o.kind === 'image' ? '▣ ' : '⧉ ') + (names.get(o.assetId ?? '') ?? ''));
+
   const audLen = (a: AudioItem) => itemLen(a, durations.get(a.assetId) ?? 0);
   // Overlapping audio items stack into lanes; the Music & VO row grows to fit them.
   const lanes = $derived(audioLanes(audios, (id) => durations.get(id) ?? 0));
@@ -74,7 +98,11 @@
   let inner = $state<HTMLDivElement>();
   let wave = $state<HTMLCanvasElement>();
   let width = $state(0); // inner width in px
-  const total = $derived(outDuration(segments) || 1);
+  // While a drag is live the scale is frozen at its starting length (it only grows), so the edge
+  // being dragged stays under the pointer instead of the whole timeline rescaling.
+  let held = $state<number | null>(null);
+  const live = $derived(outDuration(segments) || 1);
+  const total = $derived(held === null ? live : Math.max(held, live));
   const playhead = $derived(toOutput(segments, time));
   const pct = (s: number) => `${(s / total) * 100}%`;
 
@@ -154,7 +182,8 @@
   const outPoints = (skipAudio = '') => [0, total, ...(playhead === null ? [] : [playhead]),
     ...segPos.flatMap((p) => [p.start, p.start + p.len]),
     ...outCaps.flatMap((c) => [startOf(c), endOf(c)]),
-    ...audios.filter((a) => a.id !== skipAudio).flatMap((a) => [a.at, a.at + audLen(a)])];
+    ...audios.filter((a) => a.id !== skipAudio).flatMap((a) => [a.at, a.at + audLen(a)]),
+    ...overlays.filter((o) => o.id !== skipAudio).flatMap((o) => [o.at, o.at + o.len])];
   // Snap points in sequence (source) time (strips and captions live there).
   const srcPoints = (skipCap = '', skipSeg = -1) => [0, duration, time,
     ...segments.flatMap((g, i) => (i === skipSeg ? [] : [g.start, g.end])),
@@ -182,12 +211,13 @@
     el.setPointerCapture(e.pointerId);
     el.onpointermove = (m) => {
       if (!moved && Math.abs(m.clientX - x0) < 3) return;
-      if (!moved) ((moved = true), oncommit());
+      if (!moved) ((moved = true), (held = live), oncommit());
       move((m.clientX - x0) * perPx, snap && !m.altKey);
     };
     el.onpointerup = el.onpointercancel = (u) => {
       el.onpointermove = el.onpointerup = el.onpointercancel = null;
       guide = null;
+      held = null;
       if (u.type === 'pointerup' && !moved) onclick?.();
     };
   }
@@ -261,8 +291,9 @@
 </script>
 
 <div class="tl">
-  <div class="labels" aria-hidden="true" style:--music="{laneCount * 28 - 4}px">
+  <div class="labels" aria-hidden="true" style:--music="{laneCount * 28 - 4}px" style:--ov="{ovCount * 26 - 4}px">
     <span></span>
+    <span>{t('overlayTrack')}</span>
     <span>{t('videoTrack')}</span>
     <span>{t('audioTrack')}</span>
     <span>{t('captions')}</span>
@@ -272,7 +303,7 @@
 
   <div class="scroller" bind:this={scroller}>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="inner" style:--music="{laneCount * 28 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1}
+    <div class="inner" style:--music="{laneCount * 28 - 4}px" style:--ov="{ovCount * 26 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1}
       role="slider" tabindex="0" aria-label={t('timeline')} aria-valuemin={0} aria-valuemax={total} aria-valuenow={playhead ?? 0}
       onclick={seekAt} onpointerdown={scrub}
       onkeydown={(e) => {
@@ -281,6 +312,16 @@
       }}>
       <div class="ruler">
         {#each ticks as s}<span class="tick mono" style:left={pct(s)}>{label(s)}</span>{/each}
+      </div>
+
+      <div class="row layers">
+        {#each overlays as o (o.id)}
+          <button class="ov" class:sel={o.id === selectedOverlay} class:txt={o.kind === 'text'} style:left={pct(o.at)}
+            style:top="{(ovLanes.get(o.id) ?? 0) * 26}px" style:width={pct(Math.max(0.05, Math.min(o.len, total - o.at)))}
+            title={ovLabel(o)} aria-pressed={o.id === selectedOverlay}
+            onpointerdown={(e) => moveOverlay(e, o)} onclick={(e) => e.stopPropagation()}>
+            <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span>{ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
+        {/each}
       </div>
 
       <div class="row">
@@ -358,7 +399,7 @@
 <style>
   .tl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; user-select: none; -webkit-user-select: none;
     -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
-  .labels, .inner { display: grid; grid-template-rows: 20px 48px 30px 22px 22px var(--music, 24px); row-gap: 6px; }
+  .labels, .inner { display: grid; grid-template-rows: 20px var(--ov, 22px) 48px 30px 22px 22px var(--music, 24px); row-gap: 6px; }
   /* Music & VO sits in its own area under a divider. */
   .labels > span:last-child, .inner > .row.music { border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 2px; align-self: start; }
   .labels { font-size: 12px; color: var(--muted); align-items: center; }
@@ -390,6 +431,12 @@
   .aud { position: absolute; top: 0; height: 24px; min-width: 8px; padding: 0 8px; justify-content: flex-start; overflow: hidden;
     white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(106 184 255 / .4);
     background: rgb(106 184 255 / .12); color: var(--speaker-1); cursor: grab; touch-action: none; }
+  .ov { position: absolute; top: 0; height: 22px; min-width: 8px; padding: 0 8px; justify-content: flex-start; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(190 140 255 / .45);
+    background: rgb(190 140 255 / .14); color: #c9a6ff; cursor: grab; touch-action: none; }
+  .ov.txt { border-color: rgb(255 170 90 / .5); background: rgb(255 170 90 / .14); color: #ffbf80; }
+  .ov.sel { box-shadow: 0 0 0 1px currentColor; font-weight: 700; z-index: 2; }
+  .ov:hover .edge, .ov.sel .edge { background: rgb(255 255 255 / .35); }
   .aud.sel { border-color: var(--speaker-1); background: rgb(106 184 255 / .25); }
   /* Edge handles: drag to retime/trim. Wide enough for touch, invisible until hovered. */
   .edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; touch-action: none; z-index: 1; }

@@ -28,11 +28,13 @@ Status from a code review (Nov 2026). ✅ done · 🟡 partly done · ⬜ not st
 5. ⬜ **Undo memory**: still full snapshots (100 steps). Postponed until projects get big; revisit with the Phase B track model.
 
 ## Phase B: Tracks and layers
-6. **Data model**: `Track = { id, kind: 'video'|'text'|'overlay'|'audio', items }`. Overlay items have `at`, `len`, `transform`. Migrate `clips` into track 0 with a remap in `remapProject`.
-7. **Overlay / picture-in-picture video and images** drawn in `drawFrame` order. Export reuses the same path.
-8. **Text and sticker layers** separate from captions, using the caption renderer and animations.
-9. **Transform per item**: position, scale, rotation, opacity, crop, flip. On-canvas handles (extend the caption drag box).
-10. **Keyframes** for transform properties, with linear/ease curves, a diamond row in the timeline, and a "punch-in zoom" preset.
+6. ✅ **Layer model**: `Overlay` (video, image or text) in output time, like music, so word cuts don't move layers. Array order is stacking order. Saved in the project, undoable. `lib/overlay.ts`.
+7. ✅ **Picture-in-picture video and images**: images can be imported now. The ⧉ button on a video asset adds it as a layer. Layers are muted by default, with a volume slider, and their sound is mixed into the export.
+8. ✅ **Text layers** separate from captions: the T+ button or T key, with editable text, font, colours, word animation from the caption renderer.
+9. ✅ **Transform per layer**: drag to move (snaps to centre lines, Alt for free), corner handles to scale, top knob to rotate (snaps to 0/±90/180), arrow-key nudge. Inspector for size, rotation, opacity, crop (L/T/R/B), flip, bring forward / send backward, reset, delete.
+10. ⬜ **Keyframes** for position, scale, rotation and opacity, with a "punch-in zoom" preset. Next.
+11. ⬜ **Lift mode** (delete leaving a gap) and multiple main-video tracks. Next.
+- Known gaps: importing a video always appends it to the main sequence (use ⧉ to add it as a layer instead); video layers show nothing for a moment while they seek; text layers use one preset look plus font and colours (the full style panel is caption-only).
 
 ## Phase C: Clip tools
 11. **Speed**: 0.25–4× per strip (playbackRate in preview, resample frames in export, pitch-preserved audio), plus freeze frame.
