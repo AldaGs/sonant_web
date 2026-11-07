@@ -86,7 +86,8 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
   - Both engines use eSpeak NG (GPL-3) for pronunciation, which is fine for a free app.
   - Piper voices each have their own dataset licence (see each voice's MODEL_CARD); check them before any commercial release.
   - Piper also loads its runtime from jsDelivr and cdnjs.
-- Later: put Kokoro's Spanish voices in once kokoro-js supports them. Per-caption speed fitting, so a dub fits each caption's time.
+- ✅ (follow-up) **Fit each line to its caption** (dub mode, on by default): a line that would run into the next caption is sped up with a pitch-preserving time-stretch, up to 1.5× (`fitRate`, `dubSlots`).
+- Later: Kokoro's Spanish voices, once kokoro-js exposes them (1.2.1 only has en-US and en-GB).
 
 ## Phase 6: Auto-clips (long video → shorts) ✅
 - ✅ `lib/highlights.ts`:

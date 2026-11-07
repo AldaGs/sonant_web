@@ -25,4 +25,10 @@ assert.deepEqual(chunks('   '), []);
 // joinAudio: parts with gaps between them (none at the ends)
 const j = joinAudio([new Float32Array([1, 1]), new Float32Array([2])], 10, 0.2);
 assert.deepEqual([...j], [1, 1, 0, 0, 2]);
+import { fitRate, dubSlots } from './tts.ts';
+assert.equal(fitRate(2, 3), 1);
+assert.equal(fitRate(3, 2), 1.5);
+assert.equal(fitRate(4, 2), 1.5); // capped
+assert.ok(Math.abs(fitRate(2.4, 2) - 1.2) < 1e-9);
+assert.deepEqual(dubSlots([0, 2, 5], [1.5, 4, 6]).map((v) => +v.toFixed(2)), [1.95, 2.95, 1.45]);
 console.log('tts ok');

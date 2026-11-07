@@ -1,7 +1,8 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import { t } from './i18n.svelte';
-  import { VOICES, voiceById, defaultVoice, speak, toWav, type Voice } from './tts';
+  import { VOICES, voiceById, defaultVoice, speak, toWav, fitRate, dubSlots, type Voice } from './tts';
+  import { stretch } from './stretch';
   import { gpuFor } from './perf';
   import type { Caption } from './captions';
 
@@ -22,6 +23,7 @@
   // Follow the project's transcription language (it loads after the panel mounts).
   $effect(() => { if (lang) pickLang(lang === 'spanish' ? 'es' : 'en'); });
   let speed = $state(1);
+  let fit = $state(true); // dub: speed up lines that run past the next caption
   let busy = $state(false);
   let status = $state(''), pct = $state(0), err = $state(''), detail = $state('');
   let previewEl: HTMLAudioElement | null = null;
@@ -63,11 +65,15 @@
       onadd([{ file: new File([toWav(r.audio, r.sr)], fileName(script), { type: 'audio/wav' }), at: NaN }]);
     } else {
       const items: { file: File; at: number }[] = [];
+      const slots = dubSlots(targetCaps.map((c) => c.words[0].start), targetCaps.map((c) => c.words[c.words.length - 1].end));
       for (const [i, c] of targetCaps.entries()) {
         const text = capText(c);
         if (!text.trim()) continue;
         const r = await speak(text, voiceId, { speed, gpu: fastGpu }, (s, p) => onStatus(s, ((i + p / 100) / targetCaps.length) * 100));
-        items.push({ file: new File([toWav(r.audio, r.sr)], fileName(text), { type: 'audio/wav' }), at: c.words[0].start });
+        // Fit the line into its slot (pitch-preserving time-stretch), so lines don't pile on top of each other.
+        const rate = fit ? fitRate(r.audio.length / r.sr, slots[i]) : 1;
+        const audio = rate > 1 ? stretch([r.audio], rate)[0] : r.audio;
+        items.push({ file: new File([toWav(audio, r.sr)], fileName(text), { type: 'audio/wav' }), at: c.words[0].start });
       }
       if (items.length) onadd(items);
     }
@@ -102,6 +108,7 @@
     <textarea rows="4" bind:value={script} placeholder={t('voPlaceholder')} disabled={busy}></textarea>
   {:else}
     <p class="muted small">{t('voCapsInfo', { n: targetCaps.length })}</p>
+    <label class="chk" title={t('voFitTip')}><input type="checkbox" bind:checked={fit} /> {t('voFit')}</label>
   {/if}
   <div class="row">
     <button class="sm" onclick={preview} disabled={busy || disabled}><Icon name="play_arrow" size={16} /> {t('voPreview')}</button>

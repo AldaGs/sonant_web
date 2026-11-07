@@ -113,4 +113,11 @@ export async function speak(text: string, voiceId: string, opts: { speed?: numbe
   return { audio: joinAudio(parts, sr), sr };
 }
 
+// Dubbing: how much faster a line must play to fit its slot (1 = fits already), capped so speech stays clear.
+export const fitRate = (dur: number, slot: number, max = 1.5) => (slot > 0 && dur > slot ? Math.min(max, dur / slot) : 1);
+// The time a caption's dub may take: until the next caption starts (or its own length plus a little).
+export function dubSlots(starts: number[], ends: number[]): number[] {
+  return starts.map((s, i) => (i + 1 < starts.length ? starts[i + 1] - s : ends[i] - s + 0.5) - 0.05);
+}
+
 export const toWav = (audio: Float32Array, sr: number) => wav([audio], sr);
