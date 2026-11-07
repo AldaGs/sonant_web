@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { acceptExt } from './platform';
   import Icon from './Icon.svelte';
   import { PRESETS, ANIM_MODES, CUMULATIVE_ANIMS, resolveStyle, type Style, type Animation, type AnimTarget, type Easing } from './render';
   import type { Font } from './fonts';
@@ -464,7 +465,7 @@
     <div class="row">
       <button class="sm" onclick={onlocal}>{t('myFonts')}</button>
       <label class="btn sm-label">{t('uploadFont')}
-        <input type="file" accept=".ttf,.otf,.woff,.woff2" hidden onchange={(e) => onupload(e.currentTarget.files?.[0])} />
+        <input type="file" accept={acceptExt(".ttf,.otf,.woff,.woff2")} hidden onchange={(e) => onupload(e.currentTarget.files?.[0])} />
       </label>
     </div>
     {#if fontError}<p class="error small">{t(fontError)}</p>{/if}

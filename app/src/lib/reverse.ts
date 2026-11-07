@@ -1,4 +1,5 @@
 import { decodeFileAudio } from './audiodecode.ts';
+import { audioCodec } from './aacenc.ts';
 // Reverse a strip: a new MP4 of [a, b) (seconds in the file) played backwards, picture and sound.
 // The browser can't play video backwards, so this copy is made once and then played forwards in its place.
 // Frames are decoded half a second at a time from the end, so memory stays small.
@@ -24,7 +25,7 @@ export function reverseRange(x: Float32Array, a: number, b: number): Float32Arra
 }
 
 export async function makeReversed(file: File, a: number, b: number, onProgress: (p: number) => void): Promise<Blob> {
-  const { Input, Output, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS, CanvasSink, CanvasSource, AudioBufferSource, QUALITY_HIGH, canEncodeAudio } = await import('mediabunny');
+  const { Input, Output, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS, CanvasSink, CanvasSource, AudioBufferSource, QUALITY_HIGH } = await import('mediabunny');
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   const track = await input.getPrimaryVideoTrack();
   if (!track) throw new Error('err.noVideo');
@@ -52,7 +53,7 @@ export async function makeReversed(file: File, a: number, b: number, onProgress:
       }
     }
   } catch {} // no audio track
-  const aCodec = (await canEncodeAudio('aac')) ? 'aac' : 'opus';
+  const aCodec = await audioCodec();
   const aOut = audio ? new AudioBufferSource({ codec: aCodec, bitrate: QUALITY_HIGH }) : null;
   if (aOut) output.addAudioTrack(aOut);
   await output.start();

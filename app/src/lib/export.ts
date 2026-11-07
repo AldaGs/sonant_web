@@ -1,4 +1,5 @@
 import { decodeFileAudio } from './audiodecode.ts';
+import { audioCodec } from './aacenc.ts';
 import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
 import { stabPlace } from './stabilize.ts';
@@ -161,7 +162,7 @@ export async function exportVideo(
   const {
     Input, Output, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS,
     CanvasSink, CanvasSource, AudioBufferSource,
-    canEncodeVideo, canEncodeAudio, QUALITY_LOW, QUALITY_MEDIUM, QUALITY_HIGH,
+    canEncodeVideo, QUALITY_LOW, QUALITY_MEDIUM, QUALITY_HIGH,
   } = await import('mediabunny');
 
   const assets = new Map(src.assets.map((a) => [a.id, a]));
@@ -171,7 +172,7 @@ export async function exportVideo(
   const { width, height } = outputSize(first.width!, first.height!, opts.res, opts.aspect);
   if (!(await canEncodeVideo('avc', { width, height })))
     throw new Error('err.noH264');
-  const aCodec = (await canEncodeAudio('aac')) ? 'aac' : 'opus';
+  const aCodec = await audioCodec();
 
   if (segs.some((s) => !s.fx?.key && (s.fx?.behind || s.fx?.bg)) || src.overlays?.some((o) => o.behind)) await loadSegmenter(); // every exported frame must be segmented
   const total = frameCount(segs, opts.fps);

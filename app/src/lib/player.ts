@@ -2,6 +2,7 @@ import { DUCK_LEVEL, clipAt, clipLen, clipStarts, itemLen, type AudioItem, type 
 import { nextKept, toOutput, toSource, outDuration, segAt, type Segment } from './cuts';
 import type { Overlay } from './overlay';
 import { duckGain } from './audio';
+import { setVolume, unlockAudio } from './mediavol.ts';
 
 export type PlayerState = {
   clips: Clip[];
@@ -48,6 +49,7 @@ export class Player {
   play() {
     const s = this.state();
     if (!s.clips.length) return;
+    unlockAudio();
     if (nextKept(s.segments, this.t) === null || this.o >= outDuration(s.segments) - 1e-3) this.seek(s.segments[0]?.start ?? 0); // at the end: restart
     this.playing = true;
     this.last = performance.now();
@@ -142,7 +144,7 @@ export class Player {
       const lifted = s.segments.some((g) => g.fx?.lift && this.t >= g.start && this.t < g.end); // a gap plays silent
       const vol = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume));
       const clean = this.clean.get(id);
-      el.volume = vol;
+      setVolume(el, vol);
       el.muted = !!clean; // the cleaned copy plays the sound instead
       const seg = segAt(s.segments, this.t);
       const rate = seg?.fx?.speed ?? 1;
@@ -155,7 +157,7 @@ export class Player {
       if ((!this.playing || frozen) && !el.paused) el.pause();
       if (clean) {
         // Follow the video (the clock): same rate, re-sync when it drifts more than ~2 frames.
-        clean.volume = vol;
+        setVolume(clean, vol);
         if (clean.playbackRate !== rate) clean.playbackRate = rate;
         const run = this.playing && !frozen && !el.paused && !el.seeking;
         if (Math.abs(clean.currentTime - el.currentTime) > (run ? 0.08 : 0.01)) clean.currentTime = el.currentTime;
@@ -174,7 +176,8 @@ export class Player {
       const into = out === null ? -1 : out - o.at;
       const inside = into >= 0 && into < o.len;
       const local = Math.min(o.len, Math.max(0, into)) + (o.offset ?? 0);
-      el.volume = Math.min(1, Math.max(0, o.volume ?? 0));
+      const ovVol = Math.min(1, Math.max(0, o.volume ?? 0));
+      setVolume(el, ovVol);
       // Noise-reduced sound for layers too: the layer's video plays muted and a cleaned copy follows it.
       const cleanSrc = o.volume ? this.clean.get(o.assetId ?? '')?.src : undefined;
       let ca = this.ovClean.get(o.id);
@@ -182,7 +185,7 @@ export class Player {
       if (!cleanSrc && ca) (ca.pause(), this.ovClean.delete(o.id), (ca = undefined));
       el.muted = !o.volume || !!ca;
       if (ca) {
-        ca.volume = el.volume;
+        setVolume(ca, ovVol);
         const run = this.playing && inside && !el.paused && !el.seeking;
         if (Math.abs(ca.currentTime - el.currentTime) > (run ? 0.08 : 0.01)) ca.currentTime = el.currentTime;
         if (run && ca.paused) ca.play().catch(() => {});
@@ -204,7 +207,7 @@ export class Player {
       const inside = into >= 0 && into < itemLen(item, s.durations.get(item.assetId) ?? 0);
       const local = into + (item.offset ?? 0);
       const duck = item.duck && out !== null ? duckGain(s.speech, out, DUCK_LEVEL) : 1;
-      el.volume = Math.min(1, Math.max(0, item.volume * duck));
+      setVolume(el, item.volume * duck);
       if (this.playing && inside) {
         if (Math.abs(el.currentTime - local) > 0.3) el.currentTime = local;
         if (el.paused) el.play().catch(() => {});

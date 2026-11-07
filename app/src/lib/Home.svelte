@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { acceptExt } from './platform';
   import Icon from './Icon.svelte';
   import { onMount } from 'svelte';
   import { listModels, clearModels, fmtBytes, type ModelStore } from './models';
@@ -135,7 +136,7 @@
       <div class="acts">
         <label class="btn" class:disabled={busy}>
           {t('openProjectFile')}
-          <input type="file" accept=".sonant" hidden disabled={busy} onchange={(e) => openFile(e.currentTarget.files?.[0])} />
+          <input type="file" accept={acceptExt(".sonant")} hidden disabled={busy} onchange={(e) => openFile(e.currentTarget.files?.[0])} />
         </label>
         <button class="primary" onclick={newProject}><Icon name="add" /> {t('newProject')}</button>
       </div>
