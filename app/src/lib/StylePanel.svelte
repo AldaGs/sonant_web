@@ -49,6 +49,14 @@
     'typewriter',
     'fade',
     'bounce',
+    'zoom-in',
+    'flip',
+    'drop',
+    'shake',
+    'spin',
+    'blur-in',
+    'rise',
+    'swipe-up',
     'none',
   ];
   const ANIM_TARGETS: AnimTarget[] = ['character', 'word', 'line', 'all'];

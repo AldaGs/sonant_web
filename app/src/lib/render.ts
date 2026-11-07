@@ -13,7 +13,15 @@ export type Animation =
   | 'wave'
   | 'glitch'
   | 'pill'
-  | 'neon';
+  | 'neon'
+  | 'zoom-in'
+  | 'flip'
+  | 'drop'
+  | 'shake'
+  | 'spin'
+  | 'blur-in'
+  | 'rise'
+  | 'swipe-up';
 
 export type AnimTarget = 'character' | 'word' | 'line' | 'all';
 export type AnimationTarget = AnimTarget;
@@ -64,6 +72,15 @@ export const PRESETS: Record<string, Style> = {
   Editorial: { ...base, family: 'DM Serif Display', weight: 400, italic: true, size: 0.07, color: '#fff8ec', highlight: '#ffd27a', stroke: '#000000', outline: 0.06, uppercase: false, animation: 'fade', animTarget: 'all', duration: 500, y: 0.78 },
   Tall: { ...base, family: 'Anton', weight: 400, size: 0.085, color: '#ffffff', highlight: '#ff4d6d', stroke: '#111111', uppercase: true, animation: 'bounce', y: 0.72 },
   Marker: { ...base, family: 'Permanent Marker', weight: 400, size: 0.07, color: '#fff6d6', highlight: '#ff9f1c', stroke: '#2b1a00', uppercase: false, animation: 'pop', easing: 'back', y: 0.7 },
+  // New CapCut-inspired presets
+  'Zoom burst': { ...base, family: 'Montserrat', weight: 900, size: 0.072, color: '#ffffff', highlight: '#ff6b35', stroke: '#000000', outline: 0.16, uppercase: true, animation: 'zoom-in', duration: 350, easing: 'ease-out', y: 0.75 },
+  'Flip reveal': { ...base, family: 'Inter', weight: 800, size: 0.062, color: '#ffffff', highlight: '#a855f7', stroke: '#1a0030', outline: 0.14, uppercase: true, animation: 'flip', duration: 380, easing: 'ease-in-out', y: 0.78 },
+  'Gravity drop': { ...base, family: 'Anton', weight: 400, size: 0.08, color: '#fff700', highlight: '#ff4500', stroke: '#1a0a00', outline: 0.18, uppercase: true, animation: 'drop', duration: 420, easing: 'spring', y: 0.73 },
+  'Shake it': { ...base, family: 'Permanent Marker', weight: 400, size: 0.075, color: '#ff3860', highlight: '#ffdd57', stroke: '#1a0010', outline: 0.14, uppercase: false, animation: 'shake', duration: 300, easing: 'ease-out', y: 0.72 },
+  'Spin in': { ...base, family: 'Bebas Neue', weight: 400, size: 0.084, color: '#ffffff', highlight: '#38d9f5', stroke: '#001f27', outline: 0.12, uppercase: true, animation: 'spin', duration: 400, easing: 'spring', y: 0.75 },
+  'Focus blur': { ...base, family: 'DM Serif Display', weight: 400, italic: true, size: 0.068, color: '#f0f4ff', highlight: '#818cf8', stroke: '#0a0a1a', outline: 0.06, uppercase: false, animation: 'blur-in', duration: 450, easing: 'quart-out', y: 0.78 },
+  'Float up': { ...base, family: 'Montserrat', weight: 700, size: 0.062, color: '#ffffff', highlight: '#34d399', stroke: '#001a0f', outline: 0.12, uppercase: false, animation: 'rise', duration: 400, easing: 'back', y: 0.76 },
+  'Swipe reveal': { ...base, family: 'Inter', weight: 800, size: 0.058, color: '#ffffff', highlight: '#fb923c', stroke: '#1a0800', outline: 0.14, uppercase: true, animation: 'swipe-up', duration: 320, easing: 'quart-out', y: 0.8 },
 };
 export const DEFAULT_STYLE = PRESETS['Viral pop'];
 
@@ -109,6 +126,9 @@ export type WordState = {
   chars: number;
   glowBlur: number;
   pill: boolean;
+  blur: number;      // px blur for blur-in
+  skewX: number;     // radians skew on X axis
+  clipY: number;     // 0..1 — fraction of the word height revealed from bottom (swipe-up)
 };
 
 // Animation state for any target unit (caption, line, word, or character).
@@ -136,6 +156,9 @@ export function computeAnimState(
   let chars = Infinity;
   let glowBlur = 0;
   let pill = false;
+  let blur = 0;
+  let skewX = 0;
+  let clipY = 1; // 1 = fully visible, 0 = hidden
 
   if (anim === 'fade') {
     const p = ease(clamp((t - start) / d));
@@ -197,10 +220,66 @@ export function computeAnimState(
     if (active) scale = 1 + 0.05 * ease(clamp((t - start) / Math.min(d, 0.15)));
   } else if (anim === 'bounce') {
     if (active) dy = -Math.sin(clamp((t - start) / Math.min(d, end - start)) * Math.PI) * 0.25;
+  } else if (anim === 'zoom-in') {
+    // CapCut "Zoom In": scales from large down to 1 on entry, with a slight alpha fade-in.
+    visible = spoken;
+    const p = ease(clamp((t - start) / d));
+    scale = 1.6 - 0.6 * p;
+    alpha = clamp(p);
+  } else if (anim === 'flip') {
+    // CapCut "Flip": horizontally squishes to 0 then expands back — simulates a Y-axis flip.
+    visible = spoken;
+    const p = ease(clamp((t - start) / d));
+    // First half: collapse scaleX to 0; second half: expand back to 1
+    scaleX = p < 0.5 ? 1 - p * 2 : (p - 0.5) * 2;
+    alpha = p < 0.5 ? 1 - p : p;
+    return { visible, active, highlighted: active, scale, scaleX, scaleY, dx, dy, rotation, alpha, chars, glowBlur, pill, blur, skewX, clipY };
+  } else if (anim === 'drop') {
+    // CapCut "Drop": falls from above with a gravity bounce.
+    visible = spoken;
+    const p = EASINGS.spring(clamp((t - start) / d));
+    dy = -(1 - p) * 1.2;
+    alpha = clamp(p * 2); // fades in quickly
+    scale = 0.8 + 0.2 * p;
+  } else if (anim === 'shake') {
+    // CapCut "Shake": rapid position/rotation jitter while spoken.
+    visible = spoken;
+    if (active) {
+      const freq = 28;
+      const decay = Math.exp(-3 * clamp((t - start) / d));
+      dx = Math.sin((t - start) * freq * 1.0) * 0.08 * decay;
+      dy = Math.cos((t - start) * freq * 1.3) * 0.05 * decay;
+      rotation = Math.sin((t - start) * freq * 0.9) * 0.07 * decay;
+    }
+  } else if (anim === 'spin') {
+    // CapCut "Spin": rotates in from a quarter-turn, springs to rest.
+    visible = spoken;
+    const p = EASINGS.spring(clamp((t - start) / d));
+    rotation = (1 - p) * Math.PI * 0.5;
+    alpha = clamp(p * 1.5);
+    scale = 0.5 + 0.5 * p;
+  } else if (anim === 'blur-in') {
+    // CapCut "Blur": enters blurred then sharpens.
+    visible = spoken;
+    const p = ease(clamp((t - start) / d));
+    blur = (1 - p) * 18;
+    alpha = clamp(p);
+  } else if (anim === 'rise') {
+    // CapCut "Rise": floats up smoothly, fades in with a slight overshoot.
+    visible = spoken;
+    const p = EASINGS.back(clamp((t - start) / d));
+    dy = (1 - p) * 0.7;
+    alpha = clamp(clamp((t - start) / d) * 1.4);
+  } else if (anim === 'swipe-up') {
+    // CapCut "Swipe": reveals the word from bottom like a wipe, clipping from below.
+    visible = spoken;
+    const p = ease(clamp((t - start) / d));
+    clipY = p; // used by drawCaption to clip the word
+    alpha = clamp(p);
   }
 
-  scaleX = scale;
-  scaleY = scale;
+  scaleX = scaleX !== 1 ? scaleX : scale;
+  scaleY = scaleY !== 1 ? scaleY : scale;
 
   const highlighted =
     anim === 'karaoke'
@@ -209,7 +288,7 @@ export function computeAnimState(
         ? false
         : active;
 
-  return { visible, active, highlighted, scale, scaleX, scaleY, dx, dy, rotation, alpha, chars, glowBlur, pill };
+  return { visible, active, highlighted, scale, scaleX, scaleY, dx, dy, rotation, alpha, chars, glowBlur, pill, blur, skewX, clipY };
 }
 
 // Per-word animation state at time t (seconds). Pure, so preview and export match.
@@ -371,9 +450,17 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
 
           ctx.save();
           ctx.globalAlpha = cst.alpha * op;
+          // swipe-up: clip so only the bottom portion is revealed
+          if (cst.clipY < 1) {
+            const revealH = px * cst.clipY;
+            ctx.beginPath();
+            ctx.rect(x + charCenterX - charW, y - px / 2 + (px - revealH), charW * 2, revealH + px * 0.1);
+            ctx.clip();
+          }
           ctx.translate(x + charCenterX + cst.dx * px, y + cst.dy * px);
           if (cst.rotation) ctx.rotate(cst.rotation);
           ctx.scale(cst.scaleX, cst.scaleY);
+          if (cst.blur > 0) ctx.filter = `blur(${cst.blur.toFixed(1)}px)`;
 
           // Character-level pill background
           if (cst.pill) {
@@ -413,9 +500,17 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
           const wordW = widths[i];
           ctx.save();
           ctx.globalAlpha = st.alpha * op;
+          // swipe-up: clip so only the bottom portion of the word is revealed
+          if (st.clipY < 1) {
+            const revealH = px * st.clipY;
+            ctx.beginPath();
+            ctx.rect(x, y - px / 2 + (px - revealH), wordW + space, revealH + px * 0.1);
+            ctx.clip();
+          }
           ctx.translate(x + wordW / 2 + st.dx * px, y + st.dy * px);
           if (st.rotation) ctx.rotate(st.rotation);
           ctx.scale(st.scaleX, st.scaleY);
+          if (st.blur > 0) ctx.filter = `blur(${st.blur.toFixed(1)}px)`;
 
           // Word-level pill background (CapCut viral pill style)
           if (st.pill) {
