@@ -57,6 +57,7 @@
     'blur-in',
     'rise',
     'swipe-up',
+    'highlight',
     'none',
   ];
   const ANIM_TARGETS: AnimTarget[] = ['character', 'word', 'line', 'all'];
@@ -325,6 +326,15 @@
         <button class="fld none" onclick={() => updateField('box', '#111111')}><span class="checker"></span>{t('none')}</button>
       {/if}
     </div>
+    {#if effectiveStyle.box}
+      <label class="prow"><span>{t('fillAlpha')}</span>
+        <span class="fld unit">
+          <input type="number" min="0" max="100" step="5" value={pct(effectiveStyle.boxAlpha ?? 0.88)}
+            onchange={(e) => updateField('boxAlpha', Math.min(100, Math.max(0, +e.currentTarget.value)) / 100)} />
+          <em>%</em>
+        </span>
+      </label>
+    {/if}
     <label class="prow"><span>{t('opacity')}</span>
       <span class="fld unit">
         <input type="number" min="0" max="100" step="5" value={pct(effectiveStyle.opacity)}
@@ -355,6 +365,56 @@
         <ColorField value={effectiveStyle.stroke} label={t('borderColor')}
           oninput={(c) => write({ stroke: c }, true)} onchange={(c) => write({ stroke: c })} />
       </div>
+    {/if}
+  </section>
+
+  <section>
+    <h4>{t('effects')}</h4>
+    <div class="prow"><span>{t('shadow')}</span>
+      {#if effectiveStyle.shadow}
+        <ColorField value={effectiveStyle.shadow} label={t('shadow')} onclear={() => updateField('shadow', '')}
+          oninput={(c) => write({ shadow: c }, true)} onchange={(c) => write({ shadow: c })} />
+      {:else}
+        <button class="fld none" onclick={() => updateField('shadow', '#000000')}><span class="checker"></span>{t('none')}</button>
+      {/if}
+    </div>
+    {#if effectiveStyle.shadow}
+      <div class="prow"><span>{t('shadowOffset')}</span>
+        <span class="pair">
+          <span class="fld unit"><b>X</b>
+            <input type="number" min="-100" max="100" step="1" aria-label={t('shadowOffset') + ' X'} value={pct(effectiveStyle.shadowX ?? 0)}
+              onchange={(e) => updateField('shadowX', Math.min(100, Math.max(-100, +e.currentTarget.value)) / 100)} /><em>%</em>
+          </span>
+          <span class="fld unit"><b>Y</b>
+            <input type="number" min="-100" max="100" step="1" aria-label={t('shadowOffset') + ' Y'} value={pct(effectiveStyle.shadowY ?? 0)}
+              onchange={(e) => updateField('shadowY', Math.min(100, Math.max(-100, +e.currentTarget.value)) / 100)} /><em>%</em>
+          </span>
+        </span>
+      </div>
+      <label class="prow"><span>{t('blur')}</span>
+        <span class="fld unit">
+          <input type="number" min="0" max="100" step="1" value={pct(effectiveStyle.shadowBlur ?? 0.12)}
+            onchange={(e) => updateField('shadowBlur', Math.min(100, Math.max(0, +e.currentTarget.value)) / 100)} />
+          <em>%</em>
+        </span>
+      </label>
+    {/if}
+    <div class="prow"><span>{t('glow')}</span>
+      {#if effectiveStyle.glow}
+        <ColorField value={effectiveStyle.glow} label={t('glow')} onclear={() => updateField('glow', '')}
+          oninput={(c) => write({ glow: c }, true)} onchange={(c) => write({ glow: c })} />
+      {:else}
+        <button class="fld none" onclick={() => updateField('glow', '#00f0ff')}><span class="checker"></span>{t('none')}</button>
+      {/if}
+    </div>
+    {#if effectiveStyle.glow}
+      <label class="prow"><span>{t('glowSize')}</span>
+        <span class="fld unit">
+          <input type="number" min="0" max="150" step="5" value={pct(effectiveStyle.glowSize ?? 0.3)}
+            onchange={(e) => updateField('glowSize', Math.min(150, Math.max(0, +e.currentTarget.value)) / 100)} />
+          <em>%</em>
+        </span>
+      </label>
     {/if}
   </section>
 
