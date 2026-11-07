@@ -545,7 +545,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
             ctx.restore();
           }
 
-          drawText(ctx, s, px, ch, -charW / 2, cst.pill ? (s.box || '#111111') : (cst.highlighted ? s.highlight : s.color), cst.glowBlur);
+          drawText(ctx, s, px, ch, -charW / 2, cst.pill ? (s.box || '#111111') : (cst.highlighted || w.em ? s.highlight : s.color), cst.glowBlur);
           ctx.restore();
         });
 
@@ -586,7 +586,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
             ctx.restore();
           }
 
-          drawText(ctx, s, px, text, -wordW / 2, st.pill ? (s.box || '#111111') : (st.highlighted ? s.highlight : s.color), st.glowBlur);
+          drawText(ctx, s, px, text, -wordW / 2, st.pill ? (s.box || '#111111') : (st.highlighted || c.words[i].em ? s.highlight : s.color), st.glowBlur);
           ctx.restore();
         }
         x += widths[i] + space;

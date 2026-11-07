@@ -110,7 +110,7 @@ The logic modules have small assert-based tests that run directly in Node (TypeS
 
 ```bash
 cd app
-for t in audio beats captions cuts export grade overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
+for t in audio beats captions cuts export grade keywords overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
 ```
 
 ## Stack
@@ -149,6 +149,7 @@ app/src/
     captions.ts           caption model, grouping, editing, SRT/VTT
     cuts.ts               kept segments, sequence↔output time mapping, word cuts
     transcript.ts         filler words, silences, search
+    keywords.ts           auto-emphasis: picks the key word of each caption
     render.ts             caption drawing, presets, animations, easing, drag box
     export.ts             MP4 export (video + captions + mixed audio)
     transcribe.ts         audio decode + worker bridge
@@ -176,7 +177,7 @@ public/                   favicon, app icon, web app manifest
 icon/                     (repo root) Sonant mark, lockups and usage guide
 ```
 
-`PLAN.md` holds the original implementation plan, and `ROADMAP.md` tracks the pro-editor features. `DESIGN_FEATURES.md` tracks progress against the design mock (`Video Editor — Transcript, Captions & Animation.html`).
+`PLAN.md` holds the original implementation plan, `ROADMAP.md` tracks the pro-editor features, and `PRO_FEATURES_PLAN.md` plans the CapCut-Pro-style features. `DESIGN_FEATURES.md` tracks progress against the design mock (`Video Editor — Transcript, Captions & Animation.html`).
 
 ## Keyboard shortcuts
 

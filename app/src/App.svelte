@@ -21,6 +21,7 @@
   import { speechRanges } from './lib/audio';
   import { beatsOfFile } from './lib/beats';
   import { translateTexts, translated, type Dir } from './lib/translate';
+  import { autoEmphasis, clearEmphasis, hasEmphasis } from './lib/keywords';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
@@ -1437,6 +1438,12 @@
             <button class="sm" onclick={translateAll} disabled={trBusy}>{trBusy ? `${t(status || 'st.translating')} ${Math.round(pct)}%` : hasTr ? t('retranslate') : t('translate')}</button>
             {#if hasTr}
               <label class="chk"><input type="checkbox" bind:checked={showTr} /> {t('showTr')}</label>
+            {/if}
+          </div>
+          <div class="trbox">
+            <button class="sm" onclick={() => setCaps(autoEmphasis(captions))} title={t('emHint')}>{t('autoEm')}</button>
+            {#if hasEmphasis(captions)}
+              <button class="sm" onclick={() => setCaps(clearEmphasis(captions))}>{t('clearEm')}</button>
             {/if}
           </div>
         {/if}
