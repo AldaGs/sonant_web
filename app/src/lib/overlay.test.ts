@@ -46,3 +46,18 @@ const pk = punchKeys({ ...img, kf: undefined }, 1);
 assert.deepEqual(pk.map((x) => x.t), [1, 1.5]);
 assert.ok(Math.abs(pk[1].scale - tf.scale * 1.2) < 1e-9);
 console.log('overlay ok');
+
+// Animated title: invisible at its edges, full at its middle, and travels the S from left to right.
+{
+  const { newTitle, liveTf, sPoint } = await import('./overlay.ts');
+  const ti = newTitle(1, 'Hi');
+  assert.equal(liveTf(ti, 1).opacity, 0);
+  assert.ok(Math.abs(liveTf(ti, 3).opacity - 1) < 1e-9);
+  assert.ok(liveTf(ti, 5).opacity < 1e-9);
+  const m = ti.motion!;
+  assert.ok(Math.abs(liveTf(ti, 1).x - (ti.tf.x - m.span / 2)) < 1e-9);
+  assert.ok(Math.abs(liveTf(ti, 5).x - (ti.tf.x + m.span / 2)) < 1e-9);
+  assert.ok(Math.abs(liveTf(ti, 3).y - ti.tf.y) < 1e-9); // crosses the centre midway
+  assert.ok(sPoint(m, 0.25).dy < 0 && sPoint(m, 0.75).dy > 0); // two opposite bends
+  assert.deepEqual(liveTf({ ...ti, motion: undefined }, 3), ti.tf);
+}

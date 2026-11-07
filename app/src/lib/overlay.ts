@@ -24,7 +24,18 @@ export type Overlay = {
   style?: Partial<Style>; // text: look (on top of its preset)
   tf: Transform; // base transform; flipX and crop always come from here
   kf?: Keyframe[]; // animation: when present, x/y/scale/rotation/opacity come from these (sorted by t)
+  motion?: Motion; // animated title: in/out animation and an optional path, layered on top of tf/kf
 };
+// Animated title. The layer animates in over `in` seconds and out over the last `out` seconds.
+// With path 's' it travels left to right along a horizontal S curve centred on its transform's x/y.
+export type Motion = {
+  path: 'none' | 's';
+  in: number; // seconds
+  out: number; // seconds
+  span: number; // horizontal travel, fraction of frame width
+  amp: number; // height of the S bends, fraction of frame height
+};
+export const DEFAULT_MOTION: Motion = { path: 's', in: 0.6, out: 0.6, span: 0.7, amp: 0.08 };
 // t is seconds from the layer's start.
 export type Keyframe = { t: number; x: number; y: number; scale: number; rotation: number; opacity: number };
 export const ANIMATED = ['x', 'y', 'scale', 'rotation', 'opacity'] as const;
@@ -42,6 +53,29 @@ export function tfAt(o: Overlay, t: number): Transform {
   const u = b.t > a.t ? smooth((r - a.t) / (b.t - a.t)) : 0;
   const out = { ...o.tf };
   for (const p of ANIMATED) out[p] = a[p] + (b[p] - a[p]) * u;
+  return out;
+}
+// Point on the S curve at u ∈ 0..1, as an offset from the centre in frame fractions.
+// One full sine period across the span: down-bend then up-bend, a sideways S.
+export function sPoint(m: Motion, u: number): { dx: number; dy: number } {
+  return { dx: m.span * (u - 0.5), dy: -m.amp * Math.sin(2 * Math.PI * u) };
+}
+const ease = (u: number) => 1 - (1 - Math.max(0, Math.min(1, u))) ** 3; // ease-out cubic
+// Transform actually drawn at output time t: keyframes, then the title's motion on top.
+export function liveTf(o: Overlay, t: number, aspect = 16 / 9): Transform {
+  const tf = tfAt(o, t), m = o.motion;
+  if (!m) return tf;
+  const r = Math.max(0, Math.min(o.len, t - o.at));
+  const inU = m.in > 0 ? ease(r / m.in) : 1, outU = m.out > 0 ? ease((o.len - r) / m.out) : 1;
+  const out = { ...tf, opacity: tf.opacity * inU * outU, scale: tf.scale * (0.6 + 0.4 * inU) * (1 + 0.15 * (1 - outU)) };
+  if (m.path === 's') {
+    // Travel at an even pace (sine in-out), tilted along the curve's tangent.
+    const u = 0.5 - Math.cos((Math.PI * r) / Math.max(1e-6, o.len)) / 2, p = sPoint(m, u);
+    out.x = tf.x + p.dx;
+    out.y = tf.y + p.dy;
+    const slope = (-m.amp * 2 * Math.PI * Math.cos(2 * Math.PI * u)) / (m.span * aspect); // dy/dx in px
+    out.rotation = tf.rotation + (Math.atan(slope) * 180) / Math.PI * 0.5;
+  }
   return out;
 }
 // Set (or add) the keyframe at layer time t to the given transform.
@@ -108,7 +142,7 @@ function textCaption(o: Overlay): Caption {
 
 // Draw one overlay at output time t. `src` is the decoded frame/image (null for text or not ready).
 export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number, src: CanvasImageSource | null, sw: number, sh: number): Placed | null {
-  const W = ctx.canvas.width, H = ctx.canvas.height, tf = tfAt(o, t);
+  const W = ctx.canvas.width, H = ctx.canvas.height, tf = liveTf(o, t, W / H);
   ctx.save();
   ctx.globalAlpha *= Math.max(0, Math.min(1, tf.opacity));
   let placed: Placed | null = null;
@@ -151,3 +185,5 @@ export const newText = (at: number, text: string): Overlay =>
 export const newMedia = (kind: 'video' | 'image', assetId: string, at: number, len: number): Overlay =>
   ({ id: crypto.randomUUID(), kind, assetId, at, len, ...(kind === 'video' ? { offset: 0, volume: 0 } : {}),
     tf: { ...DEFAULT_TF, x: 0.72, y: 0.28, scale: 0.4 } });
+export const newTitle = (at: number, text: string, len = 4): Overlay =>
+  ({ ...newText(at, text), len, motion: { ...DEFAULT_MOTION }, tf: { ...DEFAULT_TF, y: 0.25, scale: 1.2 } });
