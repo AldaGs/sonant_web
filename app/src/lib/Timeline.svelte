@@ -11,8 +11,11 @@
     segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = 1,
     selected = $bindable(-1), selectedCapIds = new Set<string>(), selectedAudio = $bindable(''), onselectcap,
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
+    pending = [], beats,
     overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
   }: {
+    beats?: Map<string, number[]>; // assetId → beat times in the file (music)
+    pending?: [number, number][]; // clean-up preview: ranges that would be cut, sequence time
     overlays?: Overlay[]; // layers over the video, output time
     selectedOverlay?: string;
     onoverlay?: (id: string, patch: Partial<Overlay>) => void; // move or trim a layer, live
@@ -89,6 +92,11 @@
   const ovCount = $derived(Math.max(1, ...[...ovLanes.values()].map((l) => l + 1)));
   const ovLabel = (o: Overlay) => (o.kind === 'text' ? 'T ' + (o.text ?? '') : (o.kind === 'image' ? '▣ ' : '⧉ ') + (names.get(o.assetId ?? '') ?? ''));
 
+  // Beat times of an audio item in output time (only the part that plays).
+  const beatsOf = (a: AudioItem) => {
+    const b = beats?.get(a.assetId) ?? [], off = a.offset ?? 0, len = audLen(a);
+    return b.flatMap((x) => (x >= off && x < off + len ? [a.at + x - off] : []));
+  };
   const audLen = (a: AudioItem) => itemLen(a, durations.get(a.assetId) ?? 0);
   // Overlapping audio items stack into lanes; the Music & VO row grows to fit them.
   const lanes = $derived(audioLanes(audios, (id) => durations.get(id) ?? 0));
@@ -183,7 +191,8 @@
     ...segPos.flatMap((p) => [p.start, p.start + p.len]),
     ...outCaps.flatMap((c) => [startOf(c), endOf(c)]),
     ...audios.filter((a) => a.id !== skipAudio).flatMap((a) => [a.at, a.at + audLen(a)]),
-    ...overlays.filter((o) => o.id !== skipAudio).flatMap((o) => [o.at, o.at + o.len])];
+    ...overlays.filter((o) => o.id !== skipAudio).flatMap((o) => [o.at, o.at + o.len]),
+    ...audios.filter((a) => a.id !== skipAudio).flatMap(beatsOf)];
   // Snap points in sequence (source) time (strips and captions live there).
   const srcPoints = (skipCap = '', skipSeg = -1) => [0, duration, time,
     ...segments.flatMap((g, i) => (i === skipSeg ? [] : [g.start, g.end])),
@@ -375,6 +384,7 @@
             style:top="{(lanes.get(item.id) ?? 0) * 28}px" style:width={pct(Math.min(audLen(item), total - item.at))}
             title={names.get(item.assetId)} aria-pressed={item.id === selectedAudio}
             onpointerdown={(e) => moveAudio(e, item)} onclick={(e) => e.stopPropagation()}>
+            {#each beatsOf(item) as b}<span class="beat" style:left="{((b - item.at) / audLen(item)) * 100}%" aria-hidden="true"></span>{/each}
             <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span>♪ {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
         {/each}
       </div>
@@ -386,6 +396,10 @@
           {#if range[0] !== null}<span class="mk in">I</span>{/if}{#if range[1] !== null}<span class="mk out">O</span>{/if}
         </div>
       {/if}
+      {#each pending as [a, b]}
+        {@const x = toOutput(segments, a)}
+        {#if x !== null}<div class="pend" style:left={pct(x)} style:width={pct(Math.max(0.01, b - a))} aria-hidden="true"></div>{/if}
+      {/each}
       {#if guide !== null}<div class="guide" style:left={pct(guide)} aria-hidden="true"></div>{/if}
       {#if playhead !== null}
         <div class="playhead" style:left={pct(playhead)}>
@@ -435,6 +449,7 @@
   .ov { position: absolute; top: 0; height: 22px; min-width: 8px; padding: 0 8px; justify-content: flex-start; overflow: hidden;
     white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(190 140 255 / .45);
     background: rgb(190 140 255 / .14); color: #c9a6ff; cursor: grab; touch-action: none; }
+  .beat { position: absolute; top: 3px; bottom: 3px; width: 1px; background: rgb(106 184 255 / .7); pointer-events: none; }
   .kd { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: 9px; color: #ffd84d; pointer-events: none; text-shadow: 0 0 2px #000; }
   .seg.lift { background: repeating-linear-gradient(45deg, var(--surface) 0 6px, var(--card) 6px 12px); }
   .seg.lift .thumbs { opacity: .12; }
@@ -447,6 +462,8 @@
   .edge.l { left: 0; border-radius: 6px 0 0 6px; } .edge.r { right: 0; border-radius: 0 6px 6px 0; }
   .cap:hover .edge, .cap.sel .edge { background: rgb(200 245 96 / .55); }
   .aud:hover .edge, .aud.sel .edge { background: rgb(106 184 255 / .55); }
+  .pend { position: absolute; top: 20px; bottom: 0; pointer-events: none; z-index: 1;
+    background: repeating-linear-gradient(45deg, rgb(255 107 107 / .35) 0 4px, rgb(255 107 107 / .12) 4px 8px); border-left: 1px solid #ff6b6b; border-right: 1px solid #ff6b6b; }
   .guide { position: absolute; top: 0; bottom: 0; width: 1px; background: #ffd84d; pointer-events: none; z-index: 4; box-shadow: 0 0 4px #ffd84d; }
   .range { position: absolute; top: 0; bottom: 0; background: rgb(255 216 77 / .12); border-left: 1px solid #ffd84d; border-right: 1px solid #ffd84d;
     pointer-events: none; z-index: 1; min-width: 1px; }

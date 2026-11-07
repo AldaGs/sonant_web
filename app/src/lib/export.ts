@@ -4,12 +4,15 @@ import { keptCaptions, zoomPlace, type Segment } from './cuts.ts';
 import { drawCaption, resolveStyle, type Style } from './render.ts';
 import { drawFrame, loadSegmenter } from './segment.ts';
 import { drawOverlay, type Overlay } from './overlay.ts';
-import { clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
+import { duckGain, normalizeGain } from './audio.ts';
+import { DUCK_LEVEL, clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
 
 export type Aspect = 'source' | '16:9' | '9:16' | '1:1';
 export type Res = 'source' | 1080 | 720 | 540 | 480;
 export type Quality = 'draft' | 'standard' | 'high';
-export type ExportOptions = { res: Res; aspect: Aspect; fps: number; quality: Quality };
+// loudness: normalize the mix to −14 LUFS (TikTok/YouTube/Spotify target). voice: clean up the clips' own sound
+// (rumble filter + gentle compression), for speech recorded on a phone.
+export type ExportOptions = { res: Res; aspect: Aspect; fps: number; quality: Quality; loudness?: boolean; voice?: boolean };
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
@@ -41,12 +44,13 @@ export type ExportSource = {
   clips: Clip[];
   audios: AudioItem[];
   overlays?: Overlay[]; // output time
+  speech?: [number, number][]; // output time ranges where someone talks (music ducks under these)
   clipVolume: number;
 };
 
 // Mix the kept parts of each clip's audio plus the extra audio items into one buffer, `seconds` long.
 // ponytail: renders the whole mix in memory (~23 MB per stereo minute); stream in chunks if long videos hit memory limits
-async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Promise<AudioBuffer | null> {
+async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opts: Partial<ExportOptions> = {}): Promise<AudioBuffer | null> {
   const sr = 48000;
   const durations = new Map(src.assets.map((a) => [a.id, a.duration]));
   const ovAudio = (src.overlays ?? []).filter((o) => o.kind === 'video' && o.assetId && (o.volume ?? 0) > 0);
@@ -67,11 +71,25 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Pr
   if (!decoded.size || seconds <= 0) return null;
 
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, length: Math.ceil(seconds * sr), sampleRate: sr });
-  const play = (buf: AudioBuffer, when: number, offset: number, len: number, volume: number) => {
+  // Voice bus: the clips' own sound (and video layers) go through a rumble filter and a gentle compressor.
+  let voice: AudioNode = ctx.destination;
+  if (opts.voice) {
+    const hp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 85, Q: 0.7 });
+    const comp = new DynamicsCompressorNode(ctx, { threshold: -24, knee: 12, ratio: 3, attack: 0.005, release: 0.2 });
+    const makeup = new GainNode(ctx, { gain: 1.4 });
+    hp.connect(comp).connect(makeup).connect(ctx.destination);
+    voice = hp;
+  }
+  // gain: a fixed volume, or a function of output time (ducking), sampled at 50 Hz.
+  const play = (buf: AudioBuffer, when: number, offset: number, len: number, gain: number | ((t: number) => number), to: AudioNode = ctx.destination) => {
     const s = ctx.createBufferSource(), g = ctx.createGain();
     s.buffer = buf;
-    g.gain.value = volume;
-    s.connect(g).connect(ctx.destination);
+    if (typeof gain === 'number') g.gain.value = gain;
+    else {
+      const n = Math.max(2, Math.ceil(len * 50));
+      g.gain.setValueCurveAtTime(Float32Array.from({ length: n }, (_, i) => gain(when + (i / (n - 1)) * len)), when, len);
+    }
+    s.connect(g).connect(to);
     s.start(when, offset, len);
   };
 
@@ -81,7 +99,7 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Pr
   for (const s of splitAtBoundaries(segs, starts)) {
     const at = clipAt(src.clips, durations, (s.start + s.end) / 2);
     const buf = at && decoded.get(src.clips[at.index].assetId);
-    if (buf && !s.fx?.lift) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume); // lifted = silent gap
+    if (buf && !s.fx?.lift) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume, voice); // lifted = silent gap
     out += s.end - s.start;
   }
   // Extra audio: placed in output time, cut off at the end of the video.
@@ -89,16 +107,23 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Pr
     const buf = decoded.get(item.assetId);
     if (!buf || item.at >= seconds) continue;
     const len = Math.min(itemLen(item, buf.duration), seconds - item.at);
-    if (len > 0) play(buf, item.at, item.offset ?? 0, len, item.volume);
+    const speech = src.speech ?? [];
+    if (len > 0) play(buf, item.at, item.offset ?? 0, len, item.duck && speech.length ? (t) => item.volume * duckGain(speech, t, DUCK_LEVEL) : item.volume);
   }
   // Sound of picture-in-picture layers that aren't muted.
   for (const o of ovAudio) {
     const buf = decoded.get(o.assetId!);
     if (!buf || o.at >= seconds) continue;
     const len = Math.min(o.len, buf.duration - (o.offset ?? 0), seconds - o.at);
-    if (len > 0) play(buf, o.at, o.offset ?? 0, len, o.volume ?? 0);
+    if (len > 0) play(buf, o.at, o.offset ?? 0, len, o.volume ?? 0, voice);
   }
-  return ctx.startRendering();
+  const mix = await ctx.startRendering();
+  if (opts.loudness) {
+    const ch = Array.from({ length: mix.numberOfChannels }, (_, c) => mix.getChannelData(c));
+    const g = normalizeGain(ch, sr);
+    if (g !== 1) for (const c of ch) for (let i = 0; i < c.length; i++) c[i] *= g;
+  }
+  return mix;
 }
 
 export async function exportVideo(
@@ -123,7 +148,7 @@ export async function exportVideo(
 
   if (segs.some((s) => s.fx?.behind || s.fx?.bg)) await loadSegmenter(); // every exported frame must be segmented
   const total = frameCount(segs, opts.fps);
-  const mix = await mixAudio(src, segs, total / opts.fps);
+  const mix = await mixAudio(src, segs, total / opts.fps, opts);
   if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
 
   const canvas = new OffscreenCanvas(width, height);

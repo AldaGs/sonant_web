@@ -6,8 +6,13 @@
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
   import { zoomPlace, segAt, PUNCH_IN, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment, type Fx } from './lib/cuts';
   import { drawFrame } from './lib/segment';
-  import { clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
+  import { itemLen, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
+  import { cleanup, cleanupRanges } from './lib/cleanup.svelte';
+  import { speechRanges } from './lib/audio';
+  import { beatsOfFile } from './lib/beats';
+  import { translateTexts, translated, type Dir } from './lib/translate';
+  import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
@@ -126,7 +131,7 @@
     });
   }
 
-  const player = new Player(() => ({ clips, audios, segments, durations, clipVolume, overlays }));
+  const player = new Player(() => ({ clips, audios, segments, durations, clipVolume, overlays, speech }));
 
   // Undo/redo: snapshots of the editable project.
   type Snap = { segments: Segment[]; captions: Caption[]; clips: Clip[]; audios: AudioItem[]; overlays: Overlay[] };
@@ -220,6 +225,7 @@
     segments = doc.segments ?? [];
     style = migrateStyle(doc.style ?? {});
     language = doc.language ?? null;
+    showTr = doc.showTr ?? false;
     // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
     if (!fonts.some((f) => f.family === style.family)) fonts = [...fonts, { family: style.family, weight: style.weight }];
   }
@@ -235,7 +241,7 @@
 
 
   async function saveNow() {
-    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays }), words: wordCache };
+    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), words: wordCache };
     const meta: Partial<ProjectMeta> = { duration: outDuration(segments), clips: clips.length };
     if (Date.now() - lastThumb > 10000) {
       const th = thumbnail();
@@ -244,7 +250,7 @@
     await saveDoc(projectId, doc, meta);
   }
   $effect(() => {
-    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays });
+    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr });
     void (clips.length && thumbs[clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
     if (!ready) return;
     saving = true;
@@ -309,6 +315,25 @@
     pushOverlay(newMedia(a.kind === 'video' ? 'video' : 'image', a.id, at, len));
   }
   const addText = () => pushOverlay(newText(outNow(), t('newText')));
+
+  // ---- Templates (shared by every project in this browser) ----
+  let myTemplates = $state<Template[]>([]);
+  store.get<Template[]>('templates').then((l) => (myTemplates = l ?? []));
+  const saveTemplates = (l: Template[]) => ((myTemplates = l), store.set('templates', $state.snapshot(l)).catch(() => {}));
+  // Apply: caption look + its text layers (at the playhead, or stuck to the end).
+  function applyTemplate(tp: Template) {
+    commit();
+    style = { ...structuredClone($state.snapshot(tp.style)), x: style.x, y: tp.style.y };
+    const added = placeLayers(tp, outNow(), outDuration(segments));
+    overlays = [...overlays, ...added];
+    if (added[0]) selectedOverlay = added[0].id;
+  }
+  function saveTemplate() {
+    const n = prompt(t('templateName'), name ? `${name} style` : t('myTemplate'));
+    if (!n?.trim()) return;
+    saveTemplates([...myTemplates, fromProject(n.trim(), $state.snapshot(style), $state.snapshot(overlays), outDuration(segments))]);
+  }
+  const deleteTemplate = (tp: Template) => confirm(t('confirmDelTemplate', { name: tp.name })) && saveTemplates(myTemplates.filter((x) => x.id !== tp.id));
   const selOverlay = $derived(overlays.find((o) => o.id === selectedOverlay) ?? null);
   // Live edits (sliders, drags) take one undo step: snapshot on the first change, until the next 'change' event.
   let ovEditing = false;
@@ -417,6 +442,11 @@
         setCaps(fresh);
         if (!captions.length) error = 'noSpeech';
       }
+      // Auto clean-up: cut fillers and long pauses straight away (one more undo step, so it can be undone alone).
+      if (cleanup.auto && captions.length) {
+        const r = cleanupRanges(captions.flatMap((c) => c.words), duration, segments);
+        if (r.fillers.length || r.silences.length) cutRanges([...r.fillers, ...r.silences]);
+      }
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -433,7 +463,7 @@
   const outTime = $derived(toOutput(segments, time) ?? 0);
 
   function download(ext: 'srt' | 'vtt') {
-    const caps = captionsForOutput(captions, segments);
+    const caps = captionsForOutput(displayCaps, segments);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([ext === 'srt' ? toSRT(caps) : toVTT(caps)], { type: 'text/plain' }));
     a.download = (name || 'captions') + '.' + ext;
@@ -473,7 +503,7 @@
       }
       const k = f ? Math.max(w / fw, h / fh) : 1;
       const dw = f ? fw * k : w, dh = f ? fh * k : h;
-      const cap = visibleCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
+      const cap = displayCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
       capOnScreen = cap ?? null;
       const strip = segAt(segments, tNow), fx = strip?.fx;
       if (fx?.lift) f = null; // a lifted strip is a gap: black
@@ -759,7 +789,39 @@
   let transcriptView = $state<TranscriptView>();
   const cutRanges = (r: [number, number][]) => setSegs(r.reduce((s, [a, b]) => cutRange(s, a, b), segments));
   const keepRanges = (r: [number, number][]) => setSegs(r.reduce((s, [a, b]) => keepRange(s, a, b), segments));
-  const visibleCaps = $derived(keptCaptions(captions, segments)); // what the preview draws
+  const visibleCaps = $derived(keptCaptions(captions, segments)); // kept words of the original captions
+  // ---- Translation: a second language per caption (Caption.tr), shown instead of the original when on ----
+  let showTr = $state(false);
+  let trDir = $state<Dir>('en-es');
+  $effect(() => { if (language) trDir = language === 'spanish' ? 'es-en' : 'en-es'; });
+  let trBusy = $state(false);
+  const hasTr = $derived(captions.some((c) => c.tr));
+  // What the preview, SRT/VTT files and export show.
+  const displayCaps = $derived(showTr ? translated(visibleCaps) : visibleCaps);
+  async function translateAll() {
+    if (!captions.length) return;
+    trBusy = true;
+    error = '';
+    try {
+      const texts = await translateTexts(captions.map(captionText), trDir, (st, p) => ((status = st), (pct = p)));
+      const byId = new Map(captions.map((c, i) => [c.id, texts[i]]));
+      setCaps(captions.map((c) => ({ ...c, tr: byId.get(c.id) || undefined })));
+      showTr = true;
+    } catch (e) {
+      error = (e as Error).message || 'err.translate';
+    } finally {
+      trBusy = false;
+      status = '';
+    }
+  }
+  // Where someone is talking, in output time: music marked "duck" dips under it.
+  const speech = $derived(speechRanges(captionsForOutput(visibleCaps, segments).flatMap((c) => c.words)));
+  // Clean-up preview on the timeline: what "Apply" would cut.
+  const pendingCuts = $derived.by(() => {
+    if (!cleanup.preview) return [];
+    const r = cleanupRanges(captions.flatMap((c) => c.words), duration, segments);
+    return [...r.fillers, ...r.silences];
+  });
 
   // Auto-select: follow the playhead. The caption under it becomes the selection (none in a gap),
   // and with more than one video strip the strip under it is selected too. Only acts when the
@@ -818,6 +880,31 @@
     audios = audios.filter((a) => a.id !== selectedAudio);
     selectedAudio = '';
     return true;
+  }
+  // Beats of the selected music: detected once per file and kept on the asset.
+  let beatBusy = $state(false);
+  async function detectBeatsFor(assetId: string) {
+    const f = files.get(assetId);
+    if (!f) return;
+    beatBusy = true;
+    try {
+      const r = await beatsOfFile(f);
+      assets = assets.map((a) => (a.id === assetId ? { ...a, beats: r.times, bpm: r.bpm } : a));
+      if (!r.times.length) error = 'noBeats';
+    } catch {
+      error = 'noBeats';
+    } finally {
+      beatBusy = false;
+    }
+  }
+  const beatMap = $derived(new Map(assets.flatMap((a) => (a.beats?.length ? [[a.id, a.beats] as [string, number[]]] : []))));
+  // Split the main video on every beat of the selected music (every `every`-th beat).
+  function cutOnBeats(item: AudioItem, every = 1) {
+    const a = assets.find((x) => x.id === item.assetId);
+    if (!a?.beats) return;
+    const off = item.offset ?? 0, len = itemLen(item, a.duration), end = outDuration(segments);
+    const outs = a.beats.filter((_, i) => i % every === 0).map((b) => item.at + b - off).filter((t) => t > item.at && t < Math.min(item.at + len, end));
+    setSegs(outs.reduce((s, o) => splitAt(s, toSource(s, o)), segments));
   }
   const setAudio = (id: string, patch: Partial<AudioItem>) => (audios = audios.map((a) => (a.id === id ? { ...a, ...patch } : a)));
 
@@ -1018,6 +1105,18 @@
         {/if}
       {:else}
         <p class="muted small">{t('captionsHint')} {t('selectHint')}</p>
+        {#if captions.length}
+          <div class="trbox">
+            <select bind:value={trDir} disabled={trBusy} aria-label={t('trDir')}>
+              <option value="en-es">English → Español</option>
+              <option value="es-en">Español → English</option>
+            </select>
+            <button class="sm" onclick={translateAll} disabled={trBusy}>{trBusy ? `${t(status || 'st.translating')} ${Math.round(pct)}%` : hasTr ? t('retranslate') : t('translate')}</button>
+            {#if hasTr}
+              <label class="chk"><input type="checkbox" bind:checked={showTr} /> {t('showTr')}</label>
+            {/if}
+          </div>
+        {/if}
         <ol class="caps">
           {#each captions as c, i (c.id)}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
@@ -1031,6 +1130,10 @@
               <div class="cap-main">
                 <textarea rows="2" aria-label={t('capText')} value={captionText(c)} onfocus={() => { if (!selectedSet.has(c.id)) selectCap(c.id); seek(startOf(c)); }}
                   onchange={(e) => update(i, setText(c, e.currentTarget.value))}></textarea>
+                {#if c.tr !== undefined}
+                  <textarea class="tr" rows="1" aria-label={t('trText')} value={c.tr} placeholder={t('trText')}
+                    onchange={(e) => update(i, { ...c, tr: e.currentTarget.value.trim() || undefined })}></textarea>
+                {/if}
                 {#if c.style?.animation}
                   <span class="cap-anim-tag" title={t('animBadge', { name: t('anim.' + c.style.animation) })}>⚡ {t('anim.' + c.style.animation)}</span>
                 {/if}
@@ -1116,6 +1219,19 @@
   <aside class="style panel" class:shown={sheet === 'style'}>
     <div class="grab" aria-hidden="true"></div>
     <div class="sheet-bar"><h2>{t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}>✕</button></div>
+    <details class="tpl">
+      <summary>{t('templates')}</summary>
+      <div class="tpl-list">
+        {#each [...BUILTIN, ...myTemplates] as tp (tp.id)}
+          <div class="tpl-item">
+            <button class="sm" onclick={() => applyTemplate(tp)} disabled={!hasMedia}
+              title={t('applyTemplateTip', { n: tp.layers.length })}>{tp.builtin ? t('tpl.' + tp.id) : tp.name}</button>
+            {#if !tp.builtin}<button class="sm icon" onclick={() => deleteTemplate(tp)} aria-label={t('del')}>✕</button>{/if}
+          </div>
+        {/each}
+      </div>
+      <button class="sm" onclick={saveTemplate} disabled={!hasMedia} title={t('saveTemplateTip')}>＋ {t('saveTemplate')}</button>
+    </details>
     {#if selOverlay}
       {@const o = selOverlay}
       {@const cur = tfAt(o, outTime)}
@@ -1211,6 +1327,16 @@
             <input type="range" min="0" max="1" step="0.05" value={selAudio.volume}
               oninput={(e) => setAudio(selAudio.id, { volume: +e.currentTarget.value })} />
           </label>
+          {@const ba = assets.find((a) => a.id === selAudio.assetId)}
+          {#if ba?.beats?.length}
+            <span class="small mono" title={t('beatsFound', { n: ba.beats.length })}>♩ {ba.bpm} BPM</span>
+            <button class="sm" onclick={() => cutOnBeats(selAudio)} title={t('cutBeatsTip')}>{t('cutBeats')}</button>
+            <button class="sm" onclick={() => cutOnBeats(selAudio, 2)}>{t('cutBeats2')}</button>
+          {:else}
+            <button class="sm" onclick={() => detectBeatsFor(selAudio.assetId)} disabled={beatBusy}>{beatBusy ? t('detecting') : t('detectBeats')}</button>
+          {/if}
+          <label class="chk" title={t('duckTip')}><input type="checkbox" checked={!!selAudio.duck}
+            onchange={(e) => (commit(), setAudio(selAudio.id, { duck: e.currentTarget.checked || undefined }))} /> {t('duck')}</label>
           <button class="sm" onclick={removeAudioItem}>{t('removeAudio')}</button>
           <span class="divider"></span>
         {/if}
@@ -1251,7 +1377,7 @@
     <Timeline {segments} {time} {clips} {durations} {names} {thumbs} {peaks} {duration} {captions} {audios}
       zoom={tlZoom} bind:selected bind:selectedAudio selectedCapIds={selectedSet} onselectcap={selectCap}
       animLabel={t('allCaptions', { name: animName })}
-      onseek={(o) => seek(toSource(segments, o))} onseeksrc={seek} snap={snapOn} range={marks}
+      onseek={(o) => seek(toSource(segments, o))} onseeksrc={seek} snap={snapOn} range={marks} pending={pendingCuts} beats={beatMap}
       {overlays} bind:selectedOverlay
       onoverlay={(id, patch) => setOverlay(id, patch, false)}
       oncommit={commit}
@@ -1305,8 +1431,8 @@
       </div>
     </div>
   {/if}
-  <ExportDialog bind:this={exporter} {name} {segments} {captions} {style} srcW={frameW} srcH={frameH}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), clipVolume })} />
+  <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} {style} srcW={frameW} srcH={frameH}
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), clipVolume })} />
 {/if}
 
 <style>
@@ -1499,6 +1625,15 @@
   .layer .keyhint { margin: -4px 0 0; }
   .layer .crop { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .layer input[type=color] { width: 44px; height: 28px; padding: 0; border: 0; background: none; }
+  .tpl { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 10px; display: grid; gap: 8px; }
+  .tpl summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+  .tpl[open] summary { margin-bottom: 4px; }
+  .tpl-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tpl-item { display: flex; gap: 2px; }
+  .trbox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
+  .trbox select { height: 32px; font-size: 12px; }
+  textarea.tr { margin-top: 4px; font-size: 12px; color: #9fd0ff; border-style: dashed; }
+  .chk { display: flex; gap: 6px; align-items: center; font-size: 12px; white-space: nowrap; }
   .keys-bg { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .55); display: grid; place-items: center; padding: 16px; }
   .keys { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; width: min(440px, 100%);
     max-height: 90vh; overflow: auto; display: grid; gap: 12px; }

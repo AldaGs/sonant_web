@@ -43,11 +43,11 @@ Status from a code review (Nov 2026). ✅ done · 🟡 partly done · ⬜ not st
 14. **Reframe / auto-reframe**: pick the crop for 9:16 per strip and track the face with the existing segmenter mask centroid.
 
 ## Phase D: Smart features
-15. **Silences and fillers**: threshold slider, preview of what will be cut, and an optional auto-run after transcription.
-16. **Audio cleanup**: loudness normalize (-14 LUFS), noise reduction (RNNoise wasm), and auto-ducking of music under speech using word ranges.
-17. **Beat sync**: onset detection on music peaks (`waveform.ts`), beat markers, "cut on beats".
-18. **Translated captions**: a second caption language per project with a toggle in export (local model or user-supplied API key).
-19. **Templates**: save and load style + layout + transitions as a template, plus built-in starters.
+15. ✅ **Silences and fillers**: a Clean up panel with filler/pause switches, a minimum pause slider, and a slider for the breathing room kept. **Preview** strikes the words and shows ⏸ chips in the transcript, plus red ranges on the timeline. **Apply** shows the seconds it will save. **Auto-clean after transcribing** is optional, and its cut is a separate undo step.
+16. ✅ **Audio**: per-music **Duck under speech** (≈25% while words are spoken, 0.25s fades) in preview and export. Export options: **Normalize loudness** to −14 LUFS (BS.1770 measurement, peaks capped at −1 dBFS), and **Voice cleanup** on the video's own sound (85 Hz rumble filter + gentle compressor; export only, not heard in preview). AI noise reduction (RNNoise) not added yet.
+17. ✅ **Beat sync**: **Find beats** on a music item (tempo + beat tracking, cached on the asset), beat ticks on the timeline, snapping to beats, **Cut on beats** / **Every 2nd beat** split the main video.
+18. ✅ **Translated captions**: EN↔ES with local Opus-MT models (download once, run in a worker). Per-caption editable translation, and a **Show translation** switch that drives the preview, SRT/VTT and export. Translated words are spread over the spoken time so word animations still follow the voice. The model couldn't be tested in the dev sandbox (Hugging Face blocked); the display path was tested with injected translations.
+19. ✅ **Templates**: three built-ins (Hook title, Lower third, Follow CTA) and **Save current as template** (caption style + text layers; layers near the end stay pinned to the end). Shared across projects in the browser.
 
 ## Phase E: Accessibility and polish
 20. **Caption accessibility preset** (high contrast, minimum size) and a **platform safe-area overlay** (TikTok, Reels, Shorts UI).

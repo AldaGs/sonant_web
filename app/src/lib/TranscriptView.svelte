@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Caption, Word } from './captions';
   import { isCut, type Segment } from './cuts';
-  import { isFiller, silenceRanges, search } from './transcript';
+  import { isFiller, search } from './transcript';
+  import { cleanup, cleanupRanges, total } from './cleanup.svelte';
   import { t } from './i18n.svelte';
 
   type Range = [number, number];
@@ -82,11 +83,22 @@
     } else if (e.key === 'Escape') anchor = focus = -1;
   }
 
-  // Fillers and silences still in the video.
-  const fillers = $derived(words.flatMap((w, i) => (isFiller(w) && !cut[i] ? [[w.start, w.end] as Range] : [])));
-  const silences = $derived(
-    silenceRanges(words, duration).filter(([a, b]) => !isCut(segments, { start: a, end: b })),
-  );
+  // Fillers and silences still in the video, with the current clean-up settings.
+  const plan = $derived(cleanupRanges(words, duration, segments));
+  const fillers = $derived(plan.fillers);
+  const silences = $derived(plan.silences);
+  const saved = $derived(total(fillers) + total(silences));
+  // Preview: which words would go, and the pause (seconds) that would be trimmed after word i.
+  const willCut = $derived(new Set(cleanup.preview ? fillers.map(([a]) => a) : []));
+  const pauseAfter = $derived.by(() => {
+    const m = new Map<number, number>();
+    if (!cleanup.preview) return m;
+    for (const [a, b] of silences) {
+      const i = words.findLastIndex((w) => w.end <= a + cleanup.pad + 1e-6);
+      m.set(i, (m.get(i) ?? 0) + b - a);
+    }
+    return m;
+  });
 
   // Search
   let query = $state('');
@@ -119,10 +131,29 @@
       <span class="count mono">{hits.length ? `${Math.max(hit, 0) + 1}/${hits.length}` : '0'}</span>
     {/if}
   </div>
-  <div class="row">
-    <button class="sm" disabled={!fillers.length} onclick={() => oncut(fillers)}>{t('removeFillers', { n: fillers.length })}</button>
-    <button class="sm" disabled={!silences.length} onclick={() => oncut(silences)}>{t('trimSilences', { n: silences.length })}</button>
-  </div>
+  <details class="clean" open>
+    <summary>{t('cleanUp')}</summary>
+    <div class="row">
+      <label class="chk"><input type="checkbox" bind:checked={cleanup.fillers} /> {t('fillersOpt', { n: plan.fillers.length })}</label>
+      <label class="chk"><input type="checkbox" bind:checked={cleanup.silences} /> {t('silencesOpt', { n: plan.silences.length })}</label>
+    </div>
+    <label class="sl">{t('minPause')} <span class="mono">{cleanup.min.toFixed(1)}s</span>
+      <input type="range" min="0.2" max="2" step="0.1" bind:value={cleanup.min} disabled={!cleanup.silences} />
+    </label>
+    <label class="sl">{t('keepPad')} <span class="mono">{cleanup.pad.toFixed(2)}s</span>
+      <input type="range" min="0" max="0.5" step="0.05" bind:value={cleanup.pad} disabled={!cleanup.silences} />
+    </label>
+    <div class="row">
+      <label class="chk"><input type="checkbox" bind:checked={cleanup.preview} /> {t('previewCuts')}</label>
+      <label class="chk" title={t('autoCleanTip')}><input type="checkbox" bind:checked={cleanup.auto} /> {t('autoClean')}</label>
+    </div>
+    <div class="row">
+      <button class="sm primary" disabled={!fillers.length && !silences.length} onclick={() => oncut([...fillers, ...silences])}>
+        {t('applyClean', { s: saved.toFixed(1) })}</button>
+      <button class="sm" disabled={!fillers.length} onclick={() => oncut(fillers)}>{t('removeFillers', { n: fillers.length })}</button>
+      <button class="sm" disabled={!silences.length} onclick={() => oncut(silences)}>{t('trimSilences', { n: silences.length })}</button>
+    </div>
+  </details>
   <p class="muted hint">{t('deleteHint')}</p>
   <details class="speakers">
     <summary>{t('speakers')} ({speakers.length})</summary>
@@ -169,7 +200,7 @@
       <p>
         {#each p as i}<span id="w{i}" role="option" aria-selected={hasSel && i >= lo && i <= hi} data-i={i} class="w" class:cut={cut[i]}
             class:cur={i === current} class:sel={hasSel && i >= lo && i <= hi}
-            class:hit={hitSet.has(i)} class:filler={isFiller(words[i])}>{words[i].text}</span>{' '}{/each}
+            class:hit={hitSet.has(i)} class:filler={isFiller(words[i])} class:will={willCut.has(words[i].start)}>{words[i].text}</span>{' '}{#if pauseAfter.has(i)}<span class="pause" aria-hidden="true">⏸ {pauseAfter.get(i)!.toFixed(1)}s</span>{' '}{/if}{/each}
       </p>
     </div>
   {/each}
@@ -207,5 +238,12 @@
   .w.hit { background: rgb(200 245 96 / .18); }
   .w.sel { background: rgb(200 245 96 / .35); color: var(--text); }
   .w.cut { color: #6b6b6b; text-decoration: line-through; }
+  .w.will { background: rgb(255 107 107 / .22); text-decoration: line-through #ff6b6b; }
+  .pause { font-size: 11px; color: #ff8f8f; background: rgb(255 107 107 / .14); border-radius: 4px; padding: 0 4px; white-space: nowrap; }
+  .clean { display: grid; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 10px; }
+  .clean summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+  .chk { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+  .sl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+  .sl input { grid-column: 1 / -1; accent-color: var(--accent); }
   .w.filler:not(.cut) { text-decoration: underline dotted #6b6b6b; }
 </style>

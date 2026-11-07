@@ -11,6 +11,8 @@
 
   let dialog = $state<HTMLDialogElement>();
   let quality = $state<Quality>('standard');
+  let loudness = $state(true);
+  let voice = $state(false);
   let res = $state<Res>('source');
   let aspect = $state<Aspect>('source');
   let fps = $state(30);
@@ -51,7 +53,7 @@
     try {
       // Snapshot so edits during export don't change what's being rendered.
       const blob = await exportVideo(source(), $state.snapshot(segments), $state.snapshot(captions), $state.snapshot(style),
-        { res, aspect, fps, quality }, (p) => (progress = p), abort.signal);
+        { res, aspect, fps, quality, loudness, voice }, (p) => (progress = p), abort.signal);
       result = {
         url: URL.createObjectURL(blob),
         name: (name || 'sonant') + '-captioned.mp4',
@@ -110,6 +112,11 @@
     </label>
   </div>
 
+  <div class="checks">
+    <label title={t('ex.loudTip')}><input type="checkbox" bind:checked={loudness} disabled={running} /> {t('ex.loud')}</label>
+    <label title={t('ex.voiceTip')}><input type="checkbox" bind:checked={voice} disabled={running} /> {t('ex.voice')}</label>
+  </div>
+
   {#if size}<p class="muted summary">{t('ex.summary', { w: size.width, h: size.height })}</p>{/if}
 
   {#if running}
@@ -133,6 +140,8 @@
 </dialog>
 
 <style>
+  .checks { display: grid; gap: 6px; font-size: 13px; }
+  .checks label { display: flex; gap: 8px; align-items: center; }
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 14px;
     width: min(480px, calc(100vw - 32px)); padding: 20px; }
   dialog::backdrop { background: rgb(0 0 0 / .6); }

@@ -1,6 +1,7 @@
-import { clipAt, clipStarts, itemLen, type AudioItem, type Clip } from './project';
+import { DUCK_LEVEL, clipAt, clipStarts, itemLen, type AudioItem, type Clip } from './project';
 import { nextKept, toOutput, type Segment } from './cuts';
 import type { Overlay } from './overlay';
+import { duckGain } from './audio';
 
 export type PlayerState = {
   clips: Clip[];
@@ -9,6 +10,7 @@ export type PlayerState = {
   durations: Map<string, number>;
   clipVolume: number;
   overlays: Overlay[];
+  speech: [number, number][]; // output time, for ducking
 };
 
 // One clock in sequence time that drives a <video> per video asset and an <audio> per audio item.
@@ -150,7 +152,8 @@ export class Player {
       const into = out === null ? -1 : out - item.at;
       const inside = into >= 0 && into < itemLen(item, s.durations.get(item.assetId) ?? 0);
       const local = into + (item.offset ?? 0);
-      el.volume = Math.min(1, Math.max(0, item.volume));
+      const duck = item.duck && out !== null ? duckGain(s.speech, out, DUCK_LEVEL) : 1;
+      el.volume = Math.min(1, Math.max(0, item.volume * duck));
       if (this.playing && inside) {
         if (Math.abs(el.currentTime - local) > 0.3) el.currentTime = local;
         if (el.paused) el.play().catch(() => {});

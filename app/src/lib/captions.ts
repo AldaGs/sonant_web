@@ -1,7 +1,7 @@
 import type { Style } from './render';
 
 export type Word = { text: string; start: number; end: number }; // seconds, source time
-export type Caption = { id: string; words: Word[]; speaker?: number; style?: Partial<Style> }; // speaker: index into the project speaker list; style: per-caption override
+export type Caption = { id: string; words: Word[]; speaker?: number; style?: Partial<Style>; tr?: string }; // speaker: index into the project speaker list; style: per-caption override
 
 const MAX_WORDS = 6;
 const MAX_SECONDS = 2.5;
