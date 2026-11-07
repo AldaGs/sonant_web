@@ -20,6 +20,7 @@ export class Player {
   audios = new Map<string, HTMLAudioElement>(); // audio item id → element
   overlays = new Map<string, HTMLVideoElement>(); // video overlay id → element
   clean = new Map<string, HTMLAudioElement>(); // assetId → noise-reduced copy of its sound, played instead of the video's
+  private ovClean = new Map<string, HTMLAudioElement>(); // video layer id → its own player of the cleaned sound
   t = 0; // sequence (source) time: what's on screen
   o = 0; // output time: the master clock while a freeze frame holds (t stands still then)
   playing = false;
@@ -174,7 +175,19 @@ export class Player {
       const inside = into >= 0 && into < o.len;
       const local = Math.min(o.len, Math.max(0, into)) + (o.offset ?? 0);
       el.volume = Math.min(1, Math.max(0, o.volume ?? 0));
-      el.muted = !o.volume;
+      // Noise-reduced sound for layers too: the layer's video plays muted and a cleaned copy follows it.
+      const cleanSrc = o.volume ? this.clean.get(o.assetId ?? '')?.src : undefined;
+      let ca = this.ovClean.get(o.id);
+      if (cleanSrc && (!ca || ca.src !== cleanSrc)) (ca?.pause(), (ca = new Audio(cleanSrc)), this.ovClean.set(o.id, ca));
+      if (!cleanSrc && ca) (ca.pause(), this.ovClean.delete(o.id), (ca = undefined));
+      el.muted = !o.volume || !!ca;
+      if (ca) {
+        ca.volume = el.volume;
+        const run = this.playing && inside && !el.paused && !el.seeking;
+        if (Math.abs(ca.currentTime - el.currentTime) > (run ? 0.08 : 0.01)) ca.currentTime = el.currentTime;
+        if (run && ca.paused) ca.play().catch(() => {});
+        if (!run && !ca.paused) ca.pause();
+      }
       if (this.playing && inside) {
         if (Math.abs(el.currentTime - local) > 0.3) this.seekTo(el, local);
         if (el.paused) el.play().catch(() => {});

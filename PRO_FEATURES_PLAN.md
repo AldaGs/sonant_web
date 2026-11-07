@@ -52,7 +52,9 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - ✅ The preview plays the cleaned copy in sync with the muted video: same rate, and it re-syncs if it drifts more than 80 ms. Export mixes the cleaned copy instead of the file's sound, so it can be combined with Voice cleanup and loudness.
 - ✅ Tests: `node src/lib/denoise.test.ts` (framing, delay compensation, mix, WAV). In a browser test, a noisy clip on Medium went from −36 to −50 dB in a noise-only stretch.
 - Note: RNNoise is trained on speech, so it also lowers music and pure tones. Use it on talking clips, not music.
-- Later: apply it to video layers and voiceover items. Optionally a stronger model (DeepFilterNet) as a "High quality" choice when the GPU setting allows.
+- ✅ (follow-up) **Music & VO items** have their own Noise reduction choice (`AudioItem.dn`). It renders a cleaned copy from the original file and can be combined with the voice changer (clean first, then the effect). Browser check: pure pink noise went from −34.5 to −84 dB on Strong, with Robot on top.
+- ✅ (follow-up) **Video layers** with their sound on follow the project's noise-reduction setting. The layer plays muted with a cleaned copy following it in preview, and export mixes the cleaned copy.
+- Later: a stronger model (DeepFilterNet) as a "High quality" choice when the GPU setting allows.
 
 ## Phase 4: Effects pack 🟡
 - ✅ **Effects in the colour shader** (`grade.ts`, WebGL2, preview and export): vignette, film grain (changes 24 times a second), glow/bloom and RGB split. Each has a slider in the strip's Color panel and on the phone colour sheet. There are new looks too: Film, Dreamy, Glitch and VHS.

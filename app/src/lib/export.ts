@@ -75,7 +75,8 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
   try {
     for (const id of needed) {
       // Main clips use their noise-reduced copy when there is one.
-      const f = (src.clips.some((c) => c.assetId === id) && src.clean?.get(id)) || src.files.get(id);
+      // Main clips and video layers use their noise-reduced copy when there is one.
+      const f = ((src.clips.some((c) => c.assetId === id) || ovAudio.some((o) => o.assetId === id)) && src.clean?.get(id)) || src.files.get(id);
       if (!f) continue;
       try {
         decoded.set(id, await decoder.decodeAudioData(await f.arrayBuffer()));

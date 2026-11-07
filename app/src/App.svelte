@@ -220,7 +220,8 @@
   let cleanPct = $state<number | null>(null); // progress while cleaning
   let cleanRun = 0;
   $effect(() => {
-    const level = denoise, ids = [...new Set(clips.map((c) => c.assetId))].filter((id) => assets.find((a) => a.id === id)?.kind === 'video');
+    // Main clips, plus video layers whose sound is on.
+    const level = denoise, ids = [...new Set([...clips.map((c) => c.assetId), ...overlays.filter((o) => o.kind === 'video' && o.volume).map((o) => o.assetId!)])].filter((id) => assets.find((a) => a.id === id)?.kind === 'video');
     const run = ++cleanRun;
     const drop = (id: string) => {
       const el = player.clean.get(id);
@@ -555,10 +556,11 @@
 
   // ---- Voice changer on a Music & VO item: rendered into a new audio file (the original is kept) ----
   let vfxBusy = $state(false);
-  async function setVoiceFx(item: AudioItem, fx: VoiceFx | '') {
+  // Re-render a Music & VO item from its original file with noise reduction and/or a voice effect.
+  async function renderItem(item: AudioItem, want: { vfx?: VoiceFx; dn?: number }) {
     const orig = item.src ?? item.assetId;
-    if (!fx) {
-      if (item.src) (commit(), setAudio(item.id, { assetId: item.src, src: undefined, vfx: undefined }));
+    if (!want.vfx && !want.dn) {
+      if (item.src) (commit(), setAudio(item.id, { assetId: item.src, src: undefined, vfx: undefined, dn: undefined }));
       return;
     }
     const f = files.get(orig);
@@ -566,24 +568,28 @@
     vfxBusy = true;
     error = '';
     try {
+      // Noise reduction first (RNNoise wants the raw recording), then the voice effect.
+      const srcBlob: Blob = want.dn ? ((await cleanAudio(f, want.dn, () => {})) ?? f) : f;
       const ctx = new AudioContext();
       let buf: AudioBuffer;
-      try { buf = await ctx.decodeAudioData(await f.arrayBuffer()); } finally { ctx.close(); }
+      try { buf = await ctx.decodeAudioData(await srcBlob.arrayBuffer()); } finally { ctx.close(); }
       await new Promise((r) => setTimeout(r)); // let the "working" state paint
-      const out = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, c) => applyVoiceFx(buf.getChannelData(c), buf.sampleRate, fx));
+      const out = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, c) => (want.vfx ? applyVoiceFx(buf.getChannelData(c), buf.sampleRate, want.vfx) : buf.getChannelData(c)));
       const base = (names.get(orig) ?? 'audio').replace(/\.[^.]+$/, '');
-      const file = new File([wav(out, buf.sampleRate)], `${base} · ${t('vfx.' + fx)}.wav`, { type: 'audio/wav' });
+      const tag = [want.dn ? t('dnShort') : '', want.vfx ? t('vfx.' + want.vfx) : ''].filter(Boolean).join(' + ');
+      const file = new File([wav(out, buf.sampleRate)], `${base} · ${tag}.wav`, { type: 'audio/wav' });
       const r = await importFile(file);
       assets = [...assets, r.asset];
       register(r.asset, file);
       commit();
-      setAudio(item.id, { assetId: r.asset.id, src: orig, vfx: fx });
+      setAudio(item.id, { assetId: r.asset.id, src: orig, vfx: want.vfx, dn: want.dn });
     } catch {
       error = 'err.badMedia';
     } finally {
       vfxBusy = false;
     }
   }
+  const setVoiceFx = (item: AudioItem, fx: VoiceFx | '') => renderItem(item, { vfx: fx || undefined, dn: item.dn });
 
   // ---- Speaker detection: a voice fingerprint per caption, grouped by similarity ----
   let spkCount = $state(0); // 0 = auto
@@ -2255,6 +2261,11 @@
             <select value={selAudio.vfx ?? ''} disabled={vfxBusy} onchange={(e) => setVoiceFx(selAudio, e.currentTarget.value as VoiceFx | '')}>
               <option value="">{t('vfx.none')}</option>
               {#each VOICE_FX as v}<option value={v}>{t('vfx.' + v)}</option>{/each}
+            </select>
+          </label>
+          <label class="vol inline" title={t('dnTip')}>{t('denoise')}
+            <select value={selAudio.dn ?? 0} disabled={vfxBusy} onchange={(e) => renderItem(selAudio, { vfx: selAudio.vfx, dn: +e.currentTarget.value || undefined })}>
+              {#each DENOISE_LEVELS as l (l)}<option value={l}>{t('dn.' + l)}</option>{/each}
             </select>
           </label>
           {#if vfxBusy}<span class="small muted">{t('vfxBusy')}</span>{/if}
