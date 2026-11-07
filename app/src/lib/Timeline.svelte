@@ -93,6 +93,23 @@
     onseek(Math.max(0, Math.min(total, ((e.clientX - r.left) / r.width) * total)));
   }
 
+  // Press and drag on the tracks (not on a draggable or button) to scrub the playhead.
+  // Listens on window and only scrubs past 3px, so a plain click still selects strips and seeks.
+  function scrub(e: PointerEvent) {
+    if (e.button !== 0 || (e.target as Element).closest('button')) return;
+    getSelection()?.removeAllRanges(); // and don't extend a selection made elsewhere on the page
+    const x0 = e.clientX;
+    let on = false;
+    const move = (m: PointerEvent) => {
+      if (!on && Math.abs(m.clientX - x0) < 3) return;
+      on = true;
+      seekAt(m);
+    };
+    const up = () => (removeEventListener('pointermove', move), removeEventListener('pointerup', up));
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+  }
+
   // Generic horizontal drag: calls move(deltaSeconds) live; a press without movement runs onclick.
   function drag(e: PointerEvent, move: (d: number) => void, onclick?: () => void) {
     e.stopPropagation();
@@ -183,7 +200,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="inner" style:--music="{laneCount * 28 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%"
       role="slider" tabindex="0" aria-label={t('timeline')} aria-valuemin={0} aria-valuemax={total} aria-valuenow={playhead ?? 0}
-      onclick={seekAt}
+      onclick={seekAt} onpointerdown={scrub}
       onkeydown={(e) => {
         const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
         if (d) (e.preventDefault(), onseek(Math.max(0, (playhead ?? 0) + d)));
@@ -252,7 +269,7 @@
 </div>
 
 <style>
-  .tl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; }
+  .tl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; user-select: none; -webkit-user-select: none; }
   .labels, .inner { display: grid; grid-template-rows: 20px 48px 30px 22px 22px var(--music, 24px); row-gap: 6px; }
   /* Music & VO sits in its own area under a divider. */
   .labels > span:last-child, .inner > .row.music { border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 2px; align-self: start; }

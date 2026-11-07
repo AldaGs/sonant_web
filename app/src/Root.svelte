@@ -29,6 +29,9 @@
   });
 </script>
 
+<!-- No browser right-click menu, except in text fields (keeps copy/paste there). -->
+<svelte:window oncontextmenu={(e) => !(e.target as Element).closest('input, textarea, [contenteditable]') && e.preventDefault()} />
+
 {#if ready}
   {#if id}
     {#key id}<App projectId={id} />{/key}
