@@ -110,7 +110,7 @@ The logic modules have small assert-based tests that run directly in Node (TypeS
 
 ```bash
 cd app
-for t in audio beats captions autozoom cuts denoise export grade keywords layerfx perf tts overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
+for t in audio beats captions autozoom cuts denoise export grade highlights keywords layerfx perf tts overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
 ```
 
 ## Stack
@@ -157,6 +157,7 @@ app/src/
     perf.ts               device performance settings (GPU / CPU)
     denoise.ts            AI noise reduction (RNNoise worker, cache, WAV)
     tts.ts                AI voiceover: Kokoro (tts.worker.ts) + Piper voices
+    highlights.ts         auto-clips: highlight scoring and making a short project
     render.ts             caption drawing, presets, animations, easing, drag box
     export.ts             MP4 export (video + captions + mixed audio)
     transcribe.ts         audio decode + worker bridge

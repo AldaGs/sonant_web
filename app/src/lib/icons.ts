@@ -57,6 +57,9 @@ import grain from '@material-symbols/svg-400/rounded/grain.svg?raw';
 import flare from '@material-symbols/svg-400/rounded/flare.svg?raw';
 import blur_on from '@material-symbols/svg-400/rounded/blur_on.svg?raw';
 import record_voice_over from '@material-symbols/svg-400/rounded/record_voice_over.svg?raw';
+import auto_awesome_motion from '@material-symbols/svg-400/rounded/auto_awesome_motion.svg?raw';
+import refresh from '@material-symbols/svg-400/rounded/refresh.svg?raw';
+import open_in_new from '@material-symbols/svg-400/rounded/open_in_new.svg?raw';
 import tune from '@material-symbols/svg-400/rounded/tune.svg?raw';
 import colorize from '@material-symbols/svg-400/rounded/colorize.svg?raw';
 import block from '@material-symbols/svg-400/rounded/block.svg?raw';
@@ -127,6 +130,9 @@ export const ICONS = {
   filter_vintage: m(filter_vintage),
   colorize: m(colorize),
   tune: m(tune),
+  auto_awesome_motion: m(auto_awesome_motion),
+  refresh: m(refresh),
+  open_in_new: m(open_in_new),
   record_voice_over: m(record_voice_over),
   vignette: m(vignette),
   grain: m(grain),

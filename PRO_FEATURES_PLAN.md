@@ -78,9 +78,20 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
   - Piper also loads its runtime from jsDelivr and cdnjs.
 - Later: put Kokoro's Spanish voices in once kokoro-js supports them. Per-caption speed fitting, so a dub fits each caption's time.
 
-## Phase 6: Auto-clips (long video → shorts) ⬜
-- Score transcript sentences for hooks, questions, numbers, emphasis (Phase 0) and audio energy. Suggest 15–60s ranges.
-- "Make short" duplicates the project trimmed to that range, in 9:16 with Follow person on.
+## Phase 6: Auto-clips (long video → shorts) ✅
+- ✅ `lib/highlights.ts`:
+  - Splits the transcript into sentences (at punctuation or pauses over 0.7s).
+  - Scores each one: EN/ES hook phrases ("why", "secret", "nobody", "por qué", "nunca"…), questions, numbers, "!", emphasized words from Phase 0, speaking pace compared with the median, and length. Very short lines score lower.
+  - Builds candidate windows of whole sentences 15–30s, 20–45s or 30–60s long, ranked by the opening line's hook, the average content score and ending on a full sentence. It keeps the top 5 that don't overlap.
+- ✅ **Make short** creates a new project from just that range. It shares the media files with the original, like Duplicate.
+  - The kept strips are clipped to the range and keep their effects.
+  - Captions are trimmed to the words inside.
+  - Music, voiceover and layers are shifted onto the short's timeline and trimmed.
+  - It's set to **9:16**, and the same style, auto-zoom and noise reduction carry over.
+- ✅ The **Auto-clips** section in the Transcript tab lists each clip's time, length, reasons (hook, question, numbers, emphasis) and opening line, with **Preview** and **Make short** (which then becomes **Open short**).
+- ✅ Tests: `node src/lib/highlights.test.ts`. In a browser test on a 60s video with a prepared transcript, the hook passage was found first, and Make short created a 19s 9:16 project with the trimmed title layer and transcript.
+- Scoring is transcript-only for now: no audio energy or visual cues. "Follow person" isn't run automatically on the short; use **Follow person → All strips** after opening it.
+- Later: add audio loudness and laughter peaks to the score. Auto-reframe on creation. Make every suggestion a short in one click.
 
 ## Phase 7: Automatic speaker detection ⬜
 - Speaker embeddings (an ONNX model in a worker) plus clustering on Whisper segments. This fills in `Caption.speaker`, which is tagged by hand today.

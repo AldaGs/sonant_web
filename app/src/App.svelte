@@ -26,6 +26,7 @@
   import KeyControls from './lib/KeyControls.svelte';
   import PerfDialog from './lib/PerfDialog.svelte';
   import VoiceoverPanel from './lib/VoiceoverPanel.svelte';
+  import { findHighlights, shortOf, DEFAULT_HL, type Highlight } from './lib/highlights';
   import { cleanAudio, cleanKey, DENOISE_LEVELS } from './lib/denoise';
   import { zoomMoments, autoZoomAt, scalePlace, shakePlace, zoomShake, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
@@ -40,7 +41,7 @@
   import ExportDialog from './lib/ExportDialog.svelte';
   import StylePanel from './lib/StylePanel.svelte';
   import TranscriptView from './lib/TranscriptView.svelte';
-  import { loadDoc, saveDoc, saveProjectFile, deleteAssetIfUnused, addVersion, listVersions, type ProjectDoc, type ProjectMeta, type Version } from './lib/projects';
+  import { createProject, loadDoc, saveDoc, saveProjectFile, deleteAssetIfUnused, addVersion, listVersions, type ProjectDoc, type ProjectMeta, type Version } from './lib/projects';
 
   // The editor works on one project at a time; the home page (#/) lists them all.
   let { projectId }: { projectId: string } = $props();
@@ -439,6 +440,27 @@
     audios = [...audios, ...added];
     selectedAudio = added[0].id;
     announce(t('voAdded', { n: added.length }));
+  }
+  // ---- Auto-clips: best 15–60s moments from the transcript, each can become its own 9:16 project ----
+  let hlOpts = $state({ ...DEFAULT_HL });
+  let highlights = $state<Highlight[] | null>(null);
+  let shortsMade = $state<Record<number, string>>({}); // highlight start → new project id
+  const findClips = () => ((highlights = findHighlights(keptCaptions(captions, segments), $state.snapshot(hlOpts))), (shortsMade = {}));
+  function previewClip(h: Highlight) {
+    seek(h.start);
+    if (!player.playing) toggle();
+  }
+  async function makeShort(h: Highlight, n: number) {
+    const durOf = (id: string) => durations.get(id) ?? 0;
+    const cut = shortOf($state.snapshot({ segments, overlays, audios, captions }), h.start, h.end, (x) => itemLen(x, durOf(x.assetId)));
+    const title = `${name || t('untitled')} · ${t('short')} ${n}`;
+    const doc: Doc = {
+      ...$state.snapshot({ style, language, speakers, assets, clips, clipVolume, showTr, autoZoom, denoise }),
+      ...cut, name: title, luts: luts.map((l) => ({ id: l.id, name: l.name })), aspect: '9:16', words: wordCache,
+    };
+    const meta = await createProject(title);
+    await saveDoc(meta.id, doc, { duration: h.end - h.start, clips: clips.length });
+    shortsMade = { ...shortsMade, [h.start]: meta.id };
   }
   const addClip = (assetId: string) =>
     setClips([...clips, { id: crypto.randomUUID(), assetId, ...(kindOf(assetId) === 'image' ? { len: STILL_LEN } : {}) }]);
@@ -1528,6 +1550,40 @@
       {#if error}<p class="error small">{t(error)}</p>{/if}
 
       {#if tab === 'transcript'}
+        <details class="hl" ontoggle={(e) => e.currentTarget.open && !highlights && captions.length && findClips()}>
+          <summary><Icon name="auto_awesome_motion" size={16} /> {t('hlTitle')}</summary>
+          {#if !captions.length}
+            <p class="muted small">{t('hlNeedTranscript')}</p>
+          {:else}
+            <p class="muted small">{t('hlHint')}</p>
+            <div class="row">
+              <label class="vol inline">{t('hlLen')}
+                <select value={`${hlOpts.min}-${hlOpts.max}`} onchange={(e) => { const [a, b] = e.currentTarget.value.split('-').map(Number); hlOpts.min = a; hlOpts.max = b; findClips(); }}>
+                  {#each ['15-30', '20-45', '30-60'] as r}<option value={r}>{r.replace('-', '–')}s</option>{/each}
+                </select>
+              </label>
+              <button class="sm" onclick={findClips}><Icon name="refresh" size={16} /> {t('hlFind')}</button>
+            </div>
+            {#if highlights && !highlights.length}<p class="muted small">{t('hlNone')}</p>{/if}
+            <ol class="hls">
+              {#each highlights ?? [] as h, i (h.start)}
+                <li>
+                  <div class="mono small">{fmt(toOutput(segments, h.start) ?? h.start)} · {Math.round(h.end - h.start)}s
+                    {#each h.reasons as r}<span class="chip">{t('hl.' + r)}</span>{/each}</div>
+                  <div class="hlt">“{h.title}”</div>
+                  <div class="row">
+                    <button class="sm" onclick={() => previewClip(h)}><Icon name="play_arrow" size={16} /> {t('hlPreview')}</button>
+                    {#if shortsMade[h.start]}
+                      <a class="btn sm" href={`#/p/${shortsMade[h.start]}`}><Icon name="open_in_new" size={16} /> {t('hlOpen')}</a>
+                    {:else}
+                      <button class="sm primary" onclick={() => makeShort(h, i + 1)}><Icon name="add" size={16} /> {t('hlMake')}</button>
+                    {/if}
+                  </div>
+                </li>
+              {/each}
+            </ol>
+          {/if}
+        </details>
         <details class="audio-sil">
           <summary>{t('audioSilTitle')}</summary>
           <p class="muted small">{t('audioSilHint')}</p>
@@ -2308,6 +2364,13 @@
   .layer .keyrow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
   .layer .key.on { color: #ffd84d; border-color: #ffd84d; }
   .layer .keyhint { margin: -4px 0 0; }
+  .hl { display: grid; gap: 8px; margin-bottom: 10px; }
+  .hl summary { cursor: pointer; font-weight: 600; display: flex; gap: 6px; align-items: center; }
+  .hl .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: end; }
+  .hls { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+  .hls li { border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: grid; gap: 6px; }
+  .hls .hlt { font-size: 13px; overflow-wrap: anywhere; }
+  .hls .chip { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--tab-on); font-size: 11px; }
   .stripkey { flex-basis: 100%; max-width: 360px; }
   .layer .lfx summary { cursor: pointer; font-size: 0.85em; margin: 4px 0; }
   .layer .lfx { display: grid; gap: 6px; }
