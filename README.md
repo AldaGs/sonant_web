@@ -142,7 +142,7 @@ The logic modules have small assert-based tests that run directly in Node (TypeS
 
 ```bash
 cd app
-for t in audio beats captions autozoom cuts denoise diarize export grade highlights keywords layerfx perf reverse stabilize tts voicefx overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
+for t in audio beats captions autozoom cuts denoise diarize export grade highlights keywords layerfx audiodecode crash perf reverse stabilize tts voicefx overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
 ```
 
 ## Stack
@@ -196,6 +196,9 @@ app/src/
     stabilize.ts          stabilization: motion estimation, path smoothing, corrections
     voicefx.ts            voice changer (pitch shift, robot, radio, phone)
     reverse.ts            reversed copy of a strip (picture + sound)
+    audiodecode.ts        streamed audio decoding (only the audio track, never the whole file)
+    crash.ts              crash notes, error log and reports (CrashReport.svelte)
+    models.ts             list / remove downloaded AI models
     render.ts             caption drawing, presets, animations, easing, drag box
     export.ts             MP4 export (video + captions + mixed audio)
     transcribe.ts         audio decode + worker bridge

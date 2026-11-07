@@ -1,3 +1,4 @@
+import { decodeFileAudio } from './audiodecode.ts';
 // Reverse a strip: a new MP4 of [a, b) (seconds in the file) played backwards, picture and sound.
 // The browser can't play video backwards, so this copy is made once and then played forwards in its place.
 // Frames are decoded half a second at a time from the end, so memory stays small.
@@ -41,16 +42,14 @@ export async function makeReversed(file: File, a: number, b: number, onProgress:
   // Sound: the same range, reversed sample by sample.
   let audio: AudioBuffer | null = null;
   try {
-    const ac = new AudioContext();
-    try {
-      const buf = await ac.decodeAudioData(await file.arrayBuffer());
+    {
+      const buf = await decodeFileAudio(file); // streams the audio track only
+      if (!buf) throw new Error('no audio');
       const i0 = Math.max(0, Math.floor(a * buf.sampleRate)), i1 = Math.min(buf.length, Math.ceil(b * buf.sampleRate));
       if (i1 > i0) {
         audio = new AudioBuffer({ length: i1 - i0, numberOfChannels: buf.numberOfChannels, sampleRate: buf.sampleRate });
         for (let c = 0; c < buf.numberOfChannels; c++) audio.copyToChannel(reverseRange(buf.getChannelData(c), i0, i1) as Float32Array<ArrayBuffer>, c);
       }
-    } finally {
-      ac.close();
     }
   } catch {} // no audio track
   const aCodec = (await canEncodeAudio('aac')) ? 'aac' : 'opus';

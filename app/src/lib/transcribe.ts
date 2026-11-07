@@ -1,4 +1,5 @@
 // User-facing messages are i18n keys (see i18n.svelte.ts); the UI translates them.
+import { decodeMono } from './audiodecode';
 import type { In, Out } from './whisper.worker';
 import type { Word } from './captions';
 import { gpuFor } from './perf';
@@ -6,15 +7,11 @@ import { gpuFor } from './perf';
 let worker: Worker | null = null;
 
 // Decode the video's audio track to 16 kHz mono, which Whisper expects.
-// ponytail: decodes the whole file in memory; stream via WebCodecs if multi-GB files matter
+// Streams the audio track only, so long phone videos don't have to fit in memory as a whole file.
 export async function decodeAudio(file: File): Promise<Float32Array> {
-  const ctx = new AudioContext({ sampleRate: 16000 });
-  try {
-    const buf = await ctx.decodeAudioData(await file.arrayBuffer());
-    return buf.getChannelData(0);
-  } finally {
-    ctx.close();
-  }
+  const x = await decodeMono(file, 16000);
+  if (!x) throw new Error('err.noAudio');
+  return x;
 }
 
 export async function transcribe(

@@ -49,6 +49,7 @@
   import ExportDialog from './lib/ExportDialog.svelte';
   import StylePanel from './lib/StylePanel.svelte';
   import TranscriptView from './lib/TranscriptView.svelte';
+  import { begin, end, logError } from './lib/crash';
   import { createProject, loadDoc, saveDoc, saveProjectFile, deleteAssetIfUnused, addVersion, listVersions, type ProjectDoc, type ProjectMeta, type Version } from './lib/projects';
 
   // The editor works on one project at a time; the home page (#/) lists them all.
@@ -261,14 +262,17 @@
     const f = files.get(a.id);
     if (!f || a.id in proxyPct) return;
     proxyPct[a.id] = 0;
+    begin('proxy', { file: a.name, secs: Math.round(a.duration) }, projectId);
     try {
       const blob = await makeProxy(f, (p) => (proxyPct[a.id] = p));
       await saveProxy(a.id, blob).catch(() => {}); // over quota: still used this session
       proxyUrls[a.id] = URL.createObjectURL(blob);
       assets = assets.map((x) => (x.id === a.id ? { ...x, proxy: true } : x));
-    } catch {
+    } catch (e) {
       notice = 'err.proxy';
+      logError(e, 'proxy');
     } finally {
+      end();
       delete proxyPct[a.id];
     }
   }
@@ -297,6 +301,7 @@
   }
 
   onMount(async () => {
+    begin('open', {}, projectId); // cleared once the editor has been up for a few seconds
     document.documentElement.lang = ui.lang;
     const [doc, fts] = await Promise.all([loadDoc(projectId), store.get<SavedFont[]>('fonts')]);
     for (const f of fts ?? []) {
@@ -323,6 +328,7 @@
     }
     if (clips.length && !segments.length) segments = [{ start: 0, end: duration }];
     ready = true;
+    setTimeout(end, 4000); // opened and drawing: no longer "crashed while opening"
   });
 
   function restoreDoc(doc: Doc) {
@@ -498,6 +504,7 @@
     const off = starts[at.index];
     stabPct = 0;
     error = '';
+    begin('stabilize', { secs: +(s.end - s.start).toFixed(1) }, projectId);
     const v = document.createElement('video');
     v.muted = true;
     v.src = previewUrl(clips[at.index].assetId); // the proxy seeks much faster when there is one
@@ -520,9 +527,11 @@
       const stab = planStab(shifts, w, h, STAB_FPS, s.start);
       commit();
       segments = segments.with(i, { ...segments[i], fx: { ...segments[i].fx, stab } });
-    } catch {
+    } catch (e) {
       error = 'err.stab';
+      logError(e, 'stabilize');
     } finally {
+      end();
       v.removeAttribute('src');
       stabPct = null;
     }
@@ -539,6 +548,7 @@
     if (!at || !f || kindOf(id!) !== 'video') return;
     revPct = 0;
     error = '';
+    begin('reverse', { secs: +(s.end - s.start).toFixed(1) }, projectId);
     try {
       const blob = await makeReversed(f, s.start - starts[at.index], s.end - starts[at.index], (p) => (revPct = p));
       const file = new File([blob], `${(names.get(id!) ?? 'clip').replace(/\.[^.]+$/, '')} · ${t('reversed')}.mp4`, { type: 'video/mp4' });
@@ -547,9 +557,11 @@
       register(r.asset, file);
       commit();
       segments = segments.with(i, { ...segments[i], fx: { ...segments[i].fx, rev: { assetId: r.asset.id, start: s.start, end: s.end } } });
-    } catch {
+    } catch (e) {
       error = 'err.reverse';
+      logError(e, 'reverse');
     } finally {
+      end();
       revPct = null;
     }
   }
@@ -598,6 +610,7 @@
   async function detectSpeakers() {
     spkBusy = true;
     spkMsg = error = '';
+    begin('speakers', { captions: captions.length }, projectId);
     try {
       const starts = clipStarts(clips, durations), pcm = new Map<string, Float32Array | null>();
       const ids: string[] = [], pieces: Float32Array[] = [], spans: number[] = [], used: Unit[] = [];
@@ -631,8 +644,9 @@
     } catch (e) {
       const m = (e as Error)?.message ?? '';
       error = m.startsWith('err.') ? m : 'err.speakers';
-      console.warn('speaker detection:', m);
+      logError(e, 'speakers');
     } finally {
+      end();
       spkBusy = false;
       spkStatus = '';
     }
@@ -827,6 +841,7 @@
     error = notice = '';
     const lang = language ?? 'auto';
     const chosen = targetClip ? [targetClip] : clips;
+    begin('transcribe', { clips: chosen.length, language: lang }, projectId);
     try {
       const ids = [...new Set(chosen.map((c) => c.assetId))].filter((id) => kindOf(id) !== 'image'); // stills have no sound
       for (let k = 0; k < ids.length; k++) {
@@ -863,7 +878,9 @@
       }
     } catch (e) {
       error = (e as Error).message;
+      logError(e, 'transcribe');
     } finally {
+      end();
       busy = false;
     }
   }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
+  import { begin, end, logError } from './crash';
   import { exportVideo, outputSize, type Aspect, type Res, type Quality, type ExportSource } from './export';
   import type { Caption } from './captions';
   import type { Segment } from './cuts';
@@ -81,9 +82,13 @@
     progress = 0;
     abort = new AbortController();
     const t0 = performance.now();
+    // A note in case the tab runs out of memory and dies: the next load says what was being exported.
+    const src0 = source();
+    begin('export', { res, aspect, fps, quality, length: `${Math.round(segments.reduce((a, s) => a + (s.fx?.hold ?? (s.end - s.start) / (s.fx?.speed ?? 1)), 0))}s`,
+      clips: src0.clips.length, layers: src0.overlays?.length ?? 0, loudness, voice });
     try {
       // Snapshot so edits during export don't change what's being rendered.
-      const blob = await exportVideo(source(), $state.snapshot(segments), $state.snapshot(captions), $state.snapshot(style),
+      const blob = await exportVideo(src0, $state.snapshot(segments), $state.snapshot(captions), $state.snapshot(style),
         { res, aspect, fps, quality, loudness, voice }, (p) => (progress = p), abort.signal);
       result = {
         url: URL.createObjectURL(blob),
@@ -95,7 +100,9 @@
       download(result.url, result.name);
     } catch (e) {
       error = (e as Error).name === 'AbortError' ? 'ex.cancelled' : (e as Error).message;
+      logError(e, 'export');
     } finally {
+      end();
       running = false;
     }
   }

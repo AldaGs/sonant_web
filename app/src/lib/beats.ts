@@ -1,3 +1,4 @@
+import { decodeFileAudio } from './audiodecode.ts';
 // Beat tracking for music: onset envelope → tempo by autocorrelation → the beat grid that best fits the onsets.
 // Good on music with a steady pulse (pop, hip-hop, EDM); free-tempo music gives a rougher grid.
 const HOP = 512;
@@ -61,8 +62,8 @@ export function detectBeats(x: Float32Array, sr: number, minBpm = 70, maxBpm = 1
 
 // Decode a file and track its beats (mono mix-down). Times are in the file's own time.
 export async function beatsOfFile(f: File): Promise<{ bpm: number; times: number[] }> {
-  const ctx = new OfflineAudioContext(1, 1, 22050);
-  const buf = await ctx.decodeAudioData(await f.arrayBuffer());
+  const buf = await decodeFileAudio(f); // streams the audio track only
+  if (!buf) throw new Error('err.noAudio');
   const x = new Float32Array(buf.length);
   for (let c = 0; c < buf.numberOfChannels; c++) {
     const d = buf.getChannelData(c);

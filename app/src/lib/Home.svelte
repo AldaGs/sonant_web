@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import { onMount } from 'svelte';
+  import { listModels, clearModels, fmtBytes, type ModelStore } from './models';
   import { t, ui, setLang } from './i18n.svelte';
   import {
     listProjects, createProject, renameProject, duplicateProject, deleteProject,
@@ -15,10 +16,27 @@
   let menu = $state<string | null>(null);
   let dragging = $state(false);
   let storage = $state<{ used: number; quota: number; persisted: boolean } | null>(null);
+  // Downloaded AI models (Whisper, Kokoro, Piper voices, WeSpeaker, translation): size, and removing them.
+  let models = $state<ModelStore[] | null>(null), modelBusy = $state(false), modelMsg = $state('');
+  const modelBytes = $derived((models ?? []).reduce((n, m) => n + m.bytes, 0));
+  async function loadModels() { models = await listModels().catch(() => []); }
+  async function removeModels() {
+    if (!confirm(t('modelsConfirm', { size: fmtBytes(modelBytes) }))) return;
+    modelBusy = true;
+    try {
+      const freed = await clearModels();
+      modelMsg = t('modelsFreed', { size: fmtBytes(freed) });
+      await loadModels();
+      storage = await storageInfo();
+    } finally {
+      modelBusy = false;
+    }
+  }
 
   async function refresh() {
     projects = await listProjects();
     storage = await storageInfo();
+    loadModels();
     loaded = true;
   }
   onMount(refresh);
@@ -177,6 +195,12 @@
         <div class="bar"><span style:width="{storage.quota ? Math.min(100, (storage.used / storage.quota) * 100) : 0}%"></span></div>
         <p class="muted small">{storage.persisted ? t('protectedHint') : t('notProtectedHint')}</p>
         {#if !storage.persisted}<button class="sm" onclick={protect}>{t('protect')}</button>{/if}
+        <div class="srow models">
+          <span>{t('modelsTitle')}: {models === null ? '…' : models.length ? fmtBytes(modelBytes) : t('modelsNone')}</span>
+          <button class="sm" onclick={removeModels} disabled={modelBusy || !models?.length} title={t('modelsTip')}>
+            <Icon name="delete_sweep" size={16} /> {modelBusy ? t('modelsRemoving') : t('modelsRemove')}</button>
+        </div>
+        <p class="muted small">{modelMsg || t('modelsHint')}</p>
       </section>
     {/if}
   </main>

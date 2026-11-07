@@ -38,6 +38,7 @@ export function wav(channels: Float32Array[], sr: number): Blob {
 export const cleanKey = (assetId: string, mix: number) => `clean:${assetId}:${mix}`;
 
 // ---- Browser side ----
+import { decodeFileAudio } from './audiodecode.ts';
 import type { In, Out } from './denoise.worker.ts';
 let worker: Worker | null = null;
 let queue: Promise<unknown> = Promise.resolve();
@@ -45,15 +46,15 @@ let queue: Promise<unknown> = Promise.resolve();
 // Clean a file's audio. Returns a WAV blob at 48 kHz (stereo kept, at most 2 channels), or null without audio.
 export function cleanAudio(file: Blob, mix: number, onProgress: (p: number) => void): Promise<Blob | null> {
   const run = async () => {
-    const ctx = new AudioContext({ sampleRate: RN_RATE });
-    let buf: AudioBuffer;
-    try {
-      buf = await ctx.decodeAudioData(await file.arrayBuffer());
-    } catch {
-      return null; // no audio track
-    } finally {
-      ctx.close();
-    }
+    // Stream the audio track (not the whole video file into memory), then resample to RNNoise's 48 kHz.
+    const src = await decodeFileAudio(file);
+    if (!src) return null; // no audio track
+    const off = new OfflineAudioContext(Math.min(2, src.numberOfChannels), Math.max(1, Math.ceil(src.duration * RN_RATE)), RN_RATE);
+    const node = off.createBufferSource();
+    node.buffer = src;
+    node.connect(off.destination);
+    node.start();
+    const buf = await off.startRendering();
     const channels = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, c) => buf.getChannelData(c).slice());
     worker ??= new Worker(new URL('./denoise.worker.ts', import.meta.url), { type: 'module' });
     const out = await new Promise<Float32Array[]>((resolve, reject) => {
