@@ -10,7 +10,7 @@
   import { lanes as stackLanes, trimOverlay, type Overlay } from './overlay';
 
   let {
-    segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = 1,
+    segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = $bindable(1),
     selected = $bindable(-1), selectedCapIds = new Set<string>(), selectedAudio = $bindable(''), onselectcap,
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
     pending = [], beats, out,
@@ -186,7 +186,7 @@
     const x0 = e.clientX;
     let on = false;
     const move = (m: PointerEvent) => {
-      if (m.pointerId !== e.pointerId || (!on && Math.abs(m.clientX - x0) < 3)) return;
+      if (pinching || m.pointerId !== e.pointerId || (!on && Math.abs(m.clientX - x0) < 3)) return;
       on = true;
       seekAt(m);
     };
@@ -212,7 +212,7 @@
     let on = false, lx = x0, lt = performance.now(), vel = 0; // vel in px/ms
     const clampT = (v: number) => Math.max(0, Math.min(total, v));
     const move = (m: PointerEvent) => {
-      if (m.pointerId !== e.pointerId || (!on && Math.abs(m.clientX - x0) < 3)) return;
+      if (pinching || m.pointerId !== e.pointerId || (!on && Math.abs(m.clientX - x0) < 3)) return;
       on = true;
       panAt = performance.now();
       if (!centered) { if (scroller) scroller.scrollLeft = sl0 - (m.clientX - x0); return; }
@@ -376,6 +376,56 @@
     }
   });
 
+  // Scroll wheel / trackpad scrolls scrub the playhead; Ctrl/⌘+wheel (trackpad pinch) and
+  // two-finger pinch zoom the timeline, anchored on the point under the cursor/fingers.
+  const ZMIN = 1, ZMAX = 16;
+  let pinching = false;
+  function zoomTo(z: number, clientX: number) {
+    z = Math.max(ZMIN, Math.min(ZMAX, z));
+    if (!scroller || z === zoom) return;
+    const r = scroller.getBoundingClientRect(), px = clientX - r.left;
+    const frac = (scroller.scrollLeft + px) / (width || 1);
+    zoom = z;
+    panAt = performance.now();
+    requestAnimationFrame(() => { if (scroller) scroller.scrollLeft = frac * width - px; });
+  }
+  $effect(() => {
+    const el = scroller;
+    if (!el) return;
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) return zoomTo(zoom * Math.exp(-e.deltaY * 0.01), e.clientX);
+      const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      const px = e.deltaMode === 1 ? d * 16 : e.deltaMode === 2 ? d * el.clientWidth : d;
+      onseek(Math.max(0, Math.min(total, (playhead ?? 0) + px * (total / (width || 1)))));
+    };
+    let d0 = 0, z0 = 1;
+    const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const tstart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      pinching = true; d0 = dist(e.touches) || 1; z0 = zoom;
+      cancelAnimationFrame(coast); swipeT = null;
+    };
+    const tmove = (e: TouchEvent) => {
+      if (!pinching || e.touches.length !== 2) return;
+      e.preventDefault();
+      zoomTo(z0 * dist(e.touches) / d0, (e.touches[0].clientX + e.touches[1].clientX) / 2);
+    };
+    const tend = (e: TouchEvent) => { if (e.touches.length < 2) pinching = false; };
+    el.addEventListener('wheel', wheel, { passive: false });
+    el.addEventListener('touchstart', tstart, { passive: true });
+    el.addEventListener('touchmove', tmove, { passive: false });
+    el.addEventListener('touchend', tend);
+    el.addEventListener('touchcancel', tend);
+    return () => {
+      el.removeEventListener('wheel', wheel);
+      el.removeEventListener('touchstart', tstart);
+      el.removeEventListener('touchmove', tmove);
+      el.removeEventListener('touchend', tend);
+      el.removeEventListener('touchcancel', tend);
+    };
+  });
+
   // While zoomed, keep the playhead in view (unless the user just panned by hand).
   $effect(() => {
     if (centered || playhead === null || !scroller || zoom === 1 || performance.now() - panAt < 1500) return;
@@ -515,7 +565,7 @@
   .labels { font-size: 12px; color: var(--muted); align-items: center; }
   .scroller { overflow-x: auto; overflow-y: hidden; }
   /* Horizontal touch gestures are handled in JS: from a layer they pan, from empty space they scrub. */
-  .inner { position: relative; min-width: 100%; cursor: pointer; touch-action: pan-y pinch-zoom; }
+  .inner { position: relative; min-width: 100%; cursor: pointer; touch-action: pan-y; }
   .inner:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .row { position: relative; }
   .ruler { position: relative; border-bottom: 1px solid var(--border-soft); touch-action: none; }
