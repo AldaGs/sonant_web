@@ -61,3 +61,17 @@ console.log('overlay ok');
   assert.ok(sPoint(m, 0.25).dy < 0 && sPoint(m, 0.75).dy > 0); // two opposite bends
   assert.deepEqual(liveTf({ ...ti, motion: undefined }, 3), ti.tf);
 }
+
+// Every title path starts and ends on the travel line's edges; every style ends invisible or settled.
+{
+  const { newTitle, liveTf, sPoint, TITLE_PATHS, TITLE_STYLES } = await import('./overlay.ts');
+  const ti = newTitle(0, 'Hi');
+  for (const path of TITLE_PATHS) for (const style of TITLE_STYLES) {
+    const o = { ...ti, motion: { ...ti.motion!, path, style } };
+    for (let t = 0; t <= 4; t += 0.05) { const f = liveTf(o, t); for (const v of Object.values(f)) if (typeof v === 'number') assert.ok(Number.isFinite(v), `${path}/${style} ${t}`); }
+    const mid = liveTf(o, 2);
+    assert.ok(Math.abs(mid.scale - ti.tf.scale) < 1e-6 && Math.abs((mid.sx ?? 1) - 1) < 1e-6, `${path}/${style} settled midway`);
+  }
+  const m = ti.motion!;
+  for (const path of ['s', 'wave', 'loop'] as const) assert.ok(Math.abs(sPoint({ ...m, path }, 0).dx + m.span / 2) < 1e-9);
+}

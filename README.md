@@ -45,7 +45,7 @@ Everything runs locally in the browser. No server, no account, and your media ne
 - **Positioning on the preview:**
   - Drag the caption box (or its round handle) to move it. Touch gets a larger grab area.
   - Arrow keys nudge it; Shift moves it further.
-- **Animated titles:** **Animated title** in the toolbar adds a text layer on top of the stack that fades and scales in, then out, while travelling left to right along a horizontal S curve. In the layer inspector, set the in and out times, how far it travels and how deep the curve bends, or switch to plain in & out with no path. The curve is shown as a dashed guide in the preview; drag the layer to move the whole path.
+- **Animated titles:** **Animated title** in the toolbar adds a text layer on top of the stack that animates in and out while travelling along a path. Paths: S curve, Wave, Arc, Loop-the-loop, Zigzag, or none. In & out styles: Pop, Drop & bounce, Spin, Swing, Stretch, Flip. In the layer inspector, set the in and out times, how far it travels and how deep the curve bends. The path is shown as a dashed guide in the preview; drag the layer to move the whole path.
 - **Fonts:** bundled free OFL fonts, plus your own fonts from your PC (Chrome/Edge) or uploaded files.
 - **Timeline:**
   - Rows for video thumbnails, clip waveform, caption blocks, text animation, and Music & VO lanes. Overlapping audio stacks into lanes.

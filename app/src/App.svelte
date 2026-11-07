@@ -22,7 +22,7 @@
   import { beatsOfFile } from './lib/beats';
   import { translateTexts, translated, type Dir } from './lib/translate';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
-  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, DEFAULT_MOTION, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
+  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
   import { audioPeaks } from './lib/waveform';
@@ -639,7 +639,7 @@
       }
       const sel = placed.find((p) => p.id === selectedOverlay);
       const selO = sel && overlays.find((o) => o.id === sel.id);
-      if (selO?.motion?.path === 's') drawSPath(ctx, selO, cv.width / (cv.getBoundingClientRect().width || cv.width));
+      if (hasPath(selO?.motion)) drawSPath(ctx, selO, cv.width / (cv.getBoundingClientRect().width || cv.width));
       if (sel) drawLayerBox(ctx, sel, cv.width / (cv.getBoundingClientRect().width || cv.width));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
       // Platform UI zones (preview only): captions under the app's buttons/description get a warning.
@@ -1605,10 +1605,16 @@
             <label class="vol">{t('titleAnim')}
               <select value={m ? m.path : 'off'} onchange={(e) => { const v = e.currentTarget.value; setMotion(o, v === 'off' ? null : { path: v as Motion['path'] }); doneEditing(); }}>
                 <option value="off">{t('titleOff')}</option>
-                <option value="none">{t('titleInOut')}</option>
-                <option value="s">{t('titleS')}</option>
+                {#each TITLE_PATHS as p}<option value={p}>{t('tpath.' + p)}</option>{/each}
               </select>
             </label>
+            {#if m}
+              <label class="vol">{t('titleStyle')}
+                <select value={m.style ?? 'pop'} onchange={(e) => (setMotion(o, { style: e.currentTarget.value as Motion['style'] }), doneEditing())}>
+                  {#each TITLE_STYLES as st}<option value={st}>{t('tstyle.' + st)}</option>{/each}
+                </select>
+              </label>
+            {/if}
           </div>
           {#if m}
             <label class="vol">{t('titleIn')} <span class="mono small">{m.in.toFixed(1)}s</span>
@@ -1617,7 +1623,7 @@
             <label class="vol">{t('titleOut')} <span class="mono small">{m.out.toFixed(1)}s</span>
               <input type="range" min="0" max={Math.max(0.1, o.len / 2)} step="0.1" value={m.out} oninput={(e) => setMotion(o, { out: +e.currentTarget.value })} />
             </label>
-            {#if m.path === 's'}
+            {#if m.path !== 'none'}
               <label class="vol">{t('titleSpan')} <span class="mono small">{Math.round(m.span * 100)}%</span>
                 <input type="range" min="0" max="1.2" step="0.01" value={m.span} oninput={(e) => setMotion(o, { span: +e.currentTarget.value })} />
               </label>
