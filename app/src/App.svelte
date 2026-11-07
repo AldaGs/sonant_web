@@ -22,6 +22,7 @@
   import { beatsOfFile } from './lib/beats';
   import { translateTexts, translated, type Dir } from './lib/translate';
   import { autoEmphasis, clearEmphasis, hasEmphasis } from './lib/keywords';
+  import { BLENDS, DEFAULT_KEY, DEFAULT_MASK, type Blend } from './lib/layerfx';
   import { zoomMoments, autoZoomAt, scalePlace, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
@@ -1733,6 +1734,42 @@
             {/each}
           </div>
         {/if}
+        <label class="vol">{t('blend')}
+          <select value={o.blend ?? 'normal'} onchange={(e) => (setOverlay(o.id, { blend: e.currentTarget.value === 'normal' ? undefined : (e.currentTarget.value as Blend) }), doneEditing())}>
+            {#each BLENDS as b (b)}<option value={b}>{t('bl.' + b)}</option>{/each}
+          </select>
+        </label>
+        {#if o.kind !== 'text'}
+          <details class="lfx" open={!!o.key}>
+            <summary>{t('chroma')}</summary>
+            <label class="chk"><input type="checkbox" checked={!!o.key} onchange={(e) => (setOverlay(o.id, { key: e.currentTarget.checked ? { ...DEFAULT_KEY } : undefined }), doneEditing())} /> {t('chromaOn')}</label>
+            {#if o.key}
+              {@const k = o.key}
+              <label class="vol">{t('keyColor')}<input type="color" value={k.color} oninput={(e) => setOverlay(o.id, { key: { ...k, color: e.currentTarget.value } })} onchange={doneEditing} /></label>
+              {#each [['keyTol', 'tol', 0, 1], ['keySoft', 'soft', 0, 0.5], ['keySpill', 'spill', 0, 1]] as [label, f, lo, hi] (f)}
+                <label class="vol">{t(label as string)} <span class="mono small">{Math.round(k[f as 'tol'] * 100)}%</span>
+                  <input type="range" min={lo} max={hi} step="0.01" value={k[f as 'tol']} oninput={(e) => setOverlay(o.id, { key: { ...k, [f as string]: +e.currentTarget.value } })} onchange={doneEditing} />
+                </label>
+              {/each}
+            {/if}
+          </details>
+          <details class="lfx" open={!!o.mask}>
+            <summary>{t('mask')}</summary>
+            <select value={o.mask?.shape ?? 'none'} aria-label={t('mask')}
+              onchange={(e) => { const v = e.currentTarget.value; setOverlay(o.id, { mask: v === 'none' ? undefined : { ...DEFAULT_MASK, ...o.mask, shape: v as 'rect' } }); doneEditing(); }}>
+              {#each ['none', 'ellipse', 'rect', 'linear'] as m (m)}<option value={m}>{t('mk.' + m)}</option>{/each}
+            </select>
+            {#if o.mask}
+              {@const m = o.mask}
+              {#each (m.shape === 'linear' ? [['mkAngle', 'angle', -180, 180, 1], ['mkPos', 'pos', 0, 1, 0.01]] : [['mkW', 'w', 0.05, 1, 0.01], ['mkH', 'h', 0.05, 1, 0.01]]).concat([['mkFeather', 'feather', 0, 0.5, 0.01]]) as [label, f, lo, hi, st] (f)}
+                <label class="vol">{t(label as string)} <span class="mono small">{f === 'angle' ? `${m.angle}°` : `${Math.round(m[f as 'w'] * 100)}%`}</span>
+                  <input type="range" min={lo} max={hi} step={st} value={m[f as 'w']} oninput={(e) => setOverlay(o.id, { mask: { ...m, [f as string]: +e.currentTarget.value } })} onchange={doneEditing} />
+                </label>
+              {/each}
+              <label class="chk"><input type="checkbox" checked={!!m.invert} onchange={(e) => (setOverlay(o.id, { mask: { ...m, invert: e.currentTarget.checked || undefined } }), doneEditing())} /> {t('mkInvert')}</label>
+            {/if}
+          </details>
+        {/if}
         {#if o.kind === 'video'}
           <label class="vol">{t('volume')} <span class="mono small">{Math.round((o.volume ?? 0) * 100)}%</span>
             <input type="range" min="0" max="1" step="0.05" value={o.volume ?? 0} oninput={(e) => setOverlay(o.id, { volume: +e.currentTarget.value })} />
@@ -2138,6 +2175,8 @@
   .layer .keyrow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
   .layer .key.on { color: #ffd84d; border-color: #ffd84d; }
   .layer .keyhint { margin: -4px 0 0; }
+  .layer .lfx summary { cursor: pointer; font-size: 0.85em; margin: 4px 0; }
+  .layer .lfx { display: grid; gap: 6px; }
   .layer .crop { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .layer input[type=color] { width: 44px; height: 28px; padding: 0; border: 0; background: none; }
   .tpl { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 10px; display: grid; gap: 8px; }

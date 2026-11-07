@@ -1,4 +1,5 @@
 import type { Caption } from './captions.ts';
+import { processed, compositeOp, type Blend, type ChromaKey, type Mask } from './layerfx.ts';
 import { drawCaption, drawText, fontString, resolveStyle, PRESETS, type Style } from './render.ts';
 
 // A layer drawn over the main video: picture-in-picture video, an image, or a text/sticker.
@@ -27,6 +28,9 @@ export type Overlay = {
   kf?: Keyframe[]; // animation: when present, x/y/scale/rotation/opacity come from these (sorted by t)
   motion?: Motion; // animated title: in/out animation and an optional path, layered on top of tf/kf
   behind?: boolean; // drawn behind the person (over the background, under the cutout subject)
+  blend?: Blend; // how the layer mixes with what's under it (default normal)
+  key?: ChromaKey; // media only: green screen
+  mask?: Mask; // media only: shape mask
 };
 // Animated title. The layer animates in over `in` seconds and out over the last `out` seconds.
 // With path 's' it travels left to right along a horizontal S curve centred on its transform's x/y.
@@ -192,6 +196,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number
   const tf = liveTf(o, t, W / H);
   ctx.save();
   ctx.globalAlpha *= Math.max(0, Math.min(1, tf.opacity));
+  if (o.blend) ctx.globalCompositeOperation = compositeOp(o.blend);
   let placed: Placed | null = null;
   if (o.kind === 'text') {
     const s = textStyle(o);
@@ -206,7 +211,9 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number
     ctx.translate(p.cx, p.cy);
     ctx.rotate((tf.rotation * Math.PI) / 180);
     if (tf.flipX) ctx.scale(-1, 1);
-    ctx.drawImage(src, p.src[0], p.src[1], p.src[2], p.src[3], -p.w / 2, -p.h / 2, p.w, p.h);
+    const fx = processed(src, p.src[0], p.src[1], p.src[2], p.src[3], p.w, p.h, o.key, o.mask);
+    if (fx) ctx.drawImage(fx, -p.w / 2, -p.h / 2, p.w, p.h);
+    else ctx.drawImage(src, p.src[0], p.src[1], p.src[2], p.src[3], -p.w / 2, -p.h / 2, p.w, p.h);
     placed = { id: o.id, cx: p.cx, cy: p.cy, w: p.w, h: p.h, rot: tf.rotation };
   }
   ctx.restore();

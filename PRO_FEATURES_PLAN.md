@@ -22,11 +22,14 @@ Builds on Phase 0.
 - ✅ Tests: `node src/lib/autozoom.test.ts`.
 - Later: show the zooms on the timeline, and let a single zoom be removed or nudged. Zoom toward the speaker's face (reuse the segmenter) instead of the frame centre.
 
-## Phase 2: Chroma key, blend modes, masks ⬜
-These live in the shader and layer code.
-- Chroma key for video and image layers: pick the key colour with the eyedropper, plus tolerance, softness and spill controls, in `grade.ts` (WebGL2).
-- `Overlay.blend`: normal, multiply, screen, overlay, add, using canvas `globalCompositeOperation`.
-- Masks: rectangle, ellipse and linear, with feather and invert, in `overlay.ts`.
+## Phase 2: Chroma key, blend modes, masks ✅
+All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and export match.
+- ✅ **Chroma key** for video and image layers: key colour, tolerance, edge softness and spill removal. Distance is measured in chroma, so dark and bright shades of the screen key out while greys, skin, black and white stay. It runs on the CPU at no more than 1280px per layer per frame. (I chose this over WebGL because it's simpler; move it to `grade.ts` if it's slow on 4K layers.)
+- ✅ **Blend modes** on every layer, text too: normal, multiply, screen, overlay, add, darken, lighten, difference.
+- ✅ **Masks** on media layers: ellipse, rectangle or linear, with size/angle/position, feather and invert.
+- ✅ Layer inspector: a Blend menu, plus "Chroma key" and "Mask" sections. Saved and undoable like other layer edits.
+- ✅ Tests: `node src/lib/layerfx.test.ts`. I also ran a browser check of the canvas masks and key.
+- Later: an eyedropper that picks the key colour from the preview. Masks that follow keyframes. Chroma key on main-video strips.
 
 ## Phase 3: AI noise reduction / voice isolation ⬜
 - RNNoise (WASM) in an AudioWorklet for the preview, and offline in export (`audio.ts`). Include a strength mix.
