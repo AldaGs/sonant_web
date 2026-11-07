@@ -7,7 +7,7 @@ let worker: Worker | null = null;
 
 // Decode the video's audio track to 16 kHz mono, which Whisper expects.
 // ponytail: decodes the whole file in memory; stream via WebCodecs if multi-GB files matter
-async function decodeAudio(file: File): Promise<Float32Array> {
+export async function decodeAudio(file: File): Promise<Float32Array> {
   const ctx = new AudioContext({ sampleRate: 16000 });
   try {
     const buf = await ctx.decodeAudioData(await file.arrayBuffer());

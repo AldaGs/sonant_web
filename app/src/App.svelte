@@ -26,6 +26,9 @@
   import KeyControls from './lib/KeyControls.svelte';
   import PerfDialog from './lib/PerfDialog.svelte';
   import VoiceoverPanel from './lib/VoiceoverPanel.svelte';
+  import { embed, cluster, smooth, spanOf, applySpeakers } from './lib/diarize';
+  import { decodeAudio } from './lib/transcribe';
+  import { gpuFor } from './lib/perf';
   import { findHighlights, shortOf, DEFAULT_HL, type Highlight } from './lib/highlights';
   import { cleanAudio, cleanKey, DENOISE_LEVELS } from './lib/denoise';
   import { zoomMoments, autoZoomAt, scalePlace, shakePlace, zoomShake, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
@@ -441,6 +444,49 @@
     selectedAudio = added[0].id;
     announce(t('voAdded', { n: added.length }));
   }
+  // ---- Speaker detection: a voice fingerprint per caption, grouped by similarity ----
+  let spkCount = $state(0); // 0 = auto
+  let spkBusy = $state(false), spkStatus = $state(''), spkPct = $state(0), spkMsg = $state('');
+  async function detectSpeakers() {
+    spkBusy = true;
+    spkMsg = error = '';
+    try {
+      const starts = clipStarts(clips, durations), pcm = new Map<string, Float32Array | null>();
+      const ids: string[] = [], pieces: Float32Array[] = [], spans: number[] = [];
+      spkStatus = 'st.reading';
+      for (const c of captions) {
+        if (!c.words.length) continue;
+        const [a, b] = spanOf(c), at = clipAt(clips, durations, (a + b) / 2);
+        if (!at) continue;
+        const id = clips[at.index].assetId, f = files.get(id);
+        if (!f || kindOf(id) !== 'video' && kindOf(id) !== 'audio') continue;
+        if (!pcm.has(id)) pcm.set(id, await decodeAudio(f).catch(() => null));
+        const x = pcm.get(id);
+        if (!x) continue;
+        const off = starts[at.index], i0 = Math.max(0, Math.floor((a - off) * 16000)), i1 = Math.min(x.length, Math.ceil((b - off) * 16000));
+        if (i1 - i0 < 4000) continue; // under 0.25s of audio
+        ids.push(c.id);
+        pieces.push(x.slice(i0, i1));
+        spans.push(c.words[c.words.length - 1].end - c.words[0].start);
+      }
+      if (ids.length < 2) return void (spkMsg = 'spkTooFew');
+      const emb = await embed(pieces, gpuFor.whisper(), (s, p) => ((spkStatus = s), (spkPct = p)));
+      const labels = smooth(cluster(emb, { k: spkCount || undefined, weights: spans.map((s) => Math.min(4, Math.max(0.5, s))) }), spans);
+      const r = applySpeakers(captions, ids, labels, speakers);
+      setCaps(r.captions);
+      speakers = r.speakers;
+      spkMsg = 'spkFound';
+      spkPct = Math.max(...labels) + 1;
+    } catch (e) {
+      const m = (e as Error)?.message ?? '';
+      error = m.startsWith('err.') ? m : 'err.speakers';
+      console.warn('speaker detection:', m);
+    } finally {
+      spkBusy = false;
+      spkStatus = '';
+    }
+  }
+
   // ---- Auto-clips: best 15–60s moments from the transcript, each can become its own 9:16 project ----
   let hlOpts = $state({ ...DEFAULT_HL });
   let highlights = $state<Highlight[] | null>(null);
@@ -1598,6 +1644,16 @@
         </details>
         {#if !captions.length && !busy}<p class="muted small">{t('transcriptEmpty')}</p>{/if}
         {#if captions.length}
+          <div class="spkrow">
+            <button class="sm" onclick={detectSpeakers} disabled={spkBusy || busy} title={t('spkTip')}><Icon name="groups" size={16} /> {t('spkDetect')}</button>
+            <label class="vol inline">{t('spkCount')}
+              <select bind:value={spkCount} disabled={spkBusy}>
+                {#each [0, 2, 3, 4, 5, 6] as n}<option value={n}>{n ? n : t('spkAuto')}</option>{/each}
+              </select>
+            </label>
+            {#if spkBusy}<span class="muted small" role="status">{t(spkStatus || 'st.spkListening')} {spkStatus === 'st.reading' ? '' : Math.round(spkPct) + '%'}</span>
+            {:else if spkMsg}<span class="muted small" role="status">{t(spkMsg, { n: spkPct })}</span>{/if}
+          </div>
           <TranscriptView bind:this={transcriptView} {captions} {segments} {time} {duration}
             {speakers} onseek={seek} oncut={cutRanges} onkeep={keepRanges}
             onspeaker={(ids, k) => { if (k === speakers.length) speakers = [...speakers, '']; setCaps(setSpeaker(captions, new Set(ids), k)); }}
@@ -2364,6 +2420,7 @@
   .layer .keyrow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
   .layer .key.on { color: #ffd84d; border-color: #ffd84d; }
   .layer .keyhint { margin: -4px 0 0; }
+  .spkrow { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin: 6px 0; }
   .hl { display: grid; gap: 8px; margin-bottom: 10px; }
   .hl summary { cursor: pointer; font-weight: 600; display: flex; gap: 6px; align-items: center; }
   .hl .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: end; }

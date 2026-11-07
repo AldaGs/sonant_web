@@ -93,8 +93,16 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - Scoring is transcript-only for now: no audio energy or visual cues. "Follow person" isn't run automatically on the short; use **Follow person → All strips** after opening it.
 - Later: add audio loudness and laughter peaks to the score. Auto-reframe on creation. Make every suggestion a short in one click.
 
-## Phase 7: Automatic speaker detection ⬜
-- Speaker embeddings (an ONNX model in a worker) plus clustering on Whisper segments. This fills in `Caption.speaker`, which is tagged by hand today.
+## Phase 7: Automatic speaker detection ✅ (model not run here)
+- ✅ `lib/diarize.ts` and `diarize.worker.ts`:
+  - Takes one voice fingerprint per caption with **WeSpeaker ResNet34** (`onnx-community/wespeaker-voxceleb-resnet34-LM`, ~26 MB, the embedding model pyannote uses) through transformers.js. It uses WebGPU when the Performance setting allows the GPU, otherwise WASM.
+  - Captions shorter than 1s are widened around their middle.
+  - Fingerprints are grouped by **average-linkage clustering on cosine similarity**, weighted by speech length. It stops at a similarity threshold (Auto) or at the number of speakers asked for (2–6).
+  - Afterwards, a very short caption between two of the same speaker gets that speaker.
+- ✅ **Detect speakers** button and a Speakers count (Auto or 2–6) above the transcript. It fills `Caption.speaker` in one undo step, keeps names already given and adds new "Speaker N" entries, which can be renamed and corrected by hand as before.
+- ✅ Tests: `node src/lib/diarize.test.ts` (clustering with 1, 2 and 3 synthetic voices, forced count, smoothing, windows, applying). In a browser, the audio is read and a blocked download shows a clear error. The model download from Hugging Face is blocked in this sandbox, so **detection on real voices hasn't been run**, and the 0.5 Auto threshold may need tuning.
+- Limits: one speaker per caption, so overlapping speech or a speaker change mid-caption isn't split. Split the caption first.
+- Later: split captions at speaker changes using pyannote segmentation. Tune the threshold on real recordings.
 
 ## Phase 8: Stabilization and the rest ⬜
 - Stabilization: estimate motion frame to frame (block matching on the proxy), smooth it, then crop. Run once and cache it like the proxy.
