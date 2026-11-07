@@ -1,6 +1,6 @@
 import type { Style } from './render';
 
-export type Word = { text: string; start: number; end: number }; // seconds, source time
+export type Word = { text: string; start: number; end: number; em?: boolean }; // seconds, source time; em: auto/hand emphasis (always drawn in the highlight color)
 export type Caption = { id: string; words: Word[]; speaker?: number; style?: Partial<Style>; tr?: string }; // speaker: index into the project speaker list; style: per-caption override
 
 const MAX_WORDS = 6;

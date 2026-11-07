@@ -4,10 +4,14 @@ import { DEFAULT_TF, type Overlay } from './overlay.ts';
 // A template: a caption look plus text layers (titles, lower thirds, calls to action), reusable across
 // projects. Layer times are relative: `at` ≥ 0 from the playhead, or < 0 from the end of the video.
 export type TemplateLayer = Omit<Overlay, 'id' | 'kind' | 'assetId' | 'offset' | 'volume'>;
-export type Template = { id: string; name: string; style: Style; layers: TemplateLayer[]; builtin?: boolean };
+// keepStyle: only adds its layers, leaves the captions' look alone (stickers, progress bar).
+export type Template = { id: string; name: string; style: Style; layers: TemplateLayer[]; builtin?: boolean; keepStyle?: boolean };
 
 const T = (text: string, at: number, len: number, tf: Partial<Overlay['tf']>, style: Partial<Style> = {}, kf?: Overlay['kf']): TemplateLayer =>
   ({ text, at, len, style, tf: { ...DEFAULT_TF, scale: 1, ...tf }, ...(kf && { kf }) });
+// Stickers: an emoji (or emoji + words) that pops in, with no outline so colour emoji look right.
+const S = (text: string, at: number, len: number, x: number, y: number, s: number, style: Partial<Style> = {}): TemplateLayer =>
+  T(text, at, len, { x, y, scale: s }, { outline: 0, animation: 'none', uppercase: false, ...style }, pop(x, y, s));
 const pop = (x: number, y: number, s: number): Overlay['kf'] => [
   { t: 0, x, y, scale: s * 0.6, rotation: 0, opacity: 0 },
   { t: 0.25, x, y, scale: s * 1.08, rotation: 0, opacity: 1 },
@@ -22,12 +26,22 @@ export const BUILTIN: Template[] = [
       T('Title · @handle', 0.2, 3.8, { x: 0.3, y: 0.8, scale: 0.55 }, { color: '#c8f560', uppercase: false })] },
   { id: 'b-cta', name: 'Follow CTA', builtin: true, style: PRESETS['Active pill'] ?? PRESETS['Viral pop'],
     layers: [T('FOLLOW FOR MORE', -2.5, 2.5, { y: 0.5, scale: 1.2 }, { highlight: '#ff4d6d' }, pop(0.5, 0.5, 1.2))] },
+  // Progress bar for the whole video (placed at the start; its length is clipped to the video).
+  { id: 'b-progress', name: 'Progress bar', builtin: true, keepStyle: true, style: PRESETS['Viral pop'],
+    layers: [{ text: '', at: 0, len: 1e6, tf: { ...DEFAULT_TF, scale: 1 }, bar: { color: '#c8f560', track: 'rgba(255,255,255,0.25)', h: 0.008 } }] },
+  { id: 'b-fire', name: 'Sticker: 🔥', builtin: true, keepStyle: true, style: PRESETS['Viral pop'], layers: [S('🔥', 0, 1.5, 0.78, 0.3, 2)] },
+  { id: 'b-wow', name: 'Sticker: 😱 WOW', builtin: true, keepStyle: true, style: PRESETS['Viral pop'],
+    layers: [S('😱', 0, 1.8, 0.5, 0.3, 2.2), S('WOW', 0.15, 1.65, 0.5, 0.42, 1.3, { uppercase: true, outline: 0.16, color: '#ffe600' })] },
+  { id: 'b-like', name: 'Sticker: 👍 Like & subscribe', builtin: true, keepStyle: true, style: PRESETS['Viral pop'],
+    layers: [S('👍 LIKE & SUBSCRIBE', -3, 3, 0.5, 0.82, 0.8, { box: '#ff0033', boxAlpha: 1, color: '#ffffff', family: 'Inter', weight: 800 })] },
+  { id: 'b-point', name: 'Sticker: 👉 Look', builtin: true, keepStyle: true, style: PRESETS['Viral pop'], layers: [S('👉', 0, 2, 0.25, 0.5, 1.8)] },
 ];
 
 // Template layers placed into a project: `now` = playhead (output time), `end` = video length.
 export function placeLayers(t: Template, now: number, end: number): Overlay[] {
   return t.layers.map((l) => {
-    const at = l.at < 0 ? Math.max(0, end + l.at) : Math.min(now + l.at, Math.max(0, end - 0.2));
+    // A progress bar always covers the whole video; other layers start at the playhead (or stick to the end).
+    const at = l.bar ? 0 : l.at < 0 ? Math.max(0, end + l.at) : Math.min(now + l.at, Math.max(0, end - 0.2));
     return { ...structuredClone(l), id: crypto.randomUUID(), kind: 'text' as const, at, len: Math.max(0.2, Math.min(l.len, end - at || l.len)) };
   });
 }

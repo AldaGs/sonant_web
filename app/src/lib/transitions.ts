@@ -60,11 +60,14 @@ function draw(ctx: Ctx, kind: Trans, u: number, prev: Canvas | null, W: number, 
     const k = 1.25 - 0.25 * u; // new frame settles from 125%
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
+    // Zoom blur: a few slightly larger copies on top smear the image outwards, strongest mid-move.
+    const blur = Math.sin(u * Math.PI) * 0.08, at = (img: CanvasImageSource, s: number) => ctx.drawImage(img, (W - W * s) / 2, (H - H * s) / 2, W * s, H * s);
     ctx.drawImage(inc, (W - W * k) / 2, (H - H * k) / 2, W * k, H * k);
+    for (let j = 1; j <= 3 && blur > 0.005; j++) ((ctx.globalAlpha = 0.3), at(inc, k * (1 + blur * j / 3)));
+    ctx.globalAlpha = 1;
     if (prev) {
       const p = 1 + u * 0.6; // old frame rushes towards the viewer and fades
-      ctx.globalAlpha = 1 - u;
-      ctx.drawImage(prev, (W - W * p) / 2, (H - H * p) / 2, W * p, H * p);
+      for (let j = 0; j <= 3; j++) ((ctx.globalAlpha = (1 - u) * (j ? 0.3 : 1)), at(prev, p * (1 + blur * j / 3)));
     }
   } else {
     const inc = incoming();

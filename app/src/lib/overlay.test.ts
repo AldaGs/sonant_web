@@ -45,6 +45,18 @@ assert.equal(dropKey(k, 0).length, 1);
 const pk = punchKeys({ ...img, kf: undefined }, 1);
 assert.deepEqual(pk.map((x) => x.t), [1, 1.5]);
 assert.ok(Math.abs(pk[1].scale - tf.scale * 1.2) < 1e-9);
+// mask keyframes: interpolated over the layer's time; wipe reveals left to right
+import { maskAt, setMaskKey, maskReveal } from './overlay.ts';
+import { maskAlpha } from './layerfx.ts';
+const lay = { id: 'm', kind: 'image' as const, at: 10, len: 3, tf: { x: 0.5, y: 0.5, scale: 0.5, rotation: 0, opacity: 1 }, ...maskReveal('wipe', 1) };
+const mk = (t: number) => maskAt(lay, t)!;
+assert.equal(maskAlpha(mk(10), 0.1, 0.5), 0); // hidden at the start
+assert.ok(maskAlpha(mk(10.5), 0.1, 0.5) === 1 && maskAlpha(mk(10.5), 0.9, 0.5) === 0); // half way: left shown, right not yet
+assert.equal(maskAlpha(mk(12), 0.9, 0.5), 1); // fully shown after
+const spot = { ...lay, ...maskReveal('spot', 1) };
+assert.ok(maskAt(spot, 10)!.w < 0.05 && maskAt(spot, 11.5)!.w > 1.5);
+assert.equal(maskAt({ ...lay, maskKf: undefined }, 10.5), lay.mask); // no keys: the mask as set
+assert.equal(setMaskKey(lay.maskKf, 1, { ...lay.mask, pos: 0.3 }).length, 2); // same time: replaced
 console.log('overlay ok');
 
 // Animated title: invisible at its edges, full at its middle, and travels the S from left to right.

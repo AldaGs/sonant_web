@@ -1,6 +1,9 @@
 // Colour grading for video strips: basic adjustments plus an optional 3D LUT (.cube), on the GPU (WebGL2).
 // b, c, s, temp are -1..1 with 0 = unchanged.
-export type Color = { b?: number; c?: number; s?: number; temp?: number; lut?: string; lutMix?: number };
+// Effects (0..1, 0 = off): vig = vignette, grain = film grain (animated), glow = bloom on bright areas, rgb = RGB split.
+export type Color = { b?: number; c?: number; s?: number; temp?: number; lut?: string; lutMix?: number;
+  vig?: number; grain?: number; glow?: number; rgb?: number };
+export const EFFECTS = ['vig', 'grain', 'glow', 'rgb'] as const;
 export type Lut = { id: string; name: string; size: number; data: Uint8Array }; // RGBA8, r fastest
 
 export const COLOR_PRESETS: Record<string, Color> = {
@@ -12,7 +15,13 @@ export const COLOR_PRESETS: Record<string, Color> = {
   moody: { b: -0.08, c: 0.18, s: -0.3, temp: -0.15 },
   mono: { s: -1, c: 0.12 },
 };
-export const isNeutral = (c?: Color) => !c || (!c.b && !c.c && !c.s && !c.temp && !c.lut);
+export const isNeutral = (c?: Color) => !c || (!c.b && !c.c && !c.s && !c.temp && !c.lut && !c.vig && !c.grain && !c.glow && !c.rgb);
+export const COLOR_LOOKS: Record<string, Color> = { // effect looks, on top of the colour presets
+  film: { grain: 0.35, vig: 0.4, c: 0.1, s: -0.1, temp: 0.1 },
+  dreamy: { glow: 0.6, b: 0.04, c: -0.1 },
+  glitch: { rgb: 0.6, c: 0.15 },
+  vhs: { rgb: 0.35, grain: 0.5, s: -0.2, vig: 0.3 },
+};
 
 // Parse an Adobe/Resolve .cube 3D LUT into RGBA8 (domain assumed 0..1).
 export function parseCube(text: string, name: string): Lut {
@@ -43,9 +52,24 @@ const FS = `#version 300 es
 precision highp float; precision highp sampler3D;
 in vec2 uv; out vec4 o;
 uniform sampler2D src; uniform sampler3D lut;
-uniform float b, c, s, temp, mixL, useLut, size;
+uniform float b, c, s, temp, mixL, useLut, size, vig, grain, glow, rgb, seed;
+uniform vec2 px; // one texel
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233)) + seed) * 43758.5453); }
 void main() {
   vec3 col = texture(src, uv).rgb;
+  if (rgb > 0.) { // RGB split: red and blue pulled apart sideways, a little more towards the edges
+    vec2 d = vec2(px.x * 12. * rgb * (0.6 + length(uv - .5)), 0.);
+    col.r = texture(src, uv + d).r; col.b = texture(src, uv - d).b;
+  }
+  if (glow > 0.) { // bloom: blurred bright parts added back (13 taps on two rings)
+    vec3 acc = vec3(0.);
+    for (int i = 0; i < 12; i++) {
+      float a = float(i) * 0.5236, r = (i % 2 == 0 ? 6. : 14.);
+      vec3 t = texture(src, uv + vec2(cos(a), sin(a)) * px * r * (1. + glow * 2.)).rgb;
+      acc += max(t - .55, 0.);
+    }
+    col += acc / 12. * glow * 2.5;
+  }
   if (useLut > .5) {
     vec3 q = clamp(col, 0., 1.) * (size - 1.) / size + .5 / size; // sample texel centres
     col = mix(col, texture(lut, q).rgb, mixL);
@@ -55,6 +79,8 @@ void main() {
   float l = dot(col, vec3(.2126, .7152, .0722));
   col = mix(vec3(l), col, 1. + s);
   col += vec3(.08, .02, -.08) * temp;
+  if (vig > 0.) { vec2 q = uv - .5; col *= 1. - vig * .8 * smoothstep(.2, .8, length(q * vec2(1.1, 1.))); }
+  if (grain > 0.) col += (hash(uv * 1000.) - .5) * grain * .18;
   o = vec4(clamp(col, 0., 1.), 1.);
 }`;
 
@@ -95,7 +121,7 @@ export class Grader {
     const loc = gl.getAttribLocation(p, 'p');
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    for (const n of ['src', 'lut', 'b', 'c', 's', 'temp', 'mixL', 'useLut', 'size']) this.u[n] = gl.getUniformLocation(p, n);
+    for (const n of ['src', 'lut', 'b', 'c', 's', 'temp', 'mixL', 'useLut', 'size', 'vig', 'grain', 'glow', 'rgb', 'seed', 'px']) this.u[n] = gl.getUniformLocation(p, n);
     this.tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
@@ -108,7 +134,8 @@ export class Grader {
   get ok() { return !!this.gl; }
 
   // Graded copy of `src` (w×h), or `src` itself when there's nothing to do or no WebGL2.
-  apply(src: CanvasImageSource, w: number, h: number, color: Color | undefined, lut?: Lut): CanvasImageSource {
+  // t: time in seconds, so grain moves (24 patterns a second, like film).
+  apply(src: CanvasImageSource, w: number, h: number, color: Color | undefined, lut?: Lut, t = 0): CanvasImageSource {
     const gl = this.gl;
     if (!gl || isNeutral(color) || !w || !h) return src;
     const c = color!;
@@ -135,6 +162,12 @@ export class Grader {
     gl.uniform1f(this.u.mixL, c.lutMix ?? 1);
     gl.uniform1f(this.u.useLut, useLut ? 1 : 0);
     gl.uniform1f(this.u.size, useLut ? lut!.size : 2);
+    gl.uniform1f(this.u.vig, c.vig ?? 0);
+    gl.uniform1f(this.u.grain, c.grain ?? 0);
+    gl.uniform1f(this.u.glow, c.glow ?? 0);
+    gl.uniform1f(this.u.rgb, c.rgb ?? 0);
+    gl.uniform1f(this.u.seed, (Math.floor(t * 24) % 997) * 0.618);
+    gl.uniform2f(this.u.px, 1 / w, 1 / h);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     return this.canvas;
   }

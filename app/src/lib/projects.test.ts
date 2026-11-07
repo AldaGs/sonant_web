@@ -33,4 +33,19 @@ assert.deepEqual(r.assets!.map((a) => a.id), ['V2', 'M2']);
 assert.equal(r.clips![0].assetId, 'V2');
 assert.equal(r.audios![0].assetId, 'M2');
 assert.deepEqual(Object.keys(r.words!), ['V2|spanish']);
+// overlays and background images are remapped too
+const r2 = reassignIds({ ...doc, overlays: [{ id: 'o', kind: 'image', assetId: 'v1' }, { id: 't', kind: 'text' }], segments: [{ start: 0, end: 1, fx: { bg: 'image', bgImage: 'm1' } }] } as unknown as ProjectDoc, new Map([['v1', 'V2'], ['m1', 'M2']]));
+assert.deepEqual(r2.overlays!.map((o) => o.assetId), ['V2', undefined]);
+assert.equal(r2.segments![0].fx!.bgImage, 'M2');
+
+// LUTs travel inside the file and are checked on the way back
+const lut = { id: 'L', name: 'Teal', size: 2, data: Uint8Array.from({ length: 32 }, (_, i) => i * 7) };
+const withLut = await unpackProject(packProject(doc, files, [lut]));
+assert.deepEqual(withLut.luts, [lut]);
+assert.deepEqual((await unpackProject(packed)).luts, []);
+// a LUT whose data doesn't match its size is rejected
+const badHead = JSON.stringify({ version: 1, doc, files: [], luts: [{ id: 'L', name: 'x', size: 2, data: btoa('short') }] });
+const enc = new TextEncoder().encode(badHead), len = new Uint8Array(4);
+new DataView(len.buffer).setUint32(0, enc.length, true);
+await assert.rejects(unpackProject(new Blob(['SONANT1\n', len, enc])), /err.badProject/);
 console.log('projects ok');

@@ -12,7 +12,9 @@ export const STILL_LEN = 5; // default seconds for an image clip
 // An extra audio item (music, voiceover), placed in OUTPUT time so word cuts don't move it.
 // offset/len trim the file: it plays [offset, offset + len) of the asset, starting at `at`.
 // duck: lower this item's volume while someone is speaking (see DUCK_LEVEL).
-export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number; duck?: boolean };
+// vfx: voice changer applied (assetId then points at the rendered copy, src at the original file).
+export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number; duck?: boolean;
+  vfx?: import('./voicefx').VoiceFx; dn?: number /* noise reduction level */; src?: string };
 export const DUCK_LEVEL = 0.25; // ≈ −12 dB under speech
 
 // How long an audio item plays (its trimmed length, or the rest of the file).

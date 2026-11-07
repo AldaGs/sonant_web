@@ -7,12 +7,13 @@
   import { t } from './i18n.svelte';
 
   type Range = [number, number];
-  let { captions, segments, time, duration, speakers, onseek, oncut, onkeep, onspeaker, onrename }: {
+  let { captions, segments, time, duration, speakers, onseek, oncut, onkeep, onspeaker, onrename, onemphasis }: {
     captions: Caption[]; segments: Segment[]; time: number; duration: number;
     speakers: string[]; // names; '' = default "Speaker N"
     onseek: (t: number) => void; oncut: (r: Range[]) => void; onkeep: (r: Range[]) => void;
     onspeaker: (captionIds: string[], k: number | undefined) => void; // k = speakers.length adds a new speaker
     onrename: (k: number, name: string) => void;
+    onemphasis?: (starts: number[], on: boolean) => void; // mark / unmark words (by start time) as emphasized
   } = $props();
 
   const words = $derived(captions.flatMap((c) => c.words));
@@ -69,6 +70,14 @@
     return true;
   }
 
+  // Emphasis on the selection: on unless every selected word already has it.
+  const selAllEm = $derived(hasSel && words.slice(lo, hi + 1).every((w) => w.em));
+  export function toggleEmphasis(): boolean {
+    if (!hasSel || !onemphasis) return false;
+    onemphasis(words.slice(lo, hi + 1).map((w) => w.start), !selAllEm);
+    return true;
+  }
+
   function onclick(e: MouseEvent) {
     const i = Number((e.target as HTMLElement).closest<HTMLElement>('[data-i]')?.dataset.i);
     if (Number.isInteger(i)) select(i, e.shiftKey);
@@ -82,6 +91,7 @@
       const i = Math.max(0, Math.min(words.length - 1, from + (e.key === 'ArrowRight' ? 1 : -1)));
       select(i, e.shiftKey);
     } else if (e.key === 'Escape') anchor = focus = -1;
+    else if (e.key.toLowerCase() === 'e' && !e.ctrlKey && !e.metaKey && toggleEmphasis()) e.preventDefault();
   }
 
   // Fillers and silences still in the video, with the current clean-up settings.
@@ -176,6 +186,7 @@
         <option value={speakers.length}>{t('newSpeaker')}</option>
       </select>
       <button class="sm" onclick={toggleSelection}>{selAllCut ? t('restoreSel') : t('cutSel')}</button>
+      {#if onemphasis}<button class="sm" class:on={selAllEm} aria-pressed={selAllEm} onclick={toggleEmphasis} title={t('emSelTip')}>★ {selAllEm ? t('emOff') : t('emOn')}</button>{/if}
       <button class="sm icon" onclick={() => (anchor = focus = -1)} aria-label={t('clearSel')}><Icon name="close" /></button>
     </div>
   {/if}
@@ -201,7 +212,7 @@
       <p>
         {#each p as i}<span id="w{i}" role="option" aria-selected={hasSel && i >= lo && i <= hi} data-i={i} class="w" class:cut={cut[i]}
             class:cur={i === current} class:sel={hasSel && i >= lo && i <= hi}
-            class:hit={hitSet.has(i)} class:filler={isFiller(words[i])} class:will={willCut.has(words[i].start)}>{words[i].text}</span>{' '}{#if pauseAfter.has(i)}<span class="pause" aria-hidden="true"><Icon name="pause" size={12} /> {pauseAfter.get(i)!.toFixed(1)}s</span>{' '}{/if}{/each}
+            class:em={words[i].em} class:hit={hitSet.has(i)} class:filler={isFiller(words[i])} class:will={willCut.has(words[i].start)}>{words[i].text}</span>{' '}{#if pauseAfter.has(i)}<span class="pause" aria-hidden="true"><Icon name="pause" size={12} /> {pauseAfter.get(i)!.toFixed(1)}s</span>{' '}{/if}{/each}
       </p>
     </div>
   {/each}
@@ -236,6 +247,7 @@
   .w { cursor: pointer; border-radius: 3px; padding: 0 1px; }
   .w:hover { background: var(--tab-on); }
   .w.cur { color: var(--accent); }
+  .w.em { text-decoration: underline 2px var(--accent); text-underline-offset: 3px; font-weight: 600; }
   .w.hit { background: rgb(200 245 96 / .18); }
   .w.sel { background: rgb(200 245 96 / .35); color: var(--text); }
   .w.cut { color: #6b6b6b; text-decoration: line-through; }

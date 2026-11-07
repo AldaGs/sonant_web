@@ -19,6 +19,8 @@ export class Player {
   videos = new Map<string, HTMLVideoElement>(); // assetId → element
   audios = new Map<string, HTMLAudioElement>(); // audio item id → element
   overlays = new Map<string, HTMLVideoElement>(); // video overlay id → element
+  clean = new Map<string, HTMLAudioElement>(); // assetId → noise-reduced copy of its sound, played instead of the video's
+  private ovClean = new Map<string, HTMLAudioElement>(); // video layer id → its own player of the cleaned sound
   t = 0; // sequence (source) time: what's on screen
   o = 0; // output time: the master clock while a freeze frame holds (t stands still then)
   playing = false;
@@ -73,13 +75,17 @@ export class Player {
       const segs = s.segments, dt = (now - this.last) / 1000, total = outDuration(segs);
       const starts = clipStarts(s.clips, s.durations);
       const at = clipAt(s.clips, s.durations, this.t);
-      const el = at && this.videos.get(s.clips[at.index].assetId);
-      const hold = !!segAt(segs, this.t)?.fx?.hold;
+      const seg = segAt(segs, this.t), rev = seg?.fx?.rev;
+      // A reversed strip plays its reversed copy forwards: copy time 0 = the strip's start.
+      const el = rev ? this.videos.get(rev.assetId) : at && this.videos.get(s.clips[at.index].assetId);
+      const hold = !!seg?.fx?.hold;
       if (!hold && at && el && !el.paused && !el.seeking && el.readyState >= 2) {
         // The playing video is the clock (keeps lips in sync; its playbackRate carries the strip's speed).
-        this.t = starts[at.index] + el.currentTime;
-        const len = clipLen(s.durations, s.clips[at.index]);
-        if (el.currentTime >= len - 0.04 || el.ended) this.t = Math.max(this.t, starts[at.index] + len); // clip done: next one
+        const base = rev ? rev.start : starts[at.index];
+        this.t = base + el.currentTime;
+        const len = rev ? rev.end - rev.start : clipLen(s.durations, s.clips[at.index]);
+        if (rev && this.t >= seg!.end - 0.02) this.t = seg!.end; // reversed strip done: next strip
+        else if (el.currentTime >= len - 0.04 || el.ended) this.t = Math.max(this.t, base + len); // clip done: next one
         const k = nextKept(segs, this.t);
         if (k === null) this.o = total;
         else ((this.t = k), (this.o = toOutput(segs, k) ?? this.o));
@@ -109,7 +115,8 @@ export class Player {
   frame(): HTMLVideoElement | null {
     const s = this.state();
     const at = clipAt(s.clips, s.durations, this.t);
-    const el = at ? this.videos.get(s.clips[at.index].assetId) : undefined;
+    const rev = segAt(s.segments, this.t)?.fx?.rev;
+    const el = rev ? this.videos.get(rev.assetId) : at ? this.videos.get(s.clips[at.index].assetId) : undefined;
     return el && el.readyState >= 2 ? el : null;
   }
 
@@ -122,15 +129,21 @@ export class Player {
   // Put every element where the clock says it should be.
   private sync(exact = false) {
     const s = this.state();
-    const at = clipAt(s.clips, s.durations, this.t);
-    const activeId = at ? s.clips[at.index].assetId : null;
+    const at0 = clipAt(s.clips, s.durations, this.t);
+    const rev = segAt(s.segments, this.t)?.fx?.rev;
+    // In a reversed strip the reversed copy is the active video, at copy time t − rev.start.
+    const at = at0 && rev ? { ...at0, local: this.t - rev.start } : at0;
+    const activeId = rev && at0 ? rev.assetId : at0 ? s.clips[at0.index].assetId : null;
     for (const [id, el] of this.videos) {
       if (id !== activeId) {
         if (!el.paused) el.pause();
         continue;
       }
       const lifted = s.segments.some((g) => g.fx?.lift && this.t >= g.start && this.t < g.end); // a gap plays silent
-      el.volume = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume));
+      const vol = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume));
+      const clean = this.clean.get(id);
+      el.volume = vol;
+      el.muted = !!clean; // the cleaned copy plays the sound instead
       const seg = segAt(s.segments, this.t);
       const rate = seg?.fx?.speed ?? 1;
       if (el.playbackRate !== rate) el.playbackRate = rate; // pitch is preserved by the browser
@@ -140,7 +153,18 @@ export class Player {
       if (drift > (this.playing && !exact ? 0.3 : 0.01)) this.seekTo(el, at!.local);
       if (this.playing && !frozen && el.paused) el.play().catch(() => {});
       if ((!this.playing || frozen) && !el.paused) el.pause();
+      if (clean) {
+        // Follow the video (the clock): same rate, re-sync when it drifts more than ~2 frames.
+        clean.volume = vol;
+        if (clean.playbackRate !== rate) clean.playbackRate = rate;
+        const run = this.playing && !frozen && !el.paused && !el.seeking;
+        if (Math.abs(clean.currentTime - el.currentTime) > (run ? 0.08 : 0.01)) clean.currentTime = el.currentTime;
+        if (run && clean.paused) clean.play().catch(() => {});
+        if (!run && !clean.paused) clean.pause();
+      }
     }
+    for (const [id, c] of this.clean) if (id !== activeId && !c.paused) c.pause();
+    for (const [id, el] of this.videos) if (id !== activeId && !this.clean.has(id)) el.muted = false;
 
     const out: number | null = toOutput(s.segments, this.t) === null ? null : this.o;
     // Video overlays run in output time, like audio items. Shown one frame early so they're ready.
@@ -151,7 +175,19 @@ export class Player {
       const inside = into >= 0 && into < o.len;
       const local = Math.min(o.len, Math.max(0, into)) + (o.offset ?? 0);
       el.volume = Math.min(1, Math.max(0, o.volume ?? 0));
-      el.muted = !o.volume;
+      // Noise-reduced sound for layers too: the layer's video plays muted and a cleaned copy follows it.
+      const cleanSrc = o.volume ? this.clean.get(o.assetId ?? '')?.src : undefined;
+      let ca = this.ovClean.get(o.id);
+      if (cleanSrc && (!ca || ca.src !== cleanSrc)) (ca?.pause(), (ca = new Audio(cleanSrc)), this.ovClean.set(o.id, ca));
+      if (!cleanSrc && ca) (ca.pause(), this.ovClean.delete(o.id), (ca = undefined));
+      el.muted = !o.volume || !!ca;
+      if (ca) {
+        ca.volume = el.volume;
+        const run = this.playing && inside && !el.paused && !el.seeking;
+        if (Math.abs(ca.currentTime - el.currentTime) > (run ? 0.08 : 0.01)) ca.currentTime = el.currentTime;
+        if (run && ca.paused) ca.play().catch(() => {});
+        if (!run && !ca.paused) ca.pause();
+      }
       if (this.playing && inside) {
         if (Math.abs(el.currentTime - local) > 0.3) this.seekTo(el, local);
         if (el.paused) el.play().catch(() => {});

@@ -16,4 +16,13 @@ const t = fromProject('Mine', BUILTIN[0].style, [o(5, 'a'), o(6, 'b'), o(18.5, '
 assert.deepEqual(t.layers.map((x) => [x.text, x.at]), [['a', 0], ['b', 1], ['c', -1.5]]);
 const back = placeLayers(t, 2, 30);
 assert.deepEqual(back.map((x) => x.at), [2, 3, 28.5]);
+// progress bar: whole video, from 0, whatever the playhead; stickers keep the caption look
+import { barProgress } from './overlay.ts';
+const pb = BUILTIN.find((x) => x.id === 'b-progress')!;
+const [bar] = placeLayers(pb, 7, 20);
+assert.deepEqual([bar.at, bar.len, !!bar.bar], [0, 20, true]);
+assert.equal(barProgress(bar, 0), 0);
+assert.equal(barProgress(bar, 10), 0.5);
+assert.equal(barProgress(bar, 25), 1);
+assert.ok(pb.keepStyle && BUILTIN.filter((x) => x.id.startsWith('b-') && x.name.startsWith('Sticker')).every((x) => x.keepStyle));
 console.log('templates ok');

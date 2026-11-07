@@ -68,6 +68,7 @@ export type Style = {
   shadowY: number;
   glow: string; // outer glow color; '' = none
   glowSize: number; // fraction of font size
+  emScale?: number; // size of emphasized words (1 = same as the rest)
 };
 export type Align = 'left' | 'center' | 'right';
 
@@ -403,7 +404,8 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
   if ('letterSpacing' in ctx) (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${(s.letterSpacing ?? 0) * px}px`;
   const op = s.opacity ?? 1;
   const texts = c.words.map((w) => (s.uppercase ? w.text.toUpperCase() : w.text));
-  const widths = texts.map((x) => ctx.measureText(x).width);
+  const ek = (i: number) => (c.words[i].em ? s.emScale ?? 1 : 1); // emphasized words can be bigger
+  const widths = texts.map((x, i) => ctx.measureText(x).width * ek(i));
   const space = ctx.measureText(' ').width;
   const lines = layout(widths, space, W * 0.86);
   const lh = px * (s.lineHeight ?? 1.2) * (s.box ? 1.2 : 1);
@@ -545,7 +547,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
             ctx.restore();
           }
 
-          drawText(ctx, s, px, ch, -charW / 2, cst.pill ? (s.box || '#111111') : (cst.highlighted ? s.highlight : s.color), cst.glowBlur);
+          drawText(ctx, s, px, ch, -charW / 2, cst.pill ? (s.box || '#111111') : (cst.highlighted || w.em ? s.highlight : s.color), cst.glowBlur);
           ctx.restore();
         });
 
@@ -569,11 +571,12 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
           }
           ctx.translate(x + wordW / 2 + st.dx * px, y + st.dy * px);
           if (st.rotation) ctx.rotate(st.rotation);
-          ctx.scale(st.scaleX, st.scaleY);
+          ctx.scale(st.scaleX * ek(i), st.scaleY * ek(i));
+          const ww = wordW / ek(i); // the word's own width in the scaled space
           if (st.blur > 0) ctx.filter = `blur(${st.blur.toFixed(1)}px)`;
 
           // Highlighter bar growing behind the word
-          if (st.hlGrow > 0) drawHighlight(ctx, -wordW / 2, wordW, px, st.hlGrow, s.highlight);
+          if (st.hlGrow > 0) drawHighlight(ctx, -ww / 2, ww, px, st.hlGrow, s.highlight);
 
           // Word-level pill background (CapCut viral pill style)
           if (st.pill) {
@@ -581,12 +584,12 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
             const pillPadX = px * 0.22, pillPadY = px * 0.14;
             ctx.fillStyle = s.highlight;
             ctx.beginPath();
-            ctx.roundRect(-wordW / 2 - pillPadX, -px / 2 - pillPadY, wordW + pillPadX * 2, px + pillPadY * 2, px * 0.2);
+            ctx.roundRect(-ww / 2 - pillPadX, -px / 2 - pillPadY, ww + pillPadX * 2, px + pillPadY * 2, px * 0.2);
             ctx.fill();
             ctx.restore();
           }
 
-          drawText(ctx, s, px, text, -wordW / 2, st.pill ? (s.box || '#111111') : (st.highlighted ? s.highlight : s.color), st.glowBlur);
+          drawText(ctx, s, px, text, -ww / 2, st.pill ? (s.box || '#111111') : (st.highlighted || c.words[i].em ? s.highlight : s.color), st.glowBlur);
           ctx.restore();
         }
         x += widths[i] + space;

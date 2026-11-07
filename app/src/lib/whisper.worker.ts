@@ -1,7 +1,7 @@
 import { pipeline, type AutomaticSpeechRecognitionPipeline } from '@huggingface/transformers';
 import type { Word } from './captions';
 
-export type In = { audio: Float32Array; language: 'english' | 'spanish' | null };
+export type In = { audio: Float32Array; language: 'english' | 'spanish' | null; gpu: boolean }; // gpu: run on WebGPU
 export type Out =
   | { type: 'loading'; progress: number }
   | { type: 'progress'; progress: number }
@@ -15,8 +15,9 @@ const post = (m: Out) => postMessage(m);
 
 let asr: Promise<AutomaticSpeechRecognitionPipeline> | null = null;
 
-function load() {
-  const gpu = 'gpu' in navigator;
+let asrGpu: boolean | null = null;
+function load(gpu: boolean) {
+  if (asrGpu !== gpu) ((asr = null), (asrGpu = gpu)); // the setting changed: load the model for the other device
   return (asr ??= pipeline('automatic-speech-recognition', MODEL, {
     device: gpu ? 'webgpu' : 'wasm',
     dtype: gpu ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8',
@@ -26,7 +27,7 @@ function load() {
 
 onmessage = async ({ data }: MessageEvent<In>) => {
   try {
-    const model = await load();
+    const model = await load(data.gpu && 'gpu' in navigator);
     const words: Word[] = [];
     // ponytail: hard 30s windows, a word spanning a boundary can be split; use stride + merge if users notice
     for (let off = 0; off < data.audio.length; off += CHUNK) {

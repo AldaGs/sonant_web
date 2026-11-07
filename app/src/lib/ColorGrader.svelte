@@ -12,12 +12,16 @@
     ondone: () => void;
   } = $props();
 
-  type Key = 'b' | 'c' | 's' | 'temp' | 'lutMix';
+  type Key = 'b' | 'c' | 's' | 'temp' | 'lutMix' | 'vig' | 'grain' | 'glow' | 'rgb';
   const params = $derived([
     { k: 'b', label: 'brightness', icon: 'light_mode', min: -1, max: 1, def: 0 },
     { k: 'c', label: 'contrast', icon: 'contrast', min: -1, max: 1, def: 0 },
     { k: 's', label: 'saturation', icon: 'water_drop', min: -1, max: 1, def: 0 },
     { k: 'temp', label: 'temperature', icon: 'thermostat', min: -1, max: 1, def: 0 },
+    { k: 'vig', label: 'fx.vig', icon: 'vignette', min: 0, max: 1, def: 0 },
+    { k: 'grain', label: 'fx.grain', icon: 'grain', min: 0, max: 1, def: 0 },
+    { k: 'glow', label: 'fx.glow', icon: 'flare', min: 0, max: 1, def: 0 },
+    { k: 'rgb', label: 'fx.rgb', icon: 'blur_on', min: 0, max: 1, def: 0 },
     ...(color.lut ? [{ k: 'lutMix', label: 'lutMix', icon: 'filter_vintage', min: 0, max: 1, def: 1 }] : []),
   ] as { k: Key; label: string; icon: IconName; min: number; max: number; def: number }[]);
   let active = $state<Key>('b');
