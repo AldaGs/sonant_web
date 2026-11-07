@@ -1953,8 +1953,11 @@
     .round { border: 0; }
 
     .timeline-area { padding: 8px 12px; border-top: 1px solid var(--border-soft); max-height: 38dvh; overflow: auto; }
+    /* The tools stay pinned while the timeline scrolls under them, and swiping them never moves it. */
+    .thead { position: sticky; top: -8px; z-index: 5; margin-top: -8px; padding-top: 8px; background: var(--bg); }
     .thead h2 { display: none; }
-    .thead .row { justify-content: flex-start; flex-wrap: nowrap; overflow-x: auto; width: 100%; scrollbar-width: none; }
+    .thead .row { justify-content: flex-start; flex-wrap: nowrap; overflow-x: auto; width: 100%; scrollbar-width: none;
+      touch-action: pan-x; overscroll-behavior: contain; }
     .thead .row > * { flex: none; }
 
     .dock { grid-area: dock; display: flex; overflow-x: auto; scrollbar-width: none; gap: 4px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom));

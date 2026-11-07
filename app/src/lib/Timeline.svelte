@@ -158,10 +158,12 @@
 
   // Press and drag on the tracks (not on a draggable or button) to scrub the playhead.
   // Listens on window and only scrubs past 3px, so a plain click still selects strips and seeks.
-  // On touch, a zoomed timeline pans natively from the tracks; the ruler and playhead knob still scrub.
+  // On touch: a press that starts on a layer (strip, caption, audio, overlay) pans the timeline;
+  // a press that starts on empty track space or the ruler scrubs the playhead.
   function scrub(e: PointerEvent) {
-    if (e.button !== 0 || (e.target as Element).closest('button')) return;
-    if (e.pointerType === 'touch' && zoom !== 1 && !(e.target as Element).closest('.ruler')) return;
+    if (e.button !== 0) return;
+    if (e.pointerType === 'touch' && (e.target as Element).closest(LAYER)) return pan(e);
+    if ((e.target as Element).closest('button')) return;
     getSelection()?.removeAllRanges(); // and don't extend a selection made elsewhere on the page
     const x0 = e.clientX;
     let on = false;
@@ -176,6 +178,33 @@
       removeEventListener('pointerup', end);
       removeEventListener('pointercancel', end);
       if (on && u.type === 'pointerup') eatNextClick();
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', end);
+    addEventListener('pointercancel', end);
+  }
+
+  const LAYER = '.seg, .cap, .aud, .ov, .animbar';
+  // Touch pan of a zoomed timeline (done by hand so empty space can scrub instead of scrolling).
+  // A tap without movement runs ontap; a pan swallows the click so it doesn't select anything.
+  let panAt = 0; // last manual pan, so auto-follow doesn't yank the view away from the finger
+  function pan(e: PointerEvent, ontap?: () => void) {
+    const x0 = e.clientX, sl0 = scroller?.scrollLeft ?? 0;
+    let on = false;
+    const move = (m: PointerEvent) => {
+      if (m.pointerId !== e.pointerId || (!on && Math.abs(m.clientX - x0) < 3)) return;
+      on = true;
+      panAt = performance.now();
+      if (scroller) scroller.scrollLeft = sl0 - (m.clientX - x0);
+    };
+    const end = (u: PointerEvent) => {
+      if (u.pointerId !== e.pointerId) return;
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', end);
+      removeEventListener('pointercancel', end);
+      if (u.type !== 'pointerup') return;
+      if (on) eatNextClick();
+      else ontap?.();
     };
     addEventListener('pointermove', move);
     addEventListener('pointerup', end);
@@ -225,8 +254,10 @@
   const srcOut = (v: number) => toOutput(segments, v) ?? null;
 
   // Generic horizontal drag: calls move(deltaSeconds, snapOn) live; a press without movement runs onclick.
+  // On touch, only a selected item drags; an unselected one pans the timeline (tap still selects).
   function drag(e: PointerEvent, move: (d: number, snapOn: boolean) => void, onclick?: () => void) {
     e.stopPropagation();
+    if (e.pointerType === 'touch' && !(e.currentTarget as Element).closest('.sel')) return pan(e, onclick);
     const x0 = e.clientX, perPx = total / inner!.clientWidth;
     const el = e.currentTarget as HTMLElement;
     let moved = false;
@@ -305,9 +336,9 @@
     }
   });
 
-  // While zoomed, keep the playhead in view.
+  // While zoomed, keep the playhead in view (unless the user just panned by hand).
   $effect(() => {
-    if (playhead === null || !scroller || zoom === 1) return;
+    if (playhead === null || !scroller || zoom === 1 || performance.now() - panAt < 1500) return;
     const x = (playhead / total) * width, sl = scroller.scrollLeft, vw = scroller.clientWidth;
     if (x < sl || x > sl + vw - 20) scroller.scrollLeft = Math.max(0, x - vw / 3);
   });
@@ -442,9 +473,8 @@
   .labels > span:last-child, .inner > .row.music { border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 2px; align-self: start; }
   .labels { font-size: 12px; color: var(--muted); align-items: center; }
   .scroller { overflow-x: auto; overflow-y: hidden; }
+  /* Horizontal touch gestures are handled in JS: from a layer they pan, from empty space they scrub. */
   .inner { position: relative; min-width: 100%; cursor: pointer; touch-action: pan-y pinch-zoom; }
-  /* Zoomed: horizontal swipes on the tracks scroll the timeline; the ruler and knob keep scrubbing. */
-  .inner.zoomed { touch-action: pan-x pan-y pinch-zoom; }
   .inner:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .row { position: relative; }
   .ruler { position: relative; border-bottom: 1px solid var(--border-soft); touch-action: none; }
@@ -497,5 +527,7 @@
   .playhead::before { content: ''; position: absolute; top: -2px; left: -4px; border: 5px solid transparent; border-top-color: var(--accent); }
   /* Grab area around the playhead's head, wider than it looks so a finger can catch it. */
   .knob { position: absolute; top: -4px; left: -12px; width: 26px; height: 26px; pointer-events: auto; touch-action: none; cursor: ew-resize; z-index: 3; }
+  /* On touch, unselected items pan (in JS) instead of dragging, so let vertical scroll through. */
+  @media (pointer: coarse) { .cap:not(.sel), .aud:not(.sel), .ov:not(.sel), :not(.sel) > .edge { touch-action: pan-y; } }
   @media (pointer: coarse) { .knob { left: -16px; width: 34px; height: 34px; } }
 </style>
