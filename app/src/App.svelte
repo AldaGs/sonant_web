@@ -4,10 +4,11 @@
   import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Caption, type Word } from './lib/captions';
   import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
-  import { zoomPlace, segAt, PUNCH_IN, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment, type Fx } from './lib/cuts';
+  import { zoomPlace, segAt, PUNCH_IN, freezeAt, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment, type Fx } from './lib/cuts';
   import { drawFrame } from './lib/segment';
   import { itemLen, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
+  import { Transitioner, TRANSITIONS, TRANS_DUR } from './lib/transitions';
   import { cleanup, cleanupRanges } from './lib/cleanup.svelte';
   import { speechRanges } from './lib/audio';
   import { beatsOfFile } from './lib/beats';
@@ -302,7 +303,7 @@
   const addToTimeline = (a: Asset) => (a.kind === 'video' ? addClip(a.id) : a.kind === 'image' ? addOverlay(a) : addAudio(a.id));
 
   // ---- Overlays (layers over the main video) ----
-  const outNow = () => toOutput(segments, time) ?? 0;
+  const outNow = () => player.o;
   function pushOverlay(o: Overlay) {
     commit();
     overlays = [...overlays, o];
@@ -362,7 +363,7 @@
   function jumpKey(o: Overlay, dir: -1 | 1) {
     const t0 = layerT(o), ks = (o.kf ?? []).map((k) => k.t);
     const t1 = dir > 0 ? ks.find((t) => t > t0 + 1e-3) : ks.findLast((t) => t < t0 - 1e-3);
-    if (t1 !== undefined) seek(toSource(segments, o.at + t1));
+    if (t1 !== undefined) seekOut(o.at + t1);
   }
   const punchIn = (o: Overlay) => (setOverlay(o.id, { kf: punchKeys(o, layerT(o)) }), doneEditing());
   // Clearing keeps the look at the playhead as the layer's fixed transform.
@@ -457,10 +458,17 @@
 
   // ---- Playback ----
   const active = (c: Caption) => time >= startOf(c) && time < endOf(c);
-  const seek = (s: number) => (player.seek(Math.max(0, Math.min(s, duration))), (time = player.t));
+  const seek = (s: number) => (player.seek(Math.max(0, Math.min(s, duration))), (time = player.t), (outClock = player.o));
+  // Seek by output time (exact inside freeze frames, where source time stands still).
+  function seekOut(o: number) {
+    seek(toSource(segments, o));
+    player.o = Math.max(0, Math.min(o, outDuration(segments)));
+    outClock = player.o;
+  }
   const toggle = () => (player.playing ? player.pause() : player.play(), (paused = !player.playing));
   const update = (i: number, c: Caption) => setCaps(captions.with(i, c));
-  const outTime = $derived(toOutput(segments, time) ?? 0);
+  let outClock = $state(0); // output time from the player (moves during freeze frames, unlike `time`)
+  const outTime = $derived(outClock);
 
   function download(ext: 'srt' | 'vtt') {
     const caps = captionsForOutput(displayCaps, segments);
@@ -486,6 +494,7 @@
       if (cv.width !== w || cv.height !== h) ((cv.width = w), (cv.height = h));
       const tNow = player.tick();
       time = tNow;
+      outClock = player.o;
       paused = !player.playing;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
@@ -513,6 +522,12 @@
           placed = drawLayers(ctx, tNow);
           capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
         });
+      // Transition into this strip (over the finished frame: video, layers, captions).
+      const si = strip ? segments.indexOf(strip) : -1;
+      if (si >= 0) {
+        const segStartOut = toOutput(segments, strip!.start) ?? 0;
+        trans.apply(ctx, strip!.fx?.trans, si, player.o - segStartOut, strip!.fx?.transDur ?? TRANS_DUR);
+      }
       const sel = placed.find((p) => p.id === selectedOverlay);
       if (sel) drawLayerBox(ctx, sel, cv.width / (cv.getBoundingClientRect().width || cv.width));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
@@ -530,9 +545,10 @@
 
   // ---- Overlay layers on the preview ----
   let placed: Placed[] = []; // layers drawn this frame, bottom first (for hit tests)
+  const trans = new Transitioner();
   function drawLayers(ctx: CanvasRenderingContext2D, t: number): Placed[] {
-    const out = toOutput(segments, t);
-    if (out === null) return [];
+    if (toOutput(segments, t) === null) return [];
+    const out = player.o;
     const res: Placed[] = [];
     for (const o of overlaysAt(overlays, out)) {
       let src: CanvasImageSource | null = null, sw = 0, sh = 0;
@@ -1341,6 +1357,26 @@
           <span class="divider"></span>
         {/if}
         {#if selFx}
+          {#if selected > 0}
+            <label class="vol inline">{t('transIn')}
+              <select value={selFx.trans ?? ''} onchange={(e) => setFx({ trans: (e.currentTarget.value || undefined) as Fx['trans'] })}>
+                <option value="">{t('trans.none')}</option>
+                {#each TRANSITIONS as k}<option value={k}>{t('trans.' + k)}</option>{/each}
+              </select>
+            </label>
+          {/if}
+          {#if selFx.hold}
+            <label class="vol inline">{t('freezeLen')}
+              <input type="number" min="0.2" max="10" step="0.1" value={selFx.hold} style="width: 64px"
+                onchange={(e) => setFx({ hold: Math.max(0.2, Math.min(10, +e.currentTarget.value || 1)) })} />
+            </label>
+          {:else}
+            <label class="vol inline">{t('speed')}
+              <select value={selFx.speed ?? 1} onchange={(e) => setFx({ speed: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })}>
+                {#each [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as v}<option value={v}>{v}×</option>{/each}
+              </select>
+            </label>
+          {/if}
           <button class="sm" class:on={!!selFx.zoom} aria-pressed={!!selFx.zoom} title={t('punchTip')}
             onclick={() => setFx(selFx.zoom ? { zoom: undefined, zoomIn: undefined } : { zoom: PUNCH_IN, zoomIn: true })}>⤢ {t('punchIn')}</button>
           <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
@@ -1361,6 +1397,7 @@
           <span class="divider"></span>
         {/if}
         <button class="sm" onclick={addText} disabled={!hasMedia} title={t('addTextTip')}>T+ {t('addText')}</button>
+        <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}>❄ {t('freeze')}</button>
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}>{t('splitAt')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
         <button class="sm icon" class:on={snapOn} aria-pressed={snapOn} title={t('snapTip')} aria-label={t('snap')}
@@ -1377,7 +1414,7 @@
     <Timeline {segments} {time} {clips} {durations} {names} {thumbs} {peaks} {duration} {captions} {audios}
       zoom={tlZoom} bind:selected bind:selectedAudio selectedCapIds={selectedSet} onselectcap={selectCap}
       animLabel={t('allCaptions', { name: animName })}
-      onseek={(o) => seek(toSource(segments, o))} onseeksrc={seek} snap={snapOn} range={marks} pending={pendingCuts} beats={beatMap}
+      out={outClock} onseek={(o) => seekOut(o)} onseeksrc={seek} snap={snapOn} range={marks} pending={pendingCuts} beats={beatMap}
       {overlays} bind:selectedOverlay
       onoverlay={(id, patch) => setOverlay(id, patch, false)}
       oncommit={commit}

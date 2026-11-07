@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { outDuration, toOutput, toSource, captionsForOutput, type Segment } from './cuts';
+  import { outDuration, outLen, toOutput, toSource, captionsForOutput, type Segment } from './cuts';
   import { startOf, endOf, type Caption } from './captions';
   import type { Thumb } from './thumbs';
   import { tickStep } from './waveform';
@@ -11,9 +11,10 @@
     segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = 1,
     selected = $bindable(-1), selectedCapIds = new Set<string>(), selectedAudio = $bindable(''), onselectcap,
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
-    pending = [], beats,
+    pending = [], beats, out,
     overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
   }: {
+    out?: number; // output time of the playhead (from the player clock)
     beats?: Map<string, number[]>; // assetId → beat times in the file (music)
     pending?: [number, number][]; // clean-up preview: ranges that would be cut, sequence time
     overlays?: Overlay[]; // layers over the video, output time
@@ -111,14 +112,14 @@
   let held = $state<number | null>(null);
   const live = $derived(outDuration(segments) || 1);
   const total = $derived(held === null ? live : Math.max(held, live));
-  const playhead = $derived(toOutput(segments, time));
+  const playhead = $derived(out ?? toOutput(segments, time));
   const pct = (s: number) => `${(s / total) * 100}%`;
 
   // Segment positions in output time.
   const segPos = $derived.by(() => {
     let acc = 0;
     return segments.map((s) => {
-      const p = { start: acc, len: s.end - s.start };
+      const p = { start: acc, len: outLen(s) };
       acc += p.len;
       return p;
     });
@@ -233,8 +234,9 @@
 
   function edge(e: PointerEvent, i: number, side: 'start' | 'end') {
     const s0 = segments[i], pts = srcPoints('', i); // captured at drag start, so the preview seek doesn't move the target
+    const k = s0.fx?.speed ?? 1; // dragging an edge of a sped-up strip moves source time faster
     drag(e, (d, on) => {
-      const v = (side === 'start' ? s0.start : s0.end) + d;
+      const v = (side === 'start' ? s0.start : s0.end) + d * k;
       const x = v + nearest([v], pts, on, srcOut);
       if (side === 'start') ontrim(i, x, s0.end);
       else ontrim(i, s0.start, x);
@@ -342,7 +344,8 @@
             <div class="thumbs">
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>
-            <span class="cname">{s.fx?.lift ? t('gap') : clipName(s)}{s.fx?.zoom ? ' ⤢' : ''}</span>
+            {#if s.fx?.trans && i > 0}<span class="trn" title={t('trans.' + s.fx.trans)} aria-hidden="true">⧖</span>{/if}
+            <span class="cname">{s.fx?.lift ? t('gap') : s.fx?.hold ? '❄ ' + s.fx.hold + 's' : clipName(s)}{s.fx?.zoom ? ' ⤢' : ''}{s.fx?.speed ? ` ${s.fx.speed}×` : ''}</span>
             {#if i === selected}
               <div class="handle l" role="slider" tabindex="-1" aria-label={t('trimStart')} aria-valuenow={s.start}
                 onpointerdown={(e) => edge(e, i, 'start')}></div>
@@ -450,6 +453,7 @@
     white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(190 140 255 / .45);
     background: rgb(190 140 255 / .14); color: #c9a6ff; cursor: grab; touch-action: none; }
   .beat { position: absolute; top: 3px; bottom: 3px; width: 1px; background: rgb(106 184 255 / .7); pointer-events: none; }
+  .trn { position: absolute; left: 2px; top: 2px; font-size: 11px; color: #fff; background: rgb(0 0 0 / .6); border-radius: 4px; padding: 0 3px; z-index: 1; pointer-events: none; }
   .kd { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: 9px; color: #ffd84d; pointer-events: none; text-shadow: 0 0 2px #000; }
   .seg.lift { background: repeating-linear-gradient(45deg, var(--surface) 0 6px, var(--card) 6px 12px); }
   .seg.lift .thumbs { opacity: .12; }

@@ -1,5 +1,5 @@
 import { DUCK_LEVEL, clipAt, clipStarts, itemLen, type AudioItem, type Clip } from './project';
-import { nextKept, toOutput, type Segment } from './cuts';
+import { nextKept, toOutput, toSource, outDuration, segAt, type Segment } from './cuts';
 import type { Overlay } from './overlay';
 import { duckGain } from './audio';
 
@@ -19,7 +19,8 @@ export class Player {
   videos = new Map<string, HTMLVideoElement>(); // assetId → element
   audios = new Map<string, HTMLAudioElement>(); // audio item id → element
   overlays = new Map<string, HTMLVideoElement>(); // video overlay id → element
-  t = 0;
+  t = 0; // sequence (source) time: what's on screen
+  o = 0; // output time: the master clock while a freeze frame holds (t stands still then)
   playing = false;
   private last = 0;
   // While a <video> is still seeking, newer targets wait here so a fast scrub doesn't queue
@@ -45,7 +46,7 @@ export class Player {
   play() {
     const s = this.state();
     if (!s.clips.length) return;
-    if (nextKept(s.segments, this.t) === null) this.t = s.segments[0]?.start ?? 0; // at the end: restart
+    if (nextKept(s.segments, this.t) === null || this.o >= outDuration(s.segments) - 1e-3) this.seek(s.segments[0]?.start ?? 0); // at the end: restart
     this.playing = true;
     this.last = performance.now();
     this.sync();
@@ -57,7 +58,10 @@ export class Player {
   }
 
   seek(t: number) {
+    const s = this.state();
     this.t = Math.max(0, t);
+    const k = nextKept(s.segments, this.t);
+    this.o = toOutput(s.segments, k ?? this.t) ?? outDuration(s.segments);
     this.sync(true);
   }
 
@@ -66,22 +70,29 @@ export class Player {
     const s = this.state();
     const now = performance.now();
     if (this.playing && s.clips.length) {
+      const segs = s.segments, dt = (now - this.last) / 1000, total = outDuration(segs);
       const starts = clipStarts(s.clips, s.durations);
       const at = clipAt(s.clips, s.durations, this.t);
       const el = at && this.videos.get(s.clips[at.index].assetId);
-      if (at && el && !el.paused && !el.seeking && el.readyState >= 2) this.t = starts[at.index] + el.currentTime;
-      else this.t += (now - this.last) / 1000;
-
-      // Clip finished: continue with the next one.
-      if (at) {
+      const hold = !!segAt(segs, this.t)?.fx?.hold;
+      if (!hold && at && el && !el.paused && !el.seeking && el.readyState >= 2) {
+        // The playing video is the clock (keeps lips in sync; its playbackRate carries the strip's speed).
+        this.t = starts[at.index] + el.currentTime;
         const len = s.durations.get(s.clips[at.index].assetId) ?? 0;
-        if (at.local >= len - 0.04 || el?.ended) this.t = Math.max(this.t, starts[at.index] + len);
+        if (el.currentTime >= len - 0.04 || el.ended) this.t = Math.max(this.t, starts[at.index] + len); // clip done: next one
+        const k = nextKept(segs, this.t);
+        if (k === null) this.o = total;
+        else ((this.t = k), (this.o = toOutput(segs, k) ?? this.o));
+      } else {
+        // Wall clock in output time: freeze frames, or media not ready yet.
+        this.o += dt;
+        this.t = toSource(segs, Math.min(this.o, total - 1e-6));
       }
-      const k = nextKept(s.segments, this.t);
-      if (k === null) {
+      if (this.o >= total - 1e-6) {
         this.playing = false;
-        this.t = s.segments.at(-1)?.end ?? this.t;
-      } else this.t = k;
+        this.o = total;
+        this.t = segs.at(-1)?.end ?? this.t;
+      }
     }
     this.last = now;
     this.sync();
@@ -120,14 +131,18 @@ export class Player {
       }
       const lifted = s.segments.some((g) => g.fx?.lift && this.t >= g.start && this.t < g.end); // a gap plays silent
       el.volume = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume));
+      const seg = segAt(s.segments, this.t);
+      const rate = seg?.fx?.speed ?? 1;
+      if (el.playbackRate !== rate) el.playbackRate = rate; // pitch is preserved by the browser
+      const frozen = !!seg?.fx?.hold;
       const target = this.pending.get(el) ?? el.currentTime;
       const drift = Math.abs(target - at!.local);
       if (drift > (this.playing && !exact ? 0.3 : 0.01)) this.seekTo(el, at!.local);
-      if (this.playing && el.paused) el.play().catch(() => {});
-      if (!this.playing && !el.paused) el.pause();
+      if (this.playing && !frozen && el.paused) el.play().catch(() => {});
+      if ((!this.playing || frozen) && !el.paused) el.pause();
     }
 
-    const out = toOutput(s.segments, this.t);
+    const out: number | null = toOutput(s.segments, this.t) === null ? null : this.o;
     // Video overlays run in output time, like audio items. Shown one frame early so they're ready.
     for (const o of s.overlays) {
       const el = this.overlays.get(o.id);

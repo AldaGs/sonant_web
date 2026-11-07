@@ -1,6 +1,8 @@
 import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
-import { keptCaptions, zoomPlace, type Segment } from './cuts.ts';
+import { keptCaptions, zoomPlace, outLen, srcIn, type Segment } from './cuts.ts';
+import { stretch } from './stretch.ts';
+import { Transitioner, TRANS_DUR } from './transitions.ts';
 import { drawCaption, resolveStyle, type Style } from './render.ts';
 import { drawFrame, loadSegmenter } from './segment.ts';
 import { drawOverlay, type Overlay } from './overlay.ts';
@@ -24,11 +26,15 @@ export function outputSize(srcW: number, srcH: number, res: Res, aspect: Aspect)
 }
 
 // Source timestamps of every output frame at a fixed fps, walking the kept segments in order.
+// Speed changes how fast source time moves per output frame; a freeze frame repeats its first frame.
 export function* frameTimes(segs: Segment[], fps: number) {
-  for (const s of segs) for (let t = s.start; t < s.end - 1e-6; t += 1 / fps) yield t;
+  for (const s of segs) {
+    const n = Math.ceil(outLen(s) * fps - 1e-6);
+    for (let i = 0; i < n; i++) yield Math.min(srcIn(s, i / fps), s.end - 1e-4);
+  }
 }
 export const frameCount = (segs: Segment[], fps: number) =>
-  segs.reduce((n, s) => n + Math.ceil((s.end - s.start - 1e-6) * fps), 0);
+  segs.reduce((n, s) => n + Math.ceil(outLen(s) * fps - 1e-6), 0);
 
 // Copy samples [a, z) of `b` into a new buffer.
 function slice(b: AudioBuffer, a: number, z: number): AudioBuffer {
@@ -99,8 +105,19 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
   for (const s of splitAtBoundaries(segs, starts)) {
     const at = clipAt(src.clips, durations, (s.start + s.end) / 2);
     const buf = at && decoded.get(src.clips[at.index].assetId);
-    if (buf && !s.fx?.lift) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume, voice); // lifted = silent gap
-    out += s.end - s.start;
+    const speed = s.fx?.speed ?? 1;
+    if (buf && !s.fx?.lift && !s.fx?.hold) { // lifted gaps and freeze frames are silent
+      if (speed === 1) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume, voice);
+      else {
+        // Sped-up / slowed-down strips: time-stretched so voices keep their pitch.
+        const a = Math.floor((s.start - starts[at.index]) * buf.sampleRate), z = Math.min(buf.length, Math.ceil((s.end - starts[at.index]) * buf.sampleRate));
+        const ch = stretch(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c).subarray(a, z)), speed);
+        const piece = new AudioBuffer({ length: ch[0].length, numberOfChannels: ch.length, sampleRate: buf.sampleRate });
+        ch.forEach((d, c) => piece.copyToChannel(d as Float32Array<ArrayBuffer>, c));
+        play(piece, out, 0, piece.duration, src.clipVolume, voice);
+      }
+    }
+    out += outLen(s);
   }
   // Extra audio: placed in output time, cut off at the end of the video.
   for (const item of src.audios) {
@@ -205,6 +222,7 @@ export async function exportVideo(
       return sinks.get(assetId);
     };
     const starts = clipStarts(src.clips, durations);
+    const trans = new Transitioner();
     let i = 0;
     for (const piece of splitAtBoundaries(segs, starts)) {
       const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2);
@@ -212,7 +230,9 @@ export async function exportVideo(
       const sink = at ? await sinkFor(src.clips[at.index].assetId) : undefined;      const times = [...frameTimes([piece], opts.fps)];
       const lifted = !!piece.fx?.lift; // a gap: black, no frames decoded
       const frames = sink && !lifted ? sink.canvasesAtTimestamps(times.map((t) => t - offset)) : null;
-      const segStart = segs.find((g) => piece.start >= g.start - 1e-6 && piece.start < g.end)?.start ?? piece.start;
+      const si = segs.findIndex((g) => piece.start >= g.start - 1e-6 && piece.start < g.end);
+      const segStart = segs[si]?.start ?? piece.start;
+      const segOut = segs.slice(0, Math.max(0, si)).reduce((a, g) => a + outLen(g), 0); // output time the strip starts
       for (const t of times) {
         if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
         const frame = frames ? (await frames.next()).value : null;
@@ -225,6 +245,7 @@ export async function exportVideo(
           paintLayers(i);
           if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
         });
+        trans.apply(ctx, segs[si]?.fx?.trans, si, i / opts.fps - segOut, segs[si]?.fx?.transDur ?? TRANS_DUR);
         await vOut.add(i / opts.fps, 1 / opts.fps);
         onProgress(++i / total);
       }

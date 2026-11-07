@@ -4,7 +4,26 @@ import type { Caption } from './captions';
 // fx: per-strip effects. behind = captions behind the person; bg = swap the background.
 // zoom: punch-in factor (1 = none); zoomIn: ease into it over the strip's first ZOOM_IN seconds.
 // lift: the strip keeps its time on the timeline but shows black, plays silent and hides captions (a gap).
-export type Fx = { behind?: boolean; bg?: 'color' | 'blur'; bgColor?: string; zoom?: number; zoomIn?: boolean; lift?: boolean };
+// speed: playback rate (0.25–4). hold: a freeze frame, the strip's first frame shown for `hold` seconds.
+export type Fx = { behind?: boolean; bg?: 'color' | 'blur'; bgColor?: string; zoom?: number; zoomIn?: boolean; lift?: boolean;
+  speed?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number };
+
+// How long a strip lasts in the output, and the source time `o` seconds into it.
+export const outLen = (s: Segment) => s.fx?.hold ?? (s.end - s.start) / (s.fx?.speed ?? 1);
+export const srcIn = (s: Segment, o: number) => (s.fx?.hold ? s.start : Math.min(s.end, s.start + Math.max(0, o) * (s.fx?.speed ?? 1)));
+export const FREEZE_SRC = 1 / 30; // source time a freeze-frame strip takes (one frame)
+// Insert a freeze frame of `secs` at source time t (inside a normal strip).
+export function freezeAt(segs: Segment[], t: number, secs: number): Segment[] {
+  const i = segs.findIndex((s) => !s.fx?.hold && t >= s.start && t < s.end);
+  if (i < 0) return segs;
+  const s = segs[i], a = Math.min(t, s.end - FREEZE_SRC), b = a + FREEZE_SRC;
+  const { speed: _sp, ...fx } = s.fx ?? {};
+  const out: Segment[] = [];
+  if (a - s.start > 1e-6) out.push({ ...s, end: a });
+  out.push({ start: a, end: b, fx: { ...fx, hold: secs } });
+  if (s.end - b > 1e-6) out.push({ ...s, start: b });
+  return segs.toSpliced(i, 1, ...out);
+}
 
 export const PUNCH_IN = 1.25;
 export const ZOOM_IN = 0.4; // seconds
@@ -23,7 +42,7 @@ export type Segment = { start: number; end: number; fx?: Fx };
 
 const MIN = 0.1; // shortest segment allowed
 
-export const outDuration = (segs: Segment[]) => segs.reduce((a, s) => a + s.end - s.start, 0);
+export const outDuration = (segs: Segment[]) => segs.reduce((a, s) => a + outLen(s), 0);
 
 // Remove [a, b) from the kept ranges. Slivers under 20ms are dropped. Keeps at least one segment.
 export function cutRange(segs: Segment[], a: number, b: number): Segment[] {
@@ -65,7 +84,7 @@ export function keptCaptions(caps: Caption[], segs: Segment[]): Caption[] {
 }
 
 export function splitAt(segs: Segment[], t: number): Segment[] {
-  const i = segs.findIndex((s) => t > s.start + MIN && t < s.end - MIN);
+  const i = segs.findIndex((s) => !s.fx?.hold && t > s.start + MIN && t < s.end - MIN);
   if (i < 0) return segs;
   const s = segs[i];
   return segs.toSpliced(i, 1, { ...s, end: t }, { ...s, start: t });
@@ -85,8 +104,8 @@ export function trim(segs: Segment[], i: number, start: number, end: number, dur
 
 export function toSource(segs: Segment[], out: number): number {
   for (const s of segs) {
-    const len = s.end - s.start;
-    if (out < len) return s.start + Math.max(0, out);
+    const len = outLen(s);
+    if (out < len) return srcIn(s, out);
     out -= len;
   }
   return segs.length ? segs[segs.length - 1].end : 0;
@@ -96,8 +115,8 @@ export function toSource(segs: Segment[], out: number): number {
 export function toOutput(segs: Segment[], src: number): number | null {
   let acc = 0;
   for (const s of segs) {
-    if (src >= s.start && src < s.end) return acc + src - s.start;
-    acc += s.end - s.start;
+    if (src >= s.start && src < s.end) return acc + (s.fx?.hold ? 0 : (src - s.start) / (s.fx?.speed ?? 1));
+    acc += outLen(s);
   }
   return null;
 }
