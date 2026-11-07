@@ -60,8 +60,23 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - ✅ Tests: shake bounds and coverage (`autozoom.test.ts`), bar placement and progress (`templates.test.ts`). In a browser test, every shader effect changed the pixels as expected, and the bar and sticker rendered over a video.
 - ⬜ **Reverse strip**: postponed. The browser can't play a `<video>` backwards, so the preview would have to step through frames one at a time, which is choppy without decoding to a reversed proxy first. Plan: build a reversed proxy (WebCodecs, like `proxy.ts`) and reversed audio, then use them in both preview and export.
 
-## Phase 5: Text-to-speech voiceover ⬜
-- A local TTS model (Kokoro or Piper, ONNX in a worker, the same pattern as Whisper). It turns a script or the selected captions into a clip on the Music & VO track. Voices in EN and ES.
+## Phase 5: Text-to-speech voiceover ✅ (synthesis not tested here)
+- ✅ **Two local engines** (`lib/tts.ts`). Both download on first use and are cached by the browser.
+  - **Kokoro** (`kokoro-js`, Apache-2.0): 10 English voices, US and UK, picked from its best-graded ones. It runs in a worker (`tts.worker.ts`): WebGPU fp32 (~330 MB) when the Performance setting allows the GPU, otherwise WASM q8 (~90 MB). It has a speed control.
+  - **Piper** (`@mintplex-labs/piper-tts-web`, MIT): 4 English voices and 4 Spanish (MX: Claude ★, Ald; ES: Sharvard, Davefx), 60–120 MB each.
+- ✅ Defaults: Spanish uses Piper Claude. English uses Kokoro Heart on a device with fast WebGPU, otherwise Piper (Kokoro on CPU is slow).
+- ✅ **AI voiceover** panel (Assets panel, under the clip audio):
+  - **Script** mode adds one clip at the playhead.
+  - **Captions (dub)** mode reads each caption (only the selected ones, if any are selected) and places each clip at that caption's time. With translation shown, it reads the translation, which makes a dub.
+  - **Preview voice** plays a sample sentence.
+  - Long text is split into sentences of ≤400 characters, and the pieces are joined with short pauses.
+  - Clips go on the Music & VO track as ordinary audio assets, in one undo step, so they can be trimmed, ducked and exported.
+- ✅ Tests: `node src/lib/tts.test.ts` (catalogue, defaults, splitting, joining). In a browser, the panel, voice lists and error handling work. Downloads from Hugging Face are blocked in this sandbox, so **real synthesis hasn't been heard yet**.
+- Notes:
+  - Both engines use eSpeak NG (GPL-3) for pronunciation, which is fine for a free app.
+  - Piper voices each have their own dataset licence (see each voice's MODEL_CARD); check them before any commercial release.
+  - Piper also loads its runtime from jsDelivr and cdnjs.
+- Later: put Kokoro's Spanish voices in once kokoro-js supports them. Per-caption speed fitting, so a dub fits each caption's time.
 
 ## Phase 6: Auto-clips (long video → shorts) ⬜
 - Score transcript sentences for hooks, questions, numbers, emphasis (Phase 0) and audio energy. Suggest 15–60s ranges.

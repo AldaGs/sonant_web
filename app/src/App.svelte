@@ -25,6 +25,7 @@
   import { BLENDS, DEFAULT_MASK, DEFAULT_KEY, keyBypass, type Blend, type ChromaKey } from './lib/layerfx';
   import KeyControls from './lib/KeyControls.svelte';
   import PerfDialog from './lib/PerfDialog.svelte';
+  import VoiceoverPanel from './lib/VoiceoverPanel.svelte';
   import { cleanAudio, cleanKey, DENOISE_LEVELS } from './lib/denoise';
   import { zoomMoments, autoZoomAt, scalePlace, shakePlace, zoomShake, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
@@ -421,6 +422,24 @@
   }
 
 
+  // Generated voiceover: each file becomes an audio asset on the Music & VO track (one undo step).
+  async function addVoiceover(items: { file: File; at: number }[]) {
+    const now = toOutput(segments, time) ?? 0;
+    const added: AudioItem[] = [];
+    for (const { file, at } of items) {
+      const r = await importFile(file).catch(() => null);
+      if (!r) { error = 'err.badMedia'; continue; }
+      if (!r.saved) notice = 'err.saveVideo';
+      assets = [...assets, r.asset];
+      register(r.asset, file);
+      added.push({ id: crypto.randomUUID(), assetId: r.asset.id, at: Number.isFinite(at) ? at : now, volume: 1 });
+    }
+    if (!added.length) return;
+    commit();
+    audios = [...audios, ...added];
+    selectedAudio = added[0].id;
+    announce(t('voAdded', { n: added.length }));
+  }
   const addClip = (assetId: string) =>
     setClips([...clips, { id: crypto.randomUUID(), assetId, ...(kindOf(assetId) === 'image' ? { len: STILL_LEN } : {}) }]);
   // Set an image clip's length (seconds); cuts inside it are reset, later clips move.
@@ -1475,6 +1494,7 @@
         </label>
         {#if cleanPct !== null}<p class="muted small" role="status">{t('dnBusy')} {Math.round(cleanPct)}%</p>{/if}
       {/if}
+      <VoiceoverPanel caps={captionsForOutput(displayCaps, segments)} selectedIds={selectedSet} lang={language} disabled={!hasMedia} onadd={addVoiceover} />
     </aside>
   {/if}
 
