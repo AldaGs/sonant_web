@@ -146,3 +146,20 @@ for (const target of ['character', 'word', 'line', 'all'] as AnimTarget[]) {
 const m = migrateStyle({ family: 'Inter' });
 assert.deepEqual([m.align, m.lineHeight, m.letterSpacing, m.opacity, m.radius, m.animTarget], ['center', 1.2, 0, 1, 0.22, 'word']);
 console.log('render ok');
+
+// animMode: in holds after the duration; out shows text then leaves at outEnd; in-out does both.
+{
+  const pop = (animMode: 'in' | 'out' | 'in-out') => ({ animation: 'pop' as Animation, duration: 300, easing: 'linear' as Easing, animMode });
+  // in: settled and readable long after the 0.3s animation
+  assert.equal(computeAnimState(1, 1.5, 3, pop('in'), 1, 4).scale, 1);
+  // out: fully shown before its exit window, shrinking inside it, gone at outEnd
+  assert.equal(computeAnimState(1, 1.5, 1, pop('out'), 1, 4).scale, 1);
+  assert.ok(computeAnimState(1, 1.5, 3.85, pop('out'), 1, 4).scale < 1);
+  assert.equal(computeAnimState(1, 1.5, 4, pop('out'), 1, 4).visible, false);
+  // in-out: enters, holds, exits
+  assert.ok(computeAnimState(1, 1.5, 1.1, pop('in-out'), 1, 4).scale < 1);
+  assert.equal(computeAnimState(1, 1.5, 2.5, pop('in-out'), 1, 4).scale, 1);
+  assert.ok(computeAnimState(1, 1.5, 3.9, pop('in-out'), 1, 4).scale < 1);
+  // in-out on a short unit splits the time in half instead of overlapping
+  assert.ok(Math.abs(computeAnimState(1, 1.2, 1.1, pop('in-out'), 1, 1.2).scale - 1) < 1e-9);
+}
