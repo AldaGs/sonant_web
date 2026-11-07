@@ -163,3 +163,15 @@ console.log('render ok');
   // in-out on a short unit splits the time in half instead of overlapping
   assert.ok(Math.abs(computeAnimState(1, 1.2, 1.1, pop('in-out'), 1, 1.2).scale - 1) < 1e-9);
 }
+
+// cumulative highlight: spoken words keep their highlight after their own time
+{
+  const cw = { text: 'hi', start: 0, end: 1 };
+  const hl = { animation: 'highlight' as const, duration: 200, easing: 'linear' as const };
+  assert.equal(wordState(cw, 0, 2, hl).hlGrow, 0);
+  assert.equal(wordState(cw, 0, 2, { ...hl, cumulative: true }).hlGrow, 1);
+  assert.equal(wordState(cw, 0, 2, { ...hl, animation: 'pill', cumulative: true }).pill, true);
+  assert.equal(wordState(cw, 0, 2, { ...hl, animation: 'pop', cumulative: true }).highlighted, true);
+  assert.equal(wordState(cw, 0, 2, { ...hl, animation: 'pop' }).highlighted, false);
+  assert.equal(wordState({ ...cw, start: 3, end: 4 }, 0, 2, { ...hl, cumulative: true }).hlGrow, 0); // not yet spoken
+}

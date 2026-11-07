@@ -30,6 +30,9 @@ export type AnimationTarget = AnimTarget;
 export type AnimMode = 'in' | 'out' | 'in-out';
 export const ANIM_MODES: AnimMode[] = ['in', 'out', 'in-out'];
 // Entry/exit animations (as opposed to emphasis effects like karaoke or pill that follow the spoken word).
+// Emphasis animations that can keep their highlight on words already spoken, so it builds up across the caption.
+// Karaoke is always cumulative.
+export const CUMULATIVE_ANIMS = new Set<Animation>(['highlight', 'pill', 'neon', 'bounce', 'wave', 'shake', 'pop', 'elastic']);
 const ENTRY = new Set<Animation>(['fade', 'pop', 'typewriter', 'elastic', 'slide-up', 'slide-in', 'glitch', 'zoom-in', 'flip', 'drop', 'shake', 'spin', 'blur-in', 'rise', 'swipe-up']);
 
 export type Easing = 'linear' | 'ease-out' | 'ease-in-out' | 'back' | 'spring' | 'quart-out';
@@ -49,6 +52,7 @@ export type Style = {
   animTarget: AnimTarget; // whether animation affects per character, word, line, or all
   duration: number; // ms, length of the in (and/or out) animation
   animMode: AnimMode;
+  cumulative: boolean; // keep the highlight on spoken words (only for CUMULATIVE_ANIMS)
   easing: Easing;
   x: number; // 0..1 center
   y: number;
@@ -68,7 +72,7 @@ export type Style = {
 export type Align = 'left' | 'center' | 'right';
 
 const base = {
-  italic: false, outline: 0.16, box: '', animTarget: 'word' as AnimTarget, animMode: 'in' as AnimMode, duration: 320, easing: 'ease-out' as Easing, x: 0.5,
+  italic: false, outline: 0.16, box: '', animTarget: 'word' as AnimTarget, animMode: 'in' as AnimMode, cumulative: false, duration: 320, easing: 'ease-out' as Easing, x: 0.5,
   align: 'center' as Align, lineHeight: 1.2, letterSpacing: 0, opacity: 1, radius: 0.22,
   boxAlpha: 0.88, shadow: '', shadowBlur: 0.12, shadowX: 0.04, shadowY: 0.06, glow: '', glowSize: 0.3,
 };
@@ -128,7 +132,7 @@ export const EASINGS: Record<Easing, (p: number) => number> = {
   'quart-out': (p) => 1 - (1 - p) ** 4,
 };
 
-type Anim = Pick<Style, 'animation' | 'duration' | 'easing'> & { animTarget?: AnimTarget; animMode?: AnimMode };
+type Anim = Pick<Style, 'animation' | 'duration' | 'easing'> & { animTarget?: AnimTarget; animMode?: AnimMode; cumulative?: boolean };
 
 // Progress 0..1 of an entry animation for a unit that appears at `start` and must be gone by `outEnd`.
 // 'in' plays once from start; 'out' plays in reverse just before outEnd; 'in-out' does both,
@@ -326,12 +330,20 @@ export function computeAnimState(
     alpha = clamp(p);
   }
 
+  // Cumulative: once spoken, a word keeps its highlight color / bar / pill / glow until the caption ends.
+  const keep = !!a.cumulative && CUMULATIVE_ANIMS.has(anim) && spoken && !gone;
+  if (keep && t >= end) {
+    if (anim === 'highlight') hlGrow = 1;
+    else if (anim === 'pill') pill = true;
+    else if (anim === 'neon') glowBlur = 8;
+  }
+
   if (gone) visible = false;
   scaleX = scaleX !== 1 ? scaleX : scale;
   scaleY = scaleY !== 1 ? scaleY : scale;
 
   const highlighted =
-    anim === 'karaoke'
+    anim === 'karaoke' || keep
       ? spoken
       : anim === 'none' || anim === 'fade' || anim === 'highlight'
         ? false

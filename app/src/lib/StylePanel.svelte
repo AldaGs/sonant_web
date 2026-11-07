@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
-  import { PRESETS, ANIM_MODES, resolveStyle, type Style, type Animation, type AnimTarget, type Easing } from './render';
+  import { PRESETS, ANIM_MODES, CUMULATIVE_ANIMS, resolveStyle, type Style, type Animation, type AnimTarget, type Easing } from './render';
   import type { Font } from './fonts';
   import type { Caption } from './captions';
   import { captionText } from './captions';
@@ -219,6 +219,17 @@
     {/each}
   </div>
 </section>
+
+{#if CUMULATIVE_ANIMS.has(effectiveStyle.animation)}
+<section class="block">
+  <label class="toggle" title={t('cumulativeDesc')}>
+    <input type="checkbox" checked={!!effectiveStyle.cumulative}
+      onchange={(e) => updateField('cumulative', e.currentTarget.checked)} />
+    <span>{t('cumulative')}</span>
+  </label>
+  <p class="muted">{t('cumulativeDesc')}</p>
+</section>
+{/if}
 
 <section class="block">
   <h3>{t('timing')}</h3>
@@ -618,4 +629,5 @@
   .two .field { margin: 0; }
   .two input, .two select { width: 100%; height: 36px; }
   .small { font-size: 12px; }
+  .toggle { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
 </style>
