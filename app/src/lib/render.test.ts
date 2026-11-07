@@ -1,6 +1,6 @@
 // Run: node src/lib/render.test.ts
 import assert from 'node:assert/strict';
-import { layout, wordState, migrateStyle, resolveStyle, EASINGS, fontString, DEFAULT_STYLE, inBox, type Animation, type Easing } from './render.ts';
+import { layout, wordState, computeAnimState, migrateStyle, resolveStyle, EASINGS, fontString, DEFAULT_STYLE, drawCaption, inBox, type Animation, type AnimTarget, type Easing } from './render.ts';
 
 // wrapping
 assert.deepEqual(layout([40, 40, 40], 10, 100), [[0, 1], [2]]);
@@ -80,7 +80,69 @@ assert.ok(inBox(bx, 120, 110));
 assert.ok(!inBox(bx, 90, 110));
 assert.ok(inBox(bx, 90, 110, 15));
 assert.ok(!inBox(null, 120, 110));
+// animTarget settings: character, word, line, all
+const w2 = { text: 'world', start: 2, end: 2.5 };
+// with animTarget: 'all', pop begins at capStart (0), not w2.start (2)
+assert.equal(wordState(w2, 0, 0.5, { animation: 'pop', duration: 300, easing: 'ease-out', animTarget: 'all' }).visible, true);
+// with animTarget: 'word', pop is hidden before w2.start
+assert.equal(wordState(w2, 0, 0.5, { animation: 'pop', duration: 300, easing: 'ease-out', animTarget: 'word' }).visible, false);
+assert.equal(wordState(w2, 0, 2.1, { animation: 'pop', duration: 300, easing: 'ease-out', animTarget: 'word' }).visible, true);
+// with range (used by line and all)
+const lineRange = { start: 1.5, end: 3.0 };
+assert.equal(wordState(w2, 0, 1.2, { animation: 'pop', duration: 300, easing: 'ease-out', animTarget: 'line' }, lineRange).visible, false);
+assert.equal(wordState(w2, 0, 1.6, { animation: 'pop', duration: 300, easing: 'ease-out', animTarget: 'line' }, lineRange).visible, true);
+
+// computeAnimState for character timing
+const charSt = computeAnimState(1.2, 1.3, 1.25, { animation: 'pop', duration: 200, easing: 'ease-out' }, 1);
+assert.equal(charSt.visible, true);
+assert.ok(charSt.scale > 0.4 && charSt.scale <= 1.0);
+
+// migrateStyle handles animTarget properly
+assert.equal(migrateStyle({ family: 'Inter' }).animTarget, 'word');
+assert.equal(migrateStyle({ animation: 'fade' }).animTarget, 'all');
+assert.equal(migrateStyle({ animation: 'pop', animTarget: 'character' }).animTarget, 'character');
+
+// Canvas rendering with different animTarget options
+const mockCtx = {
+  canvas: { width: 1920, height: 1080 },
+  font: '',
+  textBaseline: '',
+  textAlign: '',
+  lineJoin: '',
+  letterSpacing: '',
+  globalAlpha: 1,
+  fillStyle: '',
+  strokeStyle: '',
+  lineWidth: 1,
+  shadowColor: '',
+  shadowBlur: 0,
+  measureText: (txt: string) => ({ width: txt.length * 20 }),
+  save: () => {},
+  restore: () => {},
+  translate: () => {},
+  rotate: () => {},
+  scale: () => {},
+  beginPath: () => {},
+  roundRect: () => {},
+  fill: () => {},
+  strokeText: () => {},
+  fillText: () => {},
+} as unknown as CanvasRenderingContext2D;
+
+const testCap = {
+  id: 'cap-1',
+  words: [
+    { text: 'Hello', start: 1, end: 1.5 },
+    { text: 'world', start: 1.6, end: 2.1 },
+  ],
+};
+
+for (const target of ['character', 'word', 'line', 'all'] as AnimTarget[]) {
+  const box = drawCaption(mockCtx, testCap, 1.7, { ...DEFAULT_STYLE, animation: 'elastic', animTarget: target });
+  assert.ok(box && box.w > 0 && box.h > 0);
+}
+
 // new inspector fields default so older projects render the same
 const m = migrateStyle({ family: 'Inter' });
-assert.deepEqual([m.align, m.lineHeight, m.letterSpacing, m.opacity, m.radius], ['center', 1.2, 0, 1, 0.22]);
+assert.deepEqual([m.align, m.lineHeight, m.letterSpacing, m.opacity, m.radius, m.animTarget], ['center', 1.2, 0, 1, 0.22, 'word']);
 console.log('render ok');

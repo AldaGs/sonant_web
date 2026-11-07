@@ -15,6 +15,9 @@ export type Animation =
   | 'pill'
   | 'neon';
 
+export type AnimTarget = 'character' | 'word' | 'line' | 'all';
+export type AnimationTarget = AnimTarget;
+
 export type Easing = 'linear' | 'ease-out' | 'ease-in-out' | 'back' | 'spring' | 'quart-out';
 
 export type Style = {
@@ -29,6 +32,7 @@ export type Style = {
   box: string; // background box color behind each line; '' = none
   uppercase: boolean;
   animation: Animation;
+  animTarget: AnimTarget; // whether animation affects per character, word, line, or all
   duration: number; // ms, length of the in-animation
   easing: Easing;
   x: number; // 0..1 center
@@ -42,7 +46,7 @@ export type Style = {
 export type Align = 'left' | 'center' | 'right';
 
 const base = {
-  italic: false, outline: 0.16, box: '', duration: 320, easing: 'ease-out' as Easing, x: 0.5,
+  italic: false, outline: 0.16, box: '', animTarget: 'word' as AnimTarget, duration: 320, easing: 'ease-out' as Easing, x: 0.5,
   align: 'center' as Align, lineHeight: 1.2, letterSpacing: 0, opacity: 1, radius: 0.22,
 };
 
@@ -55,9 +59,9 @@ export const PRESETS: Record<string, Style> = {
   'Neon pulse': { ...base, family: 'Anton', weight: 400, size: 0.08, color: '#ffffff', highlight: '#00f0ff', stroke: '#0b132b', outline: 0.12, uppercase: true, animation: 'neon', duration: 300, y: 0.74 },
   'Kinetic wave': { ...base, family: 'Montserrat', weight: 800, size: 0.064, color: '#ffffff', highlight: '#ff5470', stroke: '#000000', outline: 0.14, uppercase: true, animation: 'wave', duration: 300, y: 0.76 },
   'Bold pop': { ...base, family: 'Montserrat', weight: 800, size: 0.065, color: '#ffffff', highlight: '#c8f560', stroke: '#000000', uppercase: true, animation: 'karaoke', y: 0.75 },
-  Boxed: { ...base, family: 'Inter', weight: 800, size: 0.055, color: '#ffffff', highlight: '#c8f560', stroke: '#000000', outline: 0, box: '#111111', uppercase: false, animation: 'fade', y: 0.8 },
+  Boxed: { ...base, family: 'Inter', weight: 800, size: 0.055, color: '#ffffff', highlight: '#c8f560', stroke: '#000000', outline: 0, box: '#111111', uppercase: false, animation: 'fade', animTarget: 'all', y: 0.8 },
   Minimal: { ...base, family: 'Inter', weight: 800, size: 0.048, color: '#ffffff', highlight: '#ffffff', stroke: '#000000', outline: 0.08, uppercase: false, animation: 'none', y: 0.86 },
-  Editorial: { ...base, family: 'DM Serif Display', weight: 400, italic: true, size: 0.07, color: '#fff8ec', highlight: '#ffd27a', stroke: '#000000', outline: 0.06, uppercase: false, animation: 'fade', duration: 500, y: 0.78 },
+  Editorial: { ...base, family: 'DM Serif Display', weight: 400, italic: true, size: 0.07, color: '#fff8ec', highlight: '#ffd27a', stroke: '#000000', outline: 0.06, uppercase: false, animation: 'fade', animTarget: 'all', duration: 500, y: 0.78 },
   Tall: { ...base, family: 'Anton', weight: 400, size: 0.085, color: '#ffffff', highlight: '#ff4d6d', stroke: '#111111', uppercase: true, animation: 'bounce', y: 0.72 },
   Marker: { ...base, family: 'Permanent Marker', weight: 400, size: 0.07, color: '#fff6d6', highlight: '#ff9f1c', stroke: '#2b1a00', uppercase: false, animation: 'pop', easing: 'back', y: 0.7 },
 };
@@ -65,7 +69,8 @@ export const DEFAULT_STYLE = PRESETS['Viral pop'];
 
 // Saved projects from before a field existed get that field's default.
 export function migrateStyle(s: Partial<Style> & Record<string, unknown>): Style {
-  return { ...DEFAULT_STYLE, ...s } as Style;
+  const animTarget = (s.animTarget as AnimTarget) ?? (s.animation === 'fade' ? 'all' : 'word');
+  return { ...DEFAULT_STYLE, animTarget, ...s } as Style;
 }
 
 // Merge caption-level style override with base project style.
@@ -88,7 +93,7 @@ export const EASINGS: Record<Easing, (p: number) => number> = {
   'quart-out': (p) => 1 - (1 - p) ** 4,
 };
 
-type Anim = Pick<Style, 'animation' | 'duration' | 'easing'>;
+type Anim = Pick<Style, 'animation' | 'duration' | 'easing'> & { animTarget?: AnimTarget };
 
 export type WordState = {
   visible: boolean;
@@ -106,13 +111,19 @@ export type WordState = {
   pill: boolean;
 };
 
-// Per-word animation state at time t (seconds). Pure, so preview and export match.
-export function wordState(w: Word, capStart: number, t: number, a: Anim): WordState {
+// Animation state for any target unit (caption, line, word, or character).
+export function computeAnimState(
+  start: number,
+  end: number,
+  t: number,
+  a: Anim,
+  textLength: number = 1,
+): WordState {
   const anim = a.animation;
   const d = Math.max(0.01, a.duration / 1000);
   const ease = EASINGS[a.easing] ?? EASINGS['ease-out'];
-  const active = anim !== 'none' && anim !== 'fade' && t >= w.start && t < w.end;
-  const spoken = t >= w.start;
+  const active = anim !== 'none' && anim !== 'fade' && t >= start && t < end;
+  const spoken = t >= start;
 
   let visible = true;
   let scale = 1;
@@ -127,65 +138,65 @@ export function wordState(w: Word, capStart: number, t: number, a: Anim): WordSt
   let pill = false;
 
   if (anim === 'fade') {
-    const p = ease(clamp((t - capStart) / d));
+    const p = ease(clamp((t - start) / d));
     alpha = clamp(p);
     dy = (1 - p) * 0.5; // rises half a line height
   } else if (anim === 'pop') {
     visible = spoken;
-    scale = 0.4 + 0.6 * ease(clamp((t - w.start) / d));
+    scale = 0.4 + 0.6 * ease(clamp((t - start) / d));
   } else if (anim === 'elastic') {
     visible = spoken;
-    const p = clamp((t - w.start) / d);
+    const p = clamp((t - start) / d);
     scale = EASINGS.spring(p);
-    if (active) rotation = Math.sin((t - w.start) * 12) * 0.035;
+    if (active) rotation = Math.sin((t - start) * 12) * 0.035;
   } else if (anim === 'slide-up') {
     visible = spoken;
-    const p = (EASINGS['quart-out'] ?? EASINGS['ease-out'])(clamp((t - w.start) / d));
+    const p = (EASINGS['quart-out'] ?? EASINGS['ease-out'])(clamp((t - start) / d));
     alpha = clamp(p);
     dy = (1 - p) * 0.55;
   } else if (anim === 'slide-in') {
     visible = spoken;
-    const p = ease(clamp((t - w.start) / d));
+    const p = ease(clamp((t - start) / d));
     alpha = clamp(p);
     dx = (1 - p) * -0.35;
   } else if (anim === 'wave') {
     visible = spoken;
-    const span = Math.max(0.08, Math.min(d, w.end - w.start));
+    const span = Math.max(0.08, Math.min(d, end - start));
     if (active) {
-      const phase = clamp((t - w.start) / span);
+      const phase = clamp((t - start) / span);
       dy = -Math.sin(phase * Math.PI) * 0.35;
       scale = 1 + 0.08 * Math.sin(phase * Math.PI);
     }
   } else if (anim === 'glitch') {
     visible = spoken;
-    const p = clamp((t - w.start) / Math.min(d, 0.22));
+    const p = clamp((t - start) / Math.min(d, 0.22));
     if (active && p < 1) {
-      const seed = Math.sin((t - w.start) * 382.7);
+      const seed = Math.sin((t - start) * 382.7);
       dx = seed * 0.07;
-      dy = Math.cos((t - w.start) * 440.1) * 0.04;
+      dy = Math.cos((t - start) * 440.1) * 0.04;
       rotation = seed * 0.04;
       alpha = 0.85 + 0.15 * Math.abs(seed);
     }
   } else if (anim === 'pill') {
     visible = true;
     pill = active;
-    if (active) scale = 1 + 0.05 * ease(clamp((t - w.start) / Math.min(d, 0.15)));
+    if (active) scale = 1 + 0.05 * ease(clamp((t - start) / Math.min(d, 0.15)));
   } else if (anim === 'neon') {
     visible = true;
     if (active) {
-      const span = Math.max(0.08, w.end - w.start);
-      glowBlur = 14 * Math.sin(clamp((t - w.start) / span) * Math.PI);
-      scale = 1 + 0.04 * ease(clamp((t - w.start) / Math.min(d, 0.15)));
+      const span = Math.max(0.08, end - start);
+      glowBlur = 14 * Math.sin(clamp((t - start) / span) * Math.PI);
+      scale = 1 + 0.04 * ease(clamp((t - start) / Math.min(d, 0.15)));
     }
   } else if (anim === 'typewriter') {
     visible = spoken;
-    // Letters are typed over the word's spoken time, never slower than `duration`.
-    const span = Math.min(d, Math.max(0.05, w.end - w.start));
-    chars = Math.max(1, Math.ceil(w.text.length * clamp((t - w.start) / span)));
+    // Letters are typed over the unit's spoken time, never slower than `duration`.
+    const span = Math.min(d, Math.max(0.05, end - start));
+    chars = Math.max(1, Math.ceil(textLength * clamp((t - start) / span)));
   } else if (anim === 'karaoke') {
-    if (active) scale = 1 + 0.05 * ease(clamp((t - w.start) / Math.min(d, 0.15)));
+    if (active) scale = 1 + 0.05 * ease(clamp((t - start) / Math.min(d, 0.15)));
   } else if (anim === 'bounce') {
-    if (active) dy = -Math.sin(clamp((t - w.start) / Math.min(d, w.end - w.start)) * Math.PI) * 0.25;
+    if (active) dy = -Math.sin(clamp((t - start) / Math.min(d, end - start)) * Math.PI) * 0.25;
   }
 
   scaleX = scale;
@@ -199,6 +210,26 @@ export function wordState(w: Word, capStart: number, t: number, a: Anim): WordSt
         : active;
 
   return { visible, active, highlighted, scale, scaleX, scaleY, dx, dy, rotation, alpha, chars, glowBlur, pill };
+}
+
+// Per-word animation state at time t (seconds). Pure, so preview and export match.
+export function wordState(
+  w: Word,
+  capStart: number,
+  t: number,
+  a: Anim,
+  range?: { start: number; end: number },
+): WordState {
+  const target = a.animTarget ?? (a.animation === 'fade' ? 'all' : 'word');
+  let start = w.start;
+  let end = w.end;
+  if (range) {
+    start = range.start;
+    end = range.end;
+  } else if (target === 'all') {
+    start = capStart;
+  }
+  return computeAnimState(start, end, t, a, w.text.length);
 }
 
 // Wrap words into lines no wider than maxW.
@@ -240,14 +271,69 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
   const pad = px * (s.box ? 0.4 : 0.15);
   const bounds: Box = { x: s.x * W - maxW / 2 - pad, y: y - px / 2 - pad, w: maxW + pad * 2, h: (lines.length - 1) * lh + px + pad * 2 };
   const capStart = c.words[0].start;
+  const capEnd = c.words[c.words.length - 1].end;
+  const target: AnimTarget = s.animTarget ?? (s.animation === 'fade' ? 'all' : 'word');
+  const d = Math.max(0.01, s.duration / 1000);
+
+  // Precompute whole-caption typewriter progress if target === 'all'
+  let allWordChars: number[] | null = null;
+  if (s.animation === 'typewriter' && target === 'all') {
+    const totalChars = texts.reduce((acc, str) => acc + str.length, 0);
+    const span = Math.min(d, Math.max(0.05, capEnd - capStart));
+    const typedChars = t < capStart ? 0 : Math.ceil(totalChars * clamp((t - capStart) / span));
+    let soFar = 0;
+    allWordChars = texts.map((txt) => {
+      const cnt = Math.min(txt.length, Math.max(0, typedChars - soFar));
+      soFar += txt.length;
+      return cnt;
+    });
+  }
+
   for (const line of lines) {
     const lw = line.reduce((a, i) => a + widths[i], 0) + space * (line.length - 1);
     const align = s.align ?? 'center';
     let x = align === 'left' ? s.x * W - maxW / 2 : align === 'right' ? s.x * W + maxW / 2 - lw : s.x * W - lw / 2;
-    const states = line.map((i) => wordState(c.words[i], capStart, t, s));
+
+    const lineStart = c.words[line[0]].start;
+    const lineEnd = c.words[line[line.length - 1]].end;
+
+    // Typewriter line progress if target === 'line'
+    let lineWordChars: Map<number, number> | null = null;
+    if (s.animation === 'typewriter' && target === 'line') {
+      const lineChars = line.reduce((acc, i) => acc + texts[i].length, 0);
+      const span = Math.min(d, Math.max(0.05, lineEnd - lineStart));
+      const typedChars = t < lineStart ? 0 : Math.ceil(lineChars * clamp((t - lineStart) / span));
+      let soFar = 0;
+      lineWordChars = new Map<number, number>();
+      for (const i of line) {
+        const cnt = Math.min(texts[i].length, Math.max(0, typedChars - soFar));
+        soFar += texts[i].length;
+        lineWordChars.set(i, cnt);
+      }
+    }
+
+    const range =
+      target === 'all'
+        ? { start: capStart, end: capEnd }
+        : target === 'line'
+          ? { start: lineStart, end: lineEnd }
+          : undefined;
+
+    const states = line.map((i) => {
+      const st = wordState(c.words[i], capStart, t, s, range);
+      if (allWordChars) {
+        const cnt = allWordChars[i];
+        return { ...st, visible: cnt > 0, chars: cnt };
+      }
+      if (lineWordChars) {
+        const cnt = lineWordChars.get(i) ?? 0;
+        return { ...st, visible: cnt > 0, chars: cnt };
+      }
+      return st;
+    });
 
     // Background box behind the visible words of this line.
-    if (s.box && states.some((st) => st.visible)) {
+    if (s.box && (states.some((st) => st.visible) || (target === 'character' && t >= lineStart))) {
       const padX = px * 0.35, padY = px * 0.22;
       ctx.save();
       ctx.globalAlpha = 0.88 * op * Math.min(...states.map((st) => st.alpha));
@@ -258,48 +344,111 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
       ctx.restore();
     }
 
-    line.forEach((i, k) => {
-      const st = states[k];
-      if (st.visible) {
-        const text = st.chars === Infinity ? texts[i] : texts[i].slice(0, st.chars);
+    if (target === 'character' && s.animation !== 'none') {
+      line.forEach((i) => {
+        const text = texts[i];
         const wordW = widths[i];
-        ctx.save();
-        ctx.globalAlpha = st.alpha * op;
-        ctx.translate(x + wordW / 2 + st.dx * px, y + st.dy * px);
-        if (st.rotation) ctx.rotate(st.rotation);
-        ctx.scale(st.scaleX, st.scaleY);
+        const chars = [...text];
+        const numChars = chars.length;
+        if (numChars === 0) {
+          x += wordW + space;
+          return;
+        }
+        const w = c.words[i];
+        const wordDur = Math.max(0.01, w.end - w.start);
+        const charSpan = wordDur / numChars;
 
-        // Word-level pill background (CapCut viral pill style)
-        if (st.pill) {
+        chars.forEach((ch, j) => {
+          const charStart = w.start + j * charSpan;
+          const charEnd = charStart + charSpan;
+          const cst = computeAnimState(charStart, charEnd, t, s, 1);
+          if (!cst.visible) return;
+
+          const prefix = chars.slice(0, j).join('');
+          const charX0 = ctx.measureText(prefix).width;
+          const charW = ctx.measureText(ch).width;
+          const charCenterX = charX0 + charW / 2;
+
           ctx.save();
-          const pillPadX = px * 0.22, pillPadY = px * 0.14;
-          ctx.fillStyle = s.highlight;
-          ctx.beginPath();
-          ctx.roundRect(-wordW / 2 - pillPadX, -px / 2 - pillPadY, wordW + pillPadX * 2, px + pillPadY * 2, px * 0.2);
-          ctx.fill();
+          ctx.globalAlpha = cst.alpha * op;
+          ctx.translate(x + charCenterX + cst.dx * px, y + cst.dy * px);
+          if (cst.rotation) ctx.rotate(cst.rotation);
+          ctx.scale(cst.scaleX, cst.scaleY);
+
+          // Character-level pill background
+          if (cst.pill) {
+            ctx.save();
+            const pillPadX = px * 0.12, pillPadY = px * 0.14;
+            ctx.fillStyle = s.highlight;
+            ctx.beginPath();
+            ctx.roundRect(-charW / 2 - pillPadX, -px / 2 - pillPadY, charW + pillPadX * 2, px + pillPadY * 2, px * 0.15);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          if (cst.glowBlur > 0) {
+            ctx.shadowColor = s.highlight;
+            ctx.shadowBlur = cst.glowBlur;
+          }
+
+          if (s.outline > 0) {
+            ctx.lineWidth = px * s.outline;
+            ctx.strokeStyle = s.stroke;
+            ctx.strokeText(ch, -charW / 2, 0);
+          }
+
+          const textColor = cst.pill ? (s.box || '#111111') : (cst.highlighted ? s.highlight : s.color);
+          ctx.fillStyle = textColor;
+          ctx.fillText(ch, -charW / 2, 0);
+          ctx.restore();
+        });
+
+        x += wordW + space;
+      });
+    } else {
+      line.forEach((i, k) => {
+        const st = states[k];
+        if (st.visible) {
+          const text = st.chars === Infinity ? texts[i] : texts[i].slice(0, st.chars);
+          const wordW = widths[i];
+          ctx.save();
+          ctx.globalAlpha = st.alpha * op;
+          ctx.translate(x + wordW / 2 + st.dx * px, y + st.dy * px);
+          if (st.rotation) ctx.rotate(st.rotation);
+          ctx.scale(st.scaleX, st.scaleY);
+
+          // Word-level pill background (CapCut viral pill style)
+          if (st.pill) {
+            ctx.save();
+            const pillPadX = px * 0.22, pillPadY = px * 0.14;
+            ctx.fillStyle = s.highlight;
+            ctx.beginPath();
+            ctx.roundRect(-wordW / 2 - pillPadX, -px / 2 - pillPadY, wordW + pillPadX * 2, px + pillPadY * 2, px * 0.2);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          // Glow blur for neon pulse
+          if (st.glowBlur > 0) {
+            ctx.shadowColor = s.highlight;
+            ctx.shadowBlur = st.glowBlur;
+          }
+
+          if (s.outline > 0) {
+            ctx.lineWidth = px * s.outline;
+            ctx.strokeStyle = s.stroke;
+            ctx.strokeText(text, -wordW / 2, 0);
+          }
+
+          // Contrast text on active pill
+          const textColor = st.pill ? (s.box || '#111111') : (st.highlighted ? s.highlight : s.color);
+          ctx.fillStyle = textColor;
+          ctx.fillText(text, -wordW / 2, 0);
           ctx.restore();
         }
-
-        // Glow blur for neon pulse
-        if (st.glowBlur > 0) {
-          ctx.shadowColor = s.highlight;
-          ctx.shadowBlur = st.glowBlur;
-        }
-
-        if (s.outline > 0) {
-          ctx.lineWidth = px * s.outline;
-          ctx.strokeStyle = s.stroke;
-          ctx.strokeText(text, -wordW / 2, 0);
-        }
-
-        // Contrast text on active pill
-        const textColor = st.pill ? (s.box || '#111111') : (st.highlighted ? s.highlight : s.color);
-        ctx.fillStyle = textColor;
-        ctx.fillText(text, -wordW / 2, 0);
-        ctx.restore();
-      }
-      x += widths[i] + space;
-    });
+        x += widths[i] + space;
+      });
+    }
     y += lh;
   }
   return bounds;

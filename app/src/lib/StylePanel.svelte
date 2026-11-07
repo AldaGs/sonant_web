@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { PRESETS, resolveStyle, type Style, type Animation, type Easing } from './render';
+  import { PRESETS, resolveStyle, type Style, type Animation, type AnimTarget, type Easing } from './render';
   import type { Font } from './fonts';
   import type { Caption } from './captions';
   import { captionText } from './captions';
@@ -51,6 +51,7 @@
     'bounce',
     'none',
   ];
+  const ANIM_TARGETS: AnimTarget[] = ['character', 'word', 'line', 'all'];
   // Settings are split into tabs so each fits without scrolling.
   type Tab = 'style' | 'anim' | 'text';
   const TABS: [Tab, string][] = [['style', 'style'], ['anim', 'animation'], ['text', 'text']];
@@ -88,9 +89,9 @@
     write({ [k]: v } as Partial<Style>);
   }
 
-  // A preset sets the look; the current animation, timing and position are kept.
+  // A preset sets the look; the current animation, timing, target and position are kept.
   function applyPreset(p: Style) {
-    const { x: _x, y: _y, animation: _a, duration: _d, easing: _e, ...look } = p;
+    const { x: _x, y: _y, animation: _a, animTarget: _at, duration: _d, easing: _e, ...look } = p;
     write(look);
   }
 
@@ -186,6 +187,24 @@
         onclick={() => updateField('animation', a)}>
         <span class="anim-label">{t('anim.' + a)}</span>
         <span class="muted">{t('animd.' + a)}</span>
+      </button>
+    {/each}
+  </div>
+</section>
+
+<section class="block">
+  <h3>{t('animAffects')}</h3>
+  <div class="seg" role="radiogroup" aria-label={t('animAffects')}>
+    {#each ANIM_TARGETS as tgt}
+      <button
+        type="button"
+        role="radio"
+        aria-checked={effectiveStyle.animTarget === tgt}
+        class:on={effectiveStyle.animTarget === tgt}
+        disabled={effectiveStyle.animation === 'none'}
+        title={t('animTargetDesc.' + tgt)}
+        onclick={() => updateField('animTarget', tgt)}>
+        {t('target.' + tgt)}
       </button>
     {/each}
   </div>
@@ -384,9 +403,10 @@
   .note { margin: -2px 0 0 92px; font-size: 12px; color: var(--accent); }
   .note.bad { color: #ffb86b; }
   .seg { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
-  .seg button { flex: 1; height: 26px; padding: 0; border: 0; border-radius: 6px; font-size: 12px; color: var(--muted); }
+  .seg button { flex: 1; height: 28px; padding: 0 4px; border: 0; border-radius: 6px; font-size: 12px; color: var(--muted); cursor: pointer; transition: background .12s, color .12s; }
   .seg button.on { background: var(--tab-on); color: var(--text); }
   .seg button.on svg { color: var(--text); }
+  .seg button:disabled { opacity: 0.4; cursor: not-allowed; }
   .seg .line { display: block; width: 16px; min-height: 1px; background: currentColor; border-radius: 1px; }
   .grid9 { display: grid; grid-template-columns: repeat(3, 28px); gap: 4px; padding: 6px; width: max-content;
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
