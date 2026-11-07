@@ -80,4 +80,7 @@ assert.ok(inBox(bx, 120, 110));
 assert.ok(!inBox(bx, 90, 110));
 assert.ok(inBox(bx, 90, 110, 15));
 assert.ok(!inBox(null, 120, 110));
+// new inspector fields default so older projects render the same
+const m = migrateStyle({ family: 'Inter' });
+assert.deepEqual([m.align, m.lineHeight, m.letterSpacing, m.opacity, m.radius], ['center', 1.2, 0, 1, 0.22]);
 console.log('render ok');

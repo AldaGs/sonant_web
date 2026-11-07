@@ -2,7 +2,7 @@ import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
 import { keptCaptions, type Segment } from './cuts.ts';
 import { drawCaption, resolveStyle, type Style } from './render.ts';
-import { clipAt, clipStarts, splitAtBoundaries, type Asset, type AudioItem, type Clip } from './project.ts';
+import { clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
 
 export type Aspect = 'source' | '16:9' | '9:16' | '1:1';
 export type Res = 'source' | 1080 | 720 | 540 | 480;
@@ -83,7 +83,9 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Pr
   // Extra audio: placed in output time, cut off at the end of the video.
   for (const item of src.audios) {
     const buf = decoded.get(item.assetId);
-    if (buf && item.at < seconds) play(buf, Math.max(0, item.at), Math.max(0, -item.at), Math.min(buf.duration, seconds - item.at), item.volume);
+    if (!buf || item.at >= seconds) continue;
+    const len = Math.min(itemLen(item, buf.duration), seconds - item.at);
+    if (len > 0) play(buf, item.at, item.offset ?? 0, len, item.volume);
   }
   return ctx.startRendering();
 }

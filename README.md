@@ -32,6 +32,13 @@ Everything runs locally in the browser. No server, no account, and your video ne
 - **Autosave:** the project is saved in the browser (IndexedDB) and restored on reload.
 - **Interface:** English and Spanish.
 
+## Projects and saving
+
+- **Home page** (`#/`): every project with a thumbnail, last edit and length. Open, rename, duplicate, save to file or delete.
+- **Autosave**: each project is saved in the browser (IndexedDB) as you work.
+- **Project files** (`.sonant`): one file with the media and all edits. **Save file** (Ctrl/⌘+S) writes it; in Chrome/Edge later saves go to the same file (Shift+Ctrl+S picks a new one), other browsers download it. **Open project file** on the home page loads it on any computer.
+- **Storage protection**: the app asks the browser not to auto-delete projects; the home page shows space used and whether projects are protected. Browsers decide whether to grant this (Chrome usually does for sites you use often, bookmark or install), so keep project files as backups.
+
 ## Run it
 
 Requires Node 20+ and a recent Chrome or Edge. Firefox and Safari work, but slower.
@@ -55,7 +62,7 @@ The logic modules have small assert-based tests that run directly in Node (TypeS
 
 ```bash
 cd app
-for t in captions render cuts export transcript waveform; do node src/lib/$t.test.ts; done
+for t in captions render cuts export transcript waveform project projects; do node src/lib/$t.test.ts; done
 ```
 
 ## Stack

@@ -4,6 +4,7 @@
   import type { Caption } from './captions';
   import { captionText } from './captions';
   import { t } from './i18n.svelte';
+  import ColorField from './ColorField.svelte';
 
   let {
     style = $bindable(),
@@ -18,6 +19,7 @@
     onapplyall,
     onresetcapstyle,
     onclearcapselection,
+    onclearfields = () => {},
   }: {
     style: Style;
     selectedCap?: Caption | null;
@@ -27,10 +29,11 @@
     fontError: string;
     onlocal: () => void;
     onupload: (f: File | undefined) => void;
-    onupdatecapstyle: (override: Partial<Style>) => void;
+    onupdatecapstyle: (override: Partial<Style>, live?: boolean) => void;
     onapplyall: () => void;
     onresetcapstyle: () => void;
     onclearcapselection: () => void;
+    onclearfields?: (keys: (keyof Style)[]) => void; // drop these overrides from every caption
   } = $props();
 
   const ANIMS: Animation[] = [
@@ -72,49 +75,50 @@
     }),
   );
 
+  // With captions selected, edits go to them unless "Apply to all" is on. Applying to all also clears
+  // those settings from every caption override, so every caption really changes.
+  let applyAll = $state(false);
+  // live = part of a drag (e.g. color picker); the app makes one undo step per gesture.
+  function write(patch: Partial<Style>, live = false) {
+    if (selectedCap && !applyAll) return onupdatecapstyle(patch, live);
+    style = { ...style, ...patch };
+    if (applyAll) onclearfields(Object.keys(patch) as (keyof Style)[]);
+  }
   function updateField<K extends keyof Style>(k: K, v: Style[K]) {
-    if (selectedCap) {
-      onupdatecapstyle({ [k]: v });
-    } else {
-      style = { ...style, [k]: v };
-    }
+    write({ [k]: v } as Partial<Style>);
   }
 
+  // A preset sets the look; the current animation, timing and position are kept.
   function applyPreset(p: Style) {
-    const keepAnim = {
-      animation: effectiveStyle.animation,
-      duration: effectiveStyle.duration,
-      easing: effectiveStyle.easing,
-    };
-    if (selectedCap) {
-      onupdatecapstyle({
-        family: p.family,
-        weight: p.weight,
-        italic: p.italic,
-        size: p.size,
-        color: p.color,
-        highlight: p.highlight,
-        stroke: p.stroke,
-        outline: p.outline,
-        box: p.box,
-        uppercase: p.uppercase,
-        ...keepAnim,
-      });
-    } else {
-      style = { ...p, x: style.x, y: style.y, ...keepAnim };
-    }
+    const { x: _x, y: _y, animation: _a, duration: _d, easing: _e, ...look } = p;
+    write(look);
   }
 
   function pickFont(family: string) {
     const f = fonts.find((x) => x.family === family);
-    if (f) {
-      if (selectedCap) {
-        onupdatecapstyle({ family: f.family, weight: f.weight });
-      } else {
-        style = { ...style, family: f.family, weight: f.weight };
-      }
-    }
+    if (f) write({ family: f.family, weight: f.weight });
   }
+
+  // ---- Inspector helpers ----
+  const WEIGHTS: [number, string][] = [[300, 'w.light'], [400, 'w.regular'], [500, 'w.medium'], [600, 'w.semibold'], [700, 'w.bold'], [800, 'w.extrabold'], [900, 'w.black']];
+  const BORDERS: [number, string][] = [[0, 'border.none'], [0.06, 'border.thin'], [0.12, 'border.medium'], [0.18, 'border.thick']];
+  const ANCHORS = [0.12, 0.5, 0.86]; // 3×3 position grid: left/center/right × top/middle/bottom
+  const isHex = (v: string) => /^#[0-9a-f]{6}$/i.test(v);
+  const pct = (v: number) => Math.round(v * 100);
+  // Font size shown in px at 1080p, stored as a fraction of frame height.
+  const toPx = (v: number) => Math.round(v * 1080);
+  // WCAG contrast of text against its box (or outline when there's no box).
+  function lum(hex: string) {
+    const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  const contrast = $derived.by(() => {
+    const bg = effectiveStyle.box || (effectiveStyle.outline > 0 ? effectiveStyle.stroke : '');
+    if (!bg || !isHex(bg) || !isHex(effectiveStyle.color)) return null;
+    const [a, b] = [lum(effectiveStyle.color), lum(bg)].sort((x, y) => y - x);
+    return (a + 0.05) / (b + 0.05);
+  });
+
 </script>
 
 <div class="scope-panel">
@@ -129,6 +133,11 @@
       {:else}
         <p class="scope-snippet">"{captionText(selectedCap)}"</p>
       {/if}
+      <label class="switch">
+        <input type="checkbox" role="switch" bind:checked={applyAll} />
+        <span class="track"><span class="knob"></span></span>
+        <span>{t('applyAllToggle')}</span>
+      </label>
       <div class="scope-actions">
         <button class="sm-btn" onclick={onapplyall} title={t('applyAllTip')}>{t('applyAll')}</button>
         {#if selectedCap.style}
@@ -202,59 +211,198 @@
 
 </div>
 {:else}
-<div class="block" role="tabpanel" id="spanel-text" aria-labelledby="stab-text">
-  <h3>{t('text')}</h3>
-  <label class="field">{t('font')}
-    <select value={effectiveStyle.family} onchange={(e) => pickFont(e.currentTarget.value)}>
-      {#each fonts as f}<option value={f.family}>{f.family}</option>{/each}
-    </select>
-  </label>
-  <div class="row">
-    <button class="sm" onclick={onlocal}>{t('myFonts')}</button>
-    <label class="btn sm-label">{t('uploadFont')}
-      <input type="file" accept=".ttf,.otf,.woff,.woff2" hidden onchange={(e) => onupload(e.currentTarget.files?.[0])} />
+<div class="insp" role="tabpanel" id="spanel-text" aria-labelledby="stab-text">
+  <section>
+    <h4>{t('text')}</h4>
+    <label class="prow"><span>{t('font')}</span>
+      <select value={effectiveStyle.family} onchange={(e) => pickFont(e.currentTarget.value)}>
+        {#each fonts as f}<option value={f.family}>{f.family}</option>{/each}
+      </select>
     </label>
-  </div>
-  {#if fontError}<p class="error small">{t(fontError)}</p>{/if}
-  <label class="field">{t('size')}
-    <input type="range" min="0.03" max="0.15" step="0.005" value={effectiveStyle.size}
-      oninput={(e) => updateField('size', +e.currentTarget.value)} />
-  </label>
-  <div class="colors">
-    <label>{t('text')} <input type="color" value={effectiveStyle.color}
-      onchange={(e) => updateField('color', e.currentTarget.value)} /></label>
-    <label>{t('highlight')} <input type="color" value={effectiveStyle.highlight}
-      onchange={(e) => updateField('highlight', e.currentTarget.value)} /></label>
-    <label>{t('outline')} <input type="color" value={effectiveStyle.stroke}
-      onchange={(e) => updateField('stroke', e.currentTarget.value)} /></label>
-  </div>
-  <label class="field">{t('outlineWidth')}
-    <input type="range" min="0" max="0.25" step="0.01" value={effectiveStyle.outline}
-      oninput={(e) => updateField('outline', +e.currentTarget.value)} />
-  </label>
-  <div class="row">
-    <label class="check">
-      <input type="checkbox" checked={!!effectiveStyle.box}
-        onchange={(e) => updateField('box', e.currentTarget.checked ? '#111111' : '')} /> {t('bgBox')}
+    <label class="prow"><span>{t('weight')}</span>
+      <select value={effectiveStyle.weight} onchange={(e) => updateField('weight', +e.currentTarget.value)}>
+        {#each WEIGHTS as [w, key]}<option value={w}>{t(key)}</option>{/each}
+      </select>
     </label>
-    {#if effectiveStyle.box}
-      <input type="color" class="boxc" value={effectiveStyle.box}
-        onchange={(e) => updateField('box', e.currentTarget.value)} aria-label={t('bgBoxColor')} />
+    <label class="prow"><span>{t('size')}</span>
+      <span class="fld unit">
+        <input type="number" min="12" max="200" step="1" value={toPx(effectiveStyle.size)}
+          onchange={(e) => updateField('size', Math.min(200, Math.max(12, +e.currentTarget.value)) / 1080)} />
+        <em>px</em>
+      </span>
+    </label>
+    <div class="prow"><span>{t('spacing')}</span>
+      <span class="pair">
+        <span class="fld icon" title={t('lineHeight')}>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12M2 13h12M8 5v6M6 6.5 8 4.5l2 2M6 9.5l2 2 2-2" /></svg>
+          <input type="number" min="0.8" max="3" step="0.1" aria-label={t('lineHeight')} value={effectiveStyle.lineHeight}
+            onchange={(e) => updateField('lineHeight', +e.currentTarget.value || 1.2)} />
+        </span>
+        <span class="fld icon" title={t('letterSpacing')}>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3v10M14 3v10M5 11l3-7 3 7M6.2 8.5h3.6" /></svg>
+          <input type="number" min="-0.1" max="0.5" step="0.01" placeholder={t('normal')} aria-label={t('letterSpacing')}
+            value={effectiveStyle.letterSpacing || ''}
+            onchange={(e) => updateField('letterSpacing', +e.currentTarget.value || 0)} />
+        </span>
+      </span>
+    </div>
+    <div class="prow"><span>{t('color')}</span>
+      <ColorField value={effectiveStyle.color} label={t('color')}
+          oninput={(c) => write({ color: c }, true)} onchange={(c) => write({ color: c })} />
+    </div>
+    {#if contrast !== null}
+      <p class="note" class:bad={contrast < 4.5}>{contrast >= 4.5 ? t('goodContrast') : t('lowContrast')} · {contrast.toFixed(1)}:1</p>
     {/if}
-  </div>
-  <label class="check">
-    <input type="checkbox" checked={effectiveStyle.uppercase}
-      onchange={(e) => updateField('uppercase', e.currentTarget.checked)} /> {t('upper')}
-  </label>
-  <label class="check">
-    <input type="checkbox" checked={effectiveStyle.italic}
-      onchange={(e) => updateField('italic', e.currentTarget.checked)} /> {t('italic')}
-  </label>
-  <p class="muted small">{t('dragHint')}</p>
+    <div class="prow"><span>{t('highlight')}</span>
+      <ColorField value={effectiveStyle.highlight} label={t('highlight')}
+          oninput={(c) => write({ highlight: c }, true)} onchange={(c) => write({ highlight: c })} />
+    </div>
+    <div class="prow"><span>{t('align')}</span>
+      <span class="seg" role="radiogroup" aria-label={t('align')}>
+        {#each [['left', 'M2 4h12M2 8h8M2 12h11'], ['center', 'M2 4h12M4 8h8M3 12h10'], ['right', 'M2 4h12M6 8h8M3 12h11']] as [a, d]}
+          <button role="radio" aria-checked={effectiveStyle.align === a} class:on={effectiveStyle.align === a}
+            title={t('align.' + a)} aria-label={t('align.' + a)} onclick={() => updateField('align', a as Style['align'])}>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d={d} /></svg>
+          </button>
+        {/each}
+      </span>
+    </div>
+    <div class="prow"><span>{t('case')}</span>
+      <span class="seg">
+        <button class:on={!effectiveStyle.uppercase} aria-pressed={!effectiveStyle.uppercase} onclick={() => updateField('uppercase', false)}>Aa</button>
+        <button class:on={effectiveStyle.uppercase} aria-pressed={effectiveStyle.uppercase} onclick={() => updateField('uppercase', true)}>AA</button>
+        <button class:on={effectiveStyle.italic} aria-pressed={effectiveStyle.italic} title={t('italic')} aria-label={t('italic')}
+          onclick={() => updateField('italic', !effectiveStyle.italic)}><i>I</i></button>
+      </span>
+    </div>
+  </section>
+
+  <section>
+    <h4>{t('appearance')}</h4>
+    <div class="prow"><span>{t('fill')}</span>
+      {#if effectiveStyle.box}
+        <ColorField value={effectiveStyle.box} label={t('fill')} onclear={() => updateField('box', '')}
+          oninput={(c) => write({ box: c }, true)} onchange={(c) => write({ box: c })} />
+      {:else}
+        <button class="fld none" onclick={() => updateField('box', '#111111')}><span class="checker"></span>{t('none')}</button>
+      {/if}
+    </div>
+    <label class="prow"><span>{t('opacity')}</span>
+      <span class="fld unit">
+        <input type="number" min="0" max="100" step="5" value={pct(effectiveStyle.opacity)}
+          onchange={(e) => updateField('opacity', Math.min(100, Math.max(0, +e.currentTarget.value)) / 100)} />
+        <em>%</em>
+      </span>
+    </label>
+    <label class="prow"><span>{t('radius')}</span>
+      <span class="fld unit">
+        <input type="number" min="0" max="100" step="5" value={pct(effectiveStyle.radius)} disabled={!effectiveStyle.box}
+          onchange={(e) => updateField('radius', Math.min(100, Math.max(0, +e.currentTarget.value)) / 100)} />
+        <em>%</em>
+      </span>
+    </label>
+    <div class="prow"><span>{t('border')}</span>
+      <span class="seg" role="radiogroup" aria-label={t('border')}>
+        {#each BORDERS as [w, key]}
+          {@const on = Math.abs(effectiveStyle.outline - w) < 0.03 || (w === 0.18 && effectiveStyle.outline > 0.18)}
+          <button role="radio" aria-checked={on} class:on title={t(key)} aria-label={t(key)} onclick={() => updateField('outline', w)}>
+            {#if w === 0}<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" /><path d="M4 12 12 4" /></svg>
+            {:else}<span class="line" style:height="{w * 14}px"></span>{/if}
+          </button>
+        {/each}
+      </span>
+    </div>
+    {#if effectiveStyle.outline > 0}
+      <div class="prow"><span>{t('borderColor')}</span>
+        <ColorField value={effectiveStyle.stroke} label={t('borderColor')}
+          oninput={(c) => write({ stroke: c }, true)} onchange={(c) => write({ stroke: c })} />
+      </div>
+    {/if}
+  </section>
+
+  <section>
+    <h4>{t('position')}</h4>
+    <div class="prow top"><span>{t('anchor')}</span>
+      <span class="grid9" role="group" aria-label={t('anchor')}>
+        {#each ANCHORS as y, r}
+          {#each ANCHORS as x, c}
+            {@const on = Math.abs(effectiveStyle.x - x) < 0.02 && Math.abs(effectiveStyle.y - y) < 0.02}
+            <button class:on aria-pressed={on} title={t('anchor.' + r + c)} aria-label={t('anchor.' + r + c)}
+              onclick={() => write({ x, y })}><span></span></button>
+          {/each}
+        {/each}
+      </span>
+    </div>
+    <div class="prow"><span>X / Y</span>
+      <span class="pair">
+        <span class="fld unit"><b>X</b>
+          <input type="number" min="5" max="95" step="1" aria-label={t('posX')} value={pct(effectiveStyle.x)}
+            onchange={(e) => updateField('x', Math.min(95, Math.max(5, +e.currentTarget.value)) / 100)} /><em>%</em>
+        </span>
+        <span class="fld unit"><b>Y</b>
+          <input type="number" min="5" max="95" step="1" aria-label={t('posY')} value={pct(effectiveStyle.y)}
+            onchange={(e) => updateField('y', Math.min(95, Math.max(5, +e.currentTarget.value)) / 100)} /><em>%</em>
+        </span>
+      </span>
+    </div>
+    <p class="muted small">{t('dragHint')}</p>
+  </section>
+
+  <section>
+    <h4>{t('fontsH')}</h4>
+    <div class="row">
+      <button class="sm" onclick={onlocal}>{t('myFonts')}</button>
+      <label class="btn sm-label">{t('uploadFont')}
+        <input type="file" accept=".ttf,.otf,.woff,.woff2" hidden onchange={(e) => onupload(e.currentTarget.files?.[0])} />
+      </label>
+    </div>
+    {#if fontError}<p class="error small">{t(fontError)}</p>{/if}
+  </section>
 </div>
 {/if}
 
 <style>
+  /* ---- Inspector (Text tab) ---- */
+  .insp section { padding: 14px 16px; border-bottom: 1px solid var(--border-soft); display: grid; gap: 8px; }
+  .insp h4 { margin: 0 0 4px; font-family: var(--display); font-size: 14px; font-weight: 700; }
+  .prow { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 13px; }
+  .prow.top { align-items: start; }
+  .prow > span:first-child { color: var(--muted); }
+  .prow select, .fld { height: 32px; width: 100%; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); }
+  .prow select { padding: 0 8px; }
+  .fld { display: flex; align-items: center; gap: 6px; padding: 0 8px; min-width: 0; }
+  .fld input { flex: 1; min-width: 0; height: 100%; border: 0; background: none; padding: 0; font: inherit; color: var(--text); }
+  .fld input:focus-visible { outline: none; }
+  .fld:focus-within { border-color: var(--accent); }
+  .fld em { font-style: normal; color: var(--muted); font-size: 12px; }
+  .fld b { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .fld.icon svg, .seg svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; color: var(--muted); }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .fld.none { justify-content: flex-start; color: var(--text); font-size: 13px; cursor: pointer; }
+  .checker { width: 18px; height: 18px; border-radius: 4px; flex: none;
+    background: repeating-conic-gradient(#3a3a3a 0 25%, #1e1e1e 0 50%) 0 0 / 8px 8px; }
+  .note { margin: -2px 0 0 92px; font-size: 12px; color: var(--accent); }
+  .note.bad { color: #ffb86b; }
+  .seg { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+  .seg button { flex: 1; height: 26px; padding: 0; border: 0; border-radius: 6px; font-size: 12px; color: var(--muted); }
+  .seg button.on { background: var(--tab-on); color: var(--text); }
+  .seg button.on svg { color: var(--text); }
+  .seg .line { display: block; width: 16px; min-height: 1px; background: currentColor; border-radius: 1px; }
+  .grid9 { display: grid; grid-template-columns: repeat(3, 28px); gap: 4px; padding: 6px; width: max-content;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+  .grid9 button { width: 28px; height: 22px; padding: 0; border: 0; border-radius: 4px; display: grid; place-items: center; }
+  .grid9 button span { width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
+  .grid9 button:hover span { background: var(--muted); }
+  .grid9 button.on span { width: 10px; height: 10px; background: var(--accent); }
+  /* Apply-to-all switch */
+  .switch { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; margin-top: 4px; }
+  .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .track { width: 32px; height: 18px; border-radius: 999px; background: var(--border); position: relative; transition: background .15s; flex: none; }
+  .knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); transition: transform .15s; }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track .knob { transform: translateX(14px); background: var(--on-accent); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+
   .stabs { display: flex; gap: 4px; padding: 10px 16px 0; border-bottom: 1px solid var(--border-soft); position: sticky; top: 0; z-index: 1; background: var(--panel); }
   .stabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; height: 36px; padding: 0 12px; color: var(--muted); font-weight: 500; }
   .stabs button.on { color: var(--text); border-bottom-color: var(--accent); }
@@ -364,13 +512,8 @@
   .field { display: grid; gap: 4px; margin: 10px 0; font-size: 12px; color: var(--muted); }
   .row { display: flex; gap: 8px; }
   .sm-label { height: 30px; font-size: 12px; border-radius: 8px; padding: 0 10px; }
-  .colors { display: flex; gap: 8px; font-size: 12px; color: var(--muted); margin: 10px 0; }
-  .colors label { display: grid; gap: 4px; flex: 1; }
-  .colors input { width: 100%; height: 30px; padding: 2px; }
-  .check { display: flex; gap: 6px; align-items: center; font-size: 13px; margin: 6px 0; }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .two .field { margin: 0; }
   .two input, .two select { width: 100%; height: 36px; }
-  .boxc { width: 40px; height: 28px; padding: 2px; }
   .small { font-size: 12px; }
 </style>

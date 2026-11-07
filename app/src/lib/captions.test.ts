@@ -1,6 +1,6 @@
 // Run: node src/lib/captions.test.ts
 import assert from 'node:assert/strict';
-import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, type Word } from './captions.ts';
+import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Word } from './captions.ts';
 
 const w = (text: string, start: number, end = start + 0.3): Word => ({ text, start, end });
 
@@ -47,4 +47,11 @@ assert.notEqual(sp[0].id, sp[1].id);
 const tagged = setSpeaker(sp, new Set([sp[1].id]), 0);
 assert.deepEqual(tagged.map((c) => c.speaker), [1, 0]);
 assert.equal(setSpeaker(tagged, new Set([sp[0].id]), undefined)[0].speaker, undefined);
+// re-transcribing one clip only replaces captions inside its range
+const all = [{ id: 'k1', words: [w('keep', 1)], speaker: 0 }, { id: 'old', words: [w('old', 11)] }, { id: 'k2', words: [w('also', 21)] }];
+const out = replaceInRange(all, [{ id: 'n', words: [w('new', 12)] }], 10, 20);
+assert.deepEqual(out.map(captionText), ['keep', 'new', 'also']);
+assert.equal(out[0], all[0]); // untouched captions are the same objects (speaker, style kept)
+// a caption straddling the edge keeps only its words outside the range
+assert.deepEqual(replaceInRange([{ id: 's', words: [w('a', 9.5), w('b', 10.5)] }], [], 10, 20).map(captionText), ['a']);
 console.log('captions ok');

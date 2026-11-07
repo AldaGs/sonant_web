@@ -78,3 +78,14 @@ export const toVTT = (list: Caption[]) =>
 // Give every caption in `ids` the speaker `k` (undefined clears it).
 export const setSpeaker = (list: Caption[], ids: Set<string>, k: number | undefined): Caption[] =>
   list.map((c) => (ids.has(c.id) ? { ...c, speaker: k } : c));
+
+// Swap in new captions for one time range (e.g. re-transcribing a single clip): words whose middle
+// falls in [start, end) are removed from the old captions (empty ones dropped), the rest are kept as they are.
+export function replaceInRange(list: Caption[], fresh: Caption[], start: number, end: number): Caption[] {
+  const inside = (w: Word) => (w.start + w.end) / 2 >= start && (w.start + w.end) / 2 < end;
+  const kept = list.flatMap((c) => {
+    const words = c.words.filter((w) => !inside(w));
+    return words.length === c.words.length ? [c] : words.length ? [{ ...c, words }] : [];
+  });
+  return [...kept, ...fresh].sort((a, b) => startOf(a) - startOf(b));
+}

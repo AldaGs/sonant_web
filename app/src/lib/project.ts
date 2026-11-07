@@ -7,7 +7,32 @@ export type Asset = { id: string; name: string; kind: 'video' | 'audio'; duratio
 // Sequence time is what segments, captions and words are measured in.
 export type Clip = { id: string; assetId: string };
 // An extra audio item (music, voiceover), placed in OUTPUT time so word cuts don't move it.
-export type AudioItem = { id: string; assetId: string; at: number; volume: number };
+// offset/len trim the file: it plays [offset, offset + len) of the asset, starting at `at`.
+export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number };
+
+// How long an audio item plays (its trimmed length, or the rest of the file).
+export const itemLen = (a: AudioItem, assetDur: number) => Math.max(0, Math.min(a.len ?? Infinity, assetDur - (a.offset ?? 0)));
+
+// Stack audio items into lanes so overlapping ones don't sit on top of each other. Returns item id → lane.
+export function audioLanes(items: AudioItem[], durOf: (assetId: string) => number): Map<string, number> {
+  const ends: number[] = []; // end time of the last item in each lane
+  const out = new Map<string, number>();
+  for (const a of [...items].sort((x, y) => x.at - y.at)) {
+    let lane = ends.findIndex((e) => e <= a.at + 1e-6);
+    if (lane < 0) lane = ends.push(0) - 1;
+    ends[lane] = a.at + itemLen(a, durOf(a.assetId));
+    out.set(a.id, lane);
+  }
+  return out;
+}
+
+// Trim an audio item from one edge by d seconds (output time), within the file and a 0.2s minimum.
+export function trimAudio(a: AudioItem, assetDur: number, side: 'start' | 'end', d: number): Partial<AudioItem> {
+  const off = a.offset ?? 0, len = itemLen(a, assetDur);
+  if (side === 'end') return { len: Math.max(0.2, Math.min(assetDur - off, len + d)) };
+  const dd = Math.max(-off, -a.at, Math.min(len - 0.2, d));
+  return { at: a.at + dd, offset: off + dd, len: len - dd };
+}
 
 type Durations = Record<string, number> | Map<string, number>;
 const dur = (d: Durations, id: string) => (d instanceof Map ? d.get(id) : d[id]) ?? 0;

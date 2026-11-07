@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { transcribe } from './lib/transcribe';
-  import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, type Caption, type Word } from './lib/captions';
+  import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Caption, type Word } from './lib/captions';
   import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
   import { splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment } from './lib/cuts';
   import { clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
-  import { importFile, loadFile, deleteFile, probe } from './lib/assets';
+  import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
   import { audioPeaks } from './lib/waveform';
   import * as store from './lib/store';
@@ -16,6 +16,10 @@
   import ExportDialog from './lib/ExportDialog.svelte';
   import StylePanel from './lib/StylePanel.svelte';
   import TranscriptView from './lib/TranscriptView.svelte';
+  import { loadDoc, saveDoc, saveProjectFile, deleteAssetIfUnused, type ProjectDoc, type ProjectMeta } from './lib/projects';
+
+  // The editor works on one project at a time; the home page (#/) lists them all.
+  let { projectId }: { projectId: string } = $props();
 
   // ---- Project media ----
   let assets = $state<Asset[]>([]);
@@ -77,10 +81,23 @@
   }
   const clearCapSelection = () => (selectedCapIds = []);
 
+  // "Apply to all": remove these settings from every caption's override so the project style shows everywhere.
+  function clearCapFields(keys: (keyof Style)[]) {
+    if (!captions.some((c) => c.style && keys.some((k) => k in c.style!))) return;
+    captions = captions.map((c) => {
+      if (!c.style) return c;
+      const rest = Object.fromEntries(Object.entries(c.style).filter(([k]) => !keys.includes(k as keyof Style)));
+      return Object.keys(rest).length ? { ...c, style: rest } : (({ style: _, ...r }) => r)(c);
+    });
+  }
+
   // Style edits go to every selected caption, as one undo step.
-  function updateCapStyle(override: Partial<Style>) {
+  // A drag (live = true) snapshots for undo only on its first change; its final change doesn't snapshot again.
+  let liveEdit = false;
+  function updateCapStyle(override: Partial<Style>, live = false) {
     if (!selectedCapIds.length) return;
-    commit();
+    if (!liveEdit) commit();
+    liveEdit = live;
     captions = captions.map((c) => (selectedSet.has(c.id) ? { ...c, style: { ...c.style, ...override } } : c));
   }
 
@@ -139,11 +156,8 @@
     selected = -1;
   }
 
-  // ---- Persistence (IndexedDB) ----
-  type Doc = {
-    name: string; captions: Caption[]; segments: Segment[]; style: Style; language: typeof language; speakers?: string[];
-    assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; words?: Record<string, Word[]>;
-  };
+  // ---- Persistence: this project's doc + media in IndexedDB (see lib/projects.ts) ----
+  type Doc = ProjectDoc;
   let speakers = $state<string[]>([]);
   let name = $state('');
   let saving = $state(false);
@@ -161,62 +175,29 @@
 
   onMount(async () => {
     document.documentElement.lang = ui.lang;
-    const [legacy, doc, fts] = await Promise.all([
-      store.get<File>('video'), store.get<Doc>('doc'), store.get<SavedFont[]>('fonts'),
-    ]);
+    const [doc, fts] = await Promise.all([loadDoc(projectId), store.get<SavedFont[]>('fonts')]);
     for (const f of fts ?? []) {
       try {
         fonts = [...fonts, await registerFont(f)];
         savedFonts.push(f);
       } catch {}
     }
-    if (doc?.assets) {
+    if (doc) {
       let missing = false;
-      for (const a of doc.assets) {
+      for (const a of doc.assets ?? []) {
         const f = await loadFile(a.id);
         if (f) register(a, f);
         else missing = true;
       }
-      assets = doc.assets;
+      assets = doc.assets ?? [];
       clips = doc.clips ?? [];
       audios = doc.audios ?? [];
       clipVolume = doc.clipVolume ?? 1;
       wordCache = doc.words ?? {};
       restoreDoc(doc);
       if (missing) notice = 'err.missingMedia';
-    } else if (legacy) {
-      // Projects from before multi-clip: one video becomes the first (and only) clip.
-      try {
-        const { asset } = await importFile(legacy);
-        register(asset, legacy);
-        assets = [asset];
-        clips = [{ id: crypto.randomUUID(), assetId: asset.id }];
-        if (doc) restoreDoc(doc);
-        else segments = [{ start: 0, end: asset.duration }];
-        await store.del('video');
-      } catch {}
-    } else if (doc) restoreDoc(doc); // older doc without a media list: keep its captions and cuts
-
-    // Safety net: media files in storage that the project doesn't list (e.g. an old tab overwrote the
-    // project during the upgrade) are added back as clips. Exact duplicates (same name and size) are skipped.
-    const listed = new Set(assets.map((a) => a.id));
-    for (const key of await store.keys()) {
-      const id = String(key);
-      if (!id.startsWith('asset:') || listed.has(id.slice(6))) continue;
-      const f = await loadFile(id.slice(6));
-      if (!f || assets.some((a) => a.name === f.name && files.get(a.id)?.size === f.size)) continue;
-      try {
-        const asset: Asset = { id: id.slice(6), name: f.name, ...(await probe(f)) };
-        register(asset, f);
-        assets = [...assets, asset];
-        if (asset.kind !== 'video') continue;
-        const start = duration;
-        clips = [...clips, { id: crypto.randomUUID(), assetId: asset.id }];
-        // The first recovered clip reuses saved cuts if there are any; later ones are fully kept.
-        if (!(start === 0 && segments.length)) segments = [...segments, { start, end: start + asset.duration }];
-      } catch {}
     }
-    if (clips.length && !captions.length && !segments.length) segments = [{ start: 0, end: duration }];
+    if (clips.length && !segments.length) segments = [{ start: 0, end: duration }];
     ready = true;
   });
 
@@ -229,36 +210,68 @@
     language = doc.language ?? null;
     // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
     if (!fonts.some((f) => f.family === style.family)) fonts = [...fonts, { family: style.family, weight: style.weight }];
-    if (clips.length) notice = 'restored';
   }
 
+  // Autosave ~0.4s after any change. The home page card gets the name, length and (every ~10s) a thumbnail.
+  let lastThumb = 0;
+  // Card image for the home page: a frame from the first clip (its timeline thumbnails are real decoded frames).
+  function thumbnail(): string | undefined {
+    const th = clips.length ? thumbs[clips[0].assetId] : undefined;
+    return th?.length ? th[Math.floor(th.length / 3)].url : undefined;
+  }
+
+
+
+  async function saveNow() {
+    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume }), words: wordCache };
+    const meta: Partial<ProjectMeta> = { duration: outDuration(segments), clips: clips.length };
+    if (Date.now() - lastThumb > 10000) {
+      const th = thumbnail();
+      if (th) ((meta.thumb = th), (lastThumb = Date.now()));
+    }
+    await saveDoc(projectId, doc, meta);
+  }
   $effect(() => {
-    const doc: Doc = $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume });
+    $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume });
+    void (clips.length && thumbs[clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
     if (!ready) return;
-    doc.words = wordCache;
     saving = true;
-    const id = setTimeout(() => store.set('doc', doc).catch(() => {}).finally(() => (saving = false)), 400);
+    const id = setTimeout(() => saveNow().catch(() => {}).finally(() => (saving = false)), 400);
     return () => clearTimeout(id);
   });
 
+  // Save the project as a .sonant file (Ctrl/⌘+S). Chrome/Edge keep writing to the same file afterwards.
+  let fileStatus = $state('');
+  async function saveToFile(again = true) {
+    await saveNow();
+    const r = await saveProjectFile(projectId, name, again).catch(() => 'error' as const);
+    fileStatus = r === 'saved' ? 'fileSaved' : r === 'downloaded' ? 'fileDownloaded' : r === 'error' ? 'err.saveFile' : '';
+    setTimeout(() => (fileStatus = ''), 3000);
+  }
+
   // ---- Media library ----
+  // Import any number of files at once: probed in parallel, added in the order picked.
+  // Videos join the end of the sequence; audio goes onto the Music & VO track at the playhead.
   async function importMedia(list: FileList | File[] | undefined | null) {
-    const media = [...(list ?? [])].filter((f) => /^(video|audio)\//.test(f.type));
+    const media = [...(list ?? [])].filter((f) => mediaKind(f));
     if (!media.length) return;
     error = notice = '';
-    for (const f of media) {
-      try {
-        const { asset, saved } = await importFile(f);
-        if (!saved) notice = 'err.saveVideo';
-        assets = [...assets, asset];
-        register(asset, f);
-        if (!name) name = f.name.replace(/\.[^.]+$/, '');
-        if (asset.kind === 'video') addClip(asset.id);
-      } catch {
+    const at = toOutput(segments, time) ?? 0;
+    const results = await Promise.all(media.map((f) => importFile(f).then((r) => ({ f, ...r }), () => null)));
+    for (const r of results) {
+      if (!r) {
         error = 'err.badMedia';
+        continue;
       }
+      if (!r.saved) notice = 'err.saveVideo';
+      assets = [...assets, r.asset];
+      register(r.asset, r.f);
+      if (!name) name = r.f.name.replace(/\.[^.]+$/, '');
+      if (r.asset.kind === 'video') addClip(r.asset.id);
+      else addAudio(r.asset.id, at);
     }
   }
+
 
   const addClip = (assetId: string) => setClips([...clips, { id: crypto.randomUUID(), assetId }]);
   function addAudio(assetId: string, at = toOutput(segments, time) ?? 0) {
@@ -278,28 +291,7 @@
     files.delete(a.id);
     URL.revokeObjectURL(urls[a.id]);
     delete urls[a.id];
-    await deleteFile(a.id);
-  }
-
-  async function newProject() {
-    if (!confirm(t('confirmNew'))) return;
-    player.pause();
-    await Promise.all([...assets.map((a) => deleteFile(a.id)), store.del('doc'), store.del('video')]);
-    for (const u of Object.values(urls)) URL.revokeObjectURL(u);
-    files.clear();
-    urls = {};
-    thumbs = {};
-    peaks = {};
-    wordCache = {};
-    assets = clips = audios = [];
-    name = '';
-    speakers = [];
-    captions = segments = [];
-    past = future = [];
-    selected = -1;
-    selectedCapIds = [];
-    selectedAudio = '';
-    error = notice = '';
+    await deleteAssetIfUnused(a.id, projectId); // duplicates of this project may share the file
   }
 
   // Register each <video>/<audio> with the player.
@@ -310,18 +302,22 @@
   }
 
   // ---- Transcription: per asset (cached), then laid out along the sequence ----
+  // Transcribe every clip, or just one (its captions are replaced; captions on other clips are kept).
+  let transcribeTarget = $state<string>('all'); // 'all' or a clip id
+  const targetClip = $derived(clips.find((c) => c.id === transcribeTarget) ?? null);
   async function run() {
     if (!hasMedia) return;
     busy = true;
     error = notice = '';
     const lang = language ?? 'auto';
+    const chosen = targetClip ? [targetClip] : clips;
     try {
-      const ids = videoIds;
+      const ids = [...new Set(chosen.map((c) => c.assetId))];
       for (let k = 0; k < ids.length; k++) {
         const key = `${ids[k]}|${lang}`, f = files.get(ids[k]);
         if (wordCache[key] || !f) continue;
         try {
-          wordCache[key] = await transcribe(f, language, (s, p) => ((status = s), (pct = ((k + p / 100) / ids.length) * 100)));
+          wordCache[key] = await transcribe(f, language, (st, p) => ((status = st), (pct = ((k + p / 100) / ids.length) * 100)));
         } catch (e) {
           if ((e as Error).message !== 'err.noAudio') throw e;
           wordCache[key] = []; // a silent clip just has no words
@@ -329,20 +325,28 @@
       }
       const starts = clipStarts(clips, durations);
       // Whisper can hallucinate timestamps past the end of short or silent clips; keep words inside their clip.
-      const words = clips.flatMap((c, i) => {
-        const len = durations.get(c.assetId) ?? 0;
+      const wordsOf = (c: Clip) => {
+        const i = clips.indexOf(c), len = durations.get(c.assetId) ?? 0;
         return (wordCache[`${c.assetId}|${lang}`] ?? [])
           .filter((w) => w.start < len)
           .map((w) => ({ ...w, start: w.start + starts[i], end: Math.min(w.end, len) + starts[i] }));
-      });
-      setCaps(groupWords(words));
-      if (!captions.length) error = 'noSpeech';
+      };
+      const fresh = groupWords(chosen.flatMap(wordsOf));
+      if (targetClip) {
+        const i = clips.indexOf(targetClip);
+        setCaps(replaceInRange(captions, fresh, starts[i], starts[i] + (durations.get(targetClip.assetId) ?? 0)));
+        if (!fresh.length) error = 'noSpeech';
+      } else {
+        setCaps(fresh);
+        if (!captions.length) error = 'noSpeech';
+      }
     } catch (e) {
       error = (e as Error).message;
     } finally {
       busy = false;
     }
   }
+
 
   // ---- Playback ----
   const active = (c: Caption) => time >= startOf(c) && time < endOf(c);
@@ -555,8 +559,10 @@
   const setAudio = (id: string, patch: Partial<AudioItem>) => (audios = audios.map((a) => (a.id === id ? { ...a, ...patch } : a)));
 
   function keys(e: KeyboardEvent) {
-    if ((e.target as HTMLElement).closest?.('input, textarea, select')) return;
     const mod = e.ctrlKey || e.metaKey;
+    // Ctrl/⌘+S saves the project file from anywhere (Shift = choose a new file).
+    if (mod && e.key.toLowerCase() === 's') return (e.preventDefault(), void saveToFile(!e.shiftKey));
+    if ((e.target as HTMLElement).closest?.('input, textarea, select')) return;
     if (mod && e.key.toLowerCase() === 'z') (e.preventDefault(), e.shiftKey ? redo() : undo());
     else if (mod && e.key.toLowerCase() === 'y') (e.preventDefault(), redo());
     else if (mod) return;
@@ -607,7 +613,11 @@
         <option value="en">EN</option>
         <option value="es">ES</option>
       </select>
-      {#if assets.length}<button onclick={newProject}>{t('newProject')}</button>{/if}
+      <a class="btn" href="#/" title={t('allProjects')}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
+        {t('projects')}
+      </a>
+      <button onclick={() => saveToFile()} disabled={!assets.length} title={t('saveFileTip')}>{fileStatus ? t(fileStatus) : t('saveFile')}</button>
       <button class:on={assetsOpen} onclick={() => (assetsOpen = !assetsOpen)} aria-pressed={assetsOpen} title={t('toggleAssets')}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
         {t('assets')}
@@ -685,6 +695,12 @@
         </select>
         <button onclick={run} disabled={!hasMedia || busy}>{captions.length ? t('retranscribe') : t('transcribe')}</button>
       </div>
+      {#if clips.length > 1}
+        <select class="target" bind:value={transcribeTarget} disabled={busy} aria-label={t('transcribeWhich')}>
+          <option value="all">{t('allClips')}</option>
+          {#each clips as c, i (c.id)}<option value={c.id}>{i + 1}. {names.get(c.assetId)}</option>{/each}
+        </select>
+      {/if}
       {#if busy}
         <p class="muted small">{t(status)}</p>
         <progress max="100" value={pct}></progress>
@@ -806,6 +822,7 @@
       onresetcapstyle={resetCapStyle}
       selectedCount={selectedCapIds.length}
       onclearcapselection={clearCapSelection}
+      onclearfields={clearCapFields}
     />
   </aside>
 
@@ -838,7 +855,7 @@
       oncommit={commit}
       ontrim={(i, s, e) => (segments = trim(segments, i, s, e, duration))}
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
-      onmoveaudio={(id, at) => setAudio(id, { at })} />
+      onaudio={(id, patch) => setAudio(id, patch)} />
   </section>
 </div>
 
@@ -907,6 +924,7 @@
   .scroll { overflow: auto; padding: 0 16px 16px; display: grid; gap: 10px; align-content: start; }
   .row { display: flex; gap: 8px; align-items: center; }
   .row select { flex: 1; height: 36px; padding: 0 8px; }
+  .target { width: 100%; height: 34px; padding: 0 8px; }
   progress { width: 100%; accent-color: var(--accent); }
   .notice { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); margin: 0; }
   .caps { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }

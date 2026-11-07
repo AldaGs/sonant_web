@@ -1,4 +1,4 @@
-import { clipAt, clipStarts, type AudioItem, type Clip } from './project';
+import { clipAt, clipStarts, itemLen, type AudioItem, type Clip } from './project';
 import { nextKept, toOutput, type Segment } from './cuts';
 
 export type PlayerState = {
@@ -95,8 +95,10 @@ export class Player {
     for (const item of s.audios) {
       const el = this.audios.get(item.id);
       if (!el) continue;
-      const local = out === null ? -1 : out - item.at;
-      const inside = local >= 0 && local < (s.durations.get(item.assetId) ?? 0);
+      // Trimmed items play [offset, offset + len) of their file.
+      const into = out === null ? -1 : out - item.at;
+      const inside = into >= 0 && into < itemLen(item, s.durations.get(item.assetId) ?? 0);
+      const local = into + (item.offset ?? 0);
       el.volume = Math.min(1, Math.max(0, item.volume));
       if (this.playing && inside) {
         if (Math.abs(el.currentTime - local) > 0.3) el.currentTime = local;

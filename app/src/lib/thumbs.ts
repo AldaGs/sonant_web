@@ -9,8 +9,8 @@ export async function thumbnails(src: string, duration: number, n = 40): Promise
   await new Promise((r, j) => ((v.onloadeddata = r), (v.onerror = j)));
   if (!v.videoWidth) return [];
   const c = document.createElement('canvas');
-  c.height = 48;
-  c.width = Math.round((48 * v.videoWidth) / v.videoHeight);
+  c.height = 96; // sharp on high-DPI timelines and big enough for project cards
+  c.width = Math.round((96 * v.videoWidth) / v.videoHeight);
   const ctx = c.getContext('2d')!;
   const out: Thumb[] = [];
   for (let i = 0; i < n; i++) {

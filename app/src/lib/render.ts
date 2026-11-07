@@ -33,9 +33,18 @@ export type Style = {
   easing: Easing;
   x: number; // 0..1 center
   y: number;
+  align: Align; // how lines line up inside the caption block
+  lineHeight: number; // multiple of font size
+  letterSpacing: number; // em (fraction of font size); 0 = normal
+  opacity: number; // 0..1, whole caption
+  radius: number; // background box corner radius, fraction of font size
 };
+export type Align = 'left' | 'center' | 'right';
 
-const base = { italic: false, outline: 0.16, box: '', duration: 320, easing: 'ease-out' as Easing, x: 0.5 };
+const base = {
+  italic: false, outline: 0.16, box: '', duration: 320, easing: 'ease-out' as Easing, x: 0.5,
+  align: 'center' as Align, lineHeight: 1.2, letterSpacing: 0, opacity: 1, radius: 0.22,
+};
 
 // Presets: Classic + CapCut / TikTok viral styles
 export const PRESETS: Record<string, Style> = {
@@ -219,11 +228,13 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.lineJoin = 'round';
+  if ('letterSpacing' in ctx) (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${(s.letterSpacing ?? 0) * px}px`;
+  const op = s.opacity ?? 1;
   const texts = c.words.map((w) => (s.uppercase ? w.text.toUpperCase() : w.text));
   const widths = texts.map((x) => ctx.measureText(x).width);
   const space = ctx.measureText(' ').width;
   const lines = layout(widths, space, W * 0.86);
-  const lh = px * (s.box ? 1.45 : 1.2);
+  const lh = px * (s.lineHeight ?? 1.2) * (s.box ? 1.2 : 1);
   let y = s.y * H - ((lines.length - 1) * lh) / 2;
   const maxW = Math.max(0, ...lines.map((line) => line.reduce((a, i) => a + widths[i], 0) + space * (line.length - 1)));
   const pad = px * (s.box ? 0.4 : 0.15);
@@ -231,17 +242,18 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
   const capStart = c.words[0].start;
   for (const line of lines) {
     const lw = line.reduce((a, i) => a + widths[i], 0) + space * (line.length - 1);
-    let x = s.x * W - lw / 2;
+    const align = s.align ?? 'center';
+    let x = align === 'left' ? s.x * W - maxW / 2 : align === 'right' ? s.x * W + maxW / 2 - lw : s.x * W - lw / 2;
     const states = line.map((i) => wordState(c.words[i], capStart, t, s));
 
     // Background box behind the visible words of this line.
     if (s.box && states.some((st) => st.visible)) {
       const padX = px * 0.35, padY = px * 0.22;
       ctx.save();
-      ctx.globalAlpha = 0.88 * Math.min(...states.map((st) => st.alpha));
+      ctx.globalAlpha = 0.88 * op * Math.min(...states.map((st) => st.alpha));
       ctx.fillStyle = s.box;
       ctx.beginPath();
-      ctx.roundRect(x - padX, y + states[0].dy * px - px / 2 - padY, lw + padX * 2, px + padY * 2, px * 0.22);
+      ctx.roundRect(x - padX, y + states[0].dy * px - px / 2 - padY, lw + padX * 2, px + padY * 2, px * (s.radius ?? 0.22));
       ctx.fill();
       ctx.restore();
     }
@@ -252,7 +264,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, c: Caption, t: number
         const text = st.chars === Infinity ? texts[i] : texts[i].slice(0, st.chars);
         const wordW = widths[i];
         ctx.save();
-        ctx.globalAlpha = st.alpha;
+        ctx.globalAlpha = st.alpha * op;
         ctx.translate(x + wordW / 2 + st.dx * px, y + st.dy * px);
         if (st.rotation) ctx.rotate(st.rotation);
         ctx.scale(st.scaleX, st.scaleY);
