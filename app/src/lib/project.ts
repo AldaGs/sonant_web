@@ -5,8 +5,7 @@ import type { Segment } from './cuts';
 export type Asset = { id: string; name: string; kind: 'video' | 'audio'; duration: number; width?: number; height?: number };
 // A video clip on the video track. Clips play back to back; together they form the "sequence".
 // Sequence time is what segments, captions and words are measured in.
-// behind: captions are drawn behind the person in this clip (person segmentation).
-export type Clip = { id: string; assetId: string; behind?: boolean };
+export type Clip = { id: string; assetId: string };
 // An extra audio item (music, voiceover), placed in OUTPUT time so word cuts don't move it.
 // offset/len trim the file: it plays [offset, offset + len) of the asset, starting at `at`.
 export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number };
@@ -66,8 +65,8 @@ export function splitAtBoundaries(segs: Segment[], starts: number[]): Segment[] 
   const out: Segment[] = [];
   for (const s of segs) {
     let a = s.start;
-    for (const b of starts) if (b > a + 1e-6 && b < s.end - 1e-6) (out.push({ start: a, end: b }), (a = b));
-    out.push({ start: a, end: s.end });
+    for (const b of starts) if (b > a + 1e-6 && b < s.end - 1e-6) (out.push({ ...s, start: a, end: b }), (a = b));
+    out.push({ ...s, start: a });
   }
   return out;
 }
@@ -90,7 +89,7 @@ export function remapProject(
   const segs: Segment[] = [];
   for (const s of splitAtBoundaries(segments, oldStarts)) {
     const k = shift((s.start + s.end) / 2);
-    if (k !== null) segs.push({ start: s.start + k, end: s.end + k });
+    if (k !== null) segs.push({ ...s, start: s.start + k, end: s.end + k });
   }
   const oldIds = new Set(oldClips.map((c) => c.id));
   newClips.forEach((c, i) => {

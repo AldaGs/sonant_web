@@ -1,7 +1,8 @@
 import type { ImageSegmenter } from '@mediapipe/tasks-vision';
+import type { Fx } from './cuts';
 
-// Person segmentation (MediaPipe selfie segmenter) for "captions behind the subject".
-// Wasm + model come from CDNs on first use, so the app doesn't load them until a clip needs them.
+// Person segmentation (MediaPipe selfie segmenter) for "captions behind the person" and background swap.
+// Wasm + model come from CDNs on first use, so the app doesn't load them until a strip needs them.
 const WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/wasm';
 const MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
 
@@ -21,18 +22,19 @@ export function loadSegmenter(): Promise<void> {
 }
 
 // The model works at 256px anyway, so segment a small copy and let the upscale soften the edges.
-const small = new OffscreenCanvas(1, 1), sctx = small.getContext('2d', { willReadFrequently: false })!;
-const mask = new OffscreenCanvas(1, 1), mctx = mask.getContext('2d')!;
-const person = new OffscreenCanvas(1, 1), pctx = person.getContext('2d')!;
+// Created on first use, so importing this module works where there is no canvas (Node tests).
+const canvas2d = () => { const c = new OffscreenCanvas(1, 1); return [c, c.getContext('2d')!] as const; };
+let small: OffscreenCanvas, sctx: OffscreenCanvasRenderingContext2D, mask: OffscreenCanvas, mctx: OffscreenCanvasRenderingContext2D;
+let person: OffscreenCanvas, pctx: OffscreenCanvasRenderingContext2D;
 let img: ImageData | null = null;
 
-// Redraw only the person from `src` (placed at dx,dy,dw,dh) on top of whatever ctx already has.
-// Returns false while the model is still loading (it starts loading on the first call).
-export function drawSubject(ctx: CanvasRenderingContext2D, src: CanvasImageSource, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): boolean {
+// Segment `src` into the mask. False while the model is still loading (it starts loading here).
+function updateMask(src: CanvasImageSource, sw: number, sh: number): boolean {
   if (!seg) {
     loadSegmenter().catch(() => {});
     return false;
   }
+  if (!small) [[small, sctx], [mask, mctx], [person, pctx]] = [canvas2d(), canvas2d(), canvas2d()];
   const k = 256 / Math.max(sw, sh);
   const w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
   if (small.width !== w || small.height !== h) ((small.width = w), (small.height = h));
@@ -48,6 +50,11 @@ export function drawSubject(ctx: CanvasRenderingContext2D, src: CanvasImageSourc
     for (let i = 0; i < conf.length; i++) px[i * 4 + 3] = Math.max(0, Math.min(255, (conf[i] - 0.3) * 637.5));
     mctx.putImageData(img, 0, 0);
   });
+  return true;
+}
+
+// Draw only the person from `src` (at place) over whatever ctx has, using the last mask.
+function paintSubject(ctx: CanvasRenderingContext2D, src: CanvasImageSource, [dx, dy, dw, dh]: number[]) {
   const W = ctx.canvas.width, H = ctx.canvas.height;
   if (person.width !== W || person.height !== H) ((person.width = W), (person.height = H));
   pctx.globalCompositeOperation = 'copy';
@@ -56,5 +63,27 @@ export function drawSubject(ctx: CanvasRenderingContext2D, src: CanvasImageSourc
   pctx.drawImage(src, dx, dy, dw, dh);
   pctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(person, 0, 0);
-  return true;
+}
+
+// One output frame: video (with background swapped if asked), caption, and the person over the caption if asked.
+// Until the model has loaded, effects are skipped and the plain frame is drawn.
+// ponytail: segments every frame (~25ms at 1080p); cache masks per strip if preview stutters on slow machines
+export function drawFrame(
+  ctx: CanvasRenderingContext2D, src: CanvasImageSource | null, sw: number, sh: number, place: number[],
+  fx: Fx | undefined, hasCaption: boolean, caption: () => void,
+) {
+  const [dx, dy, dw, dh] = place;
+  const ready = !!src && (!!fx?.bg || (!!fx?.behind && hasCaption)) && updateMask(src, sw, sh);
+  if (src && ready && fx?.bg) {
+    const W = ctx.canvas.width, H = ctx.canvas.height;
+    if (fx.bg === 'color') ((ctx.fillStyle = fx.bgColor ?? '#00b140'), ctx.fillRect(0, 0, W, H));
+    else {
+      ctx.filter = `blur(${Math.round(Math.max(W, H) / 50)}px)`;
+      ctx.drawImage(src, dx - dw * 0.05, dy - dh * 0.05, dw * 1.1, dh * 1.1); // oversize so the blur has no dark rim
+      ctx.filter = 'none';
+    }
+    paintSubject(ctx, src, place);
+  } else if (src) ctx.drawImage(src, dx, dy, dw, dh);
+  caption();
+  if (src && ready && fx?.behind && hasCaption) paintSubject(ctx, src, place);
 }

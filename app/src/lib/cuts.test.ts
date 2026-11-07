@@ -55,3 +55,12 @@ assert.deepEqual(keepRange([{ start: 0, end: 5 }, { start: 5, end: 8 }, { start:
 const kc = keptCaptions([{ id: 'a', words: [{ text: 'um', start: 2.1, end: 2.5 }, { text: 'hi', start: 5, end: 5.4 }] }], [{ start: 0, end: 2 }, { start: 4, end: 10 }]);
 assert.deepEqual(kc[0].words.map((w) => w.text), ['hi']);
 console.log('cuts ok');
+
+// Strip effects survive split, cut and trim.
+{
+  const fx = { behind: true, bg: 'blur' as const };
+  const halves = splitAt([{ start: 0, end: 10, fx }], 5);
+  assert.deepEqual(halves.map((s) => s.fx), [fx, fx]);
+  assert.deepEqual(cutRange(halves, 2, 3).map((s) => s.fx), [fx, fx, fx]);
+  assert.equal(trim(halves, 0, 1, 4, 10)[0].fx, fx);
+}

@@ -1,7 +1,9 @@
 import type { Caption } from './captions';
 
 // Kept ranges of the source video, in source seconds, sorted and non-overlapping.
-export type Segment = { start: number; end: number };
+// fx: per-strip effects. behind = captions behind the person; bg = swap the background.
+export type Fx = { behind?: boolean; bg?: 'color' | 'blur'; bgColor?: string };
+export type Segment = { start: number; end: number; fx?: Fx };
 
 const MIN = 0.1; // shortest segment allowed
 
@@ -14,8 +16,8 @@ export function cutRange(segs: Segment[], a: number, b: number): Segment[] {
   for (const s of segs) {
     if (s.end <= a || s.start >= b) out.push(s);
     else {
-      if (a - s.start > 0.02) out.push({ start: s.start, end: a });
-      if (s.end - b > 0.02) out.push({ start: b, end: s.end });
+      if (a - s.start > 0.02) out.push({ ...s, end: a });
+      if (s.end - b > 0.02) out.push({ ...s, start: b });
     }
   }
   return out.length ? out : segs;
@@ -24,13 +26,13 @@ export function cutRange(segs: Segment[], a: number, b: number): Segment[] {
 // Add [a, b) back. Segments it overlaps or touches are merged with it; others stay as they are.
 export function keepRange(segs: Segment[], a: number, b: number): Segment[] {
   if (!(b > a)) return segs;
-  let start = a, end = b;
+  let start = a, end = b, fx: Fx | undefined;
   const rest: Segment[] = [];
   for (const s of segs) {
-    if (s.end >= a - 0.02 && s.start <= b + 0.02) ((start = Math.min(start, s.start)), (end = Math.max(end, s.end)));
+    if (s.end >= a - 0.02 && s.start <= b + 0.02) ((start = Math.min(start, s.start)), (end = Math.max(end, s.end)), (fx ??= s.fx));
     else rest.push(s);
   }
-  return [...rest, { start, end }].sort((x, y) => x.start - y.start);
+  return [...rest, fx ? { start, end, fx } : { start, end }].sort((x, y) => x.start - y.start);
 }
 
 // A word counts as cut when its middle falls outside every kept range.
@@ -49,7 +51,7 @@ export function splitAt(segs: Segment[], t: number): Segment[] {
   const i = segs.findIndex((s) => t > s.start + MIN && t < s.end - MIN);
   if (i < 0) return segs;
   const s = segs[i];
-  return segs.toSpliced(i, 1, { start: s.start, end: t }, { start: t, end: s.end });
+  return segs.toSpliced(i, 1, { ...s, end: t }, { ...s, start: t });
 }
 
 export const remove = (segs: Segment[], i: number) => (segs.length > 1 ? segs.toSpliced(i, 1) : segs);
@@ -61,7 +63,7 @@ export function trim(segs: Segment[], i: number, start: number, end: number, dur
   start = Math.max(lo, start);
   end = Math.min(hi, end);
   if (end - start < MIN) return segs;
-  return segs.with(i, { start, end });
+  return segs.with(i, { ...segs[i], start, end });
 }
 
 export function toSource(segs: Segment[], out: number): number {

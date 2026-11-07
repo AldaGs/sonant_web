@@ -4,9 +4,9 @@
   import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Caption, type Word } from './lib/captions';
   import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
-  import { splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment } from './lib/cuts';
-  import { drawSubject } from './lib/segment';
-  import { clipAt, clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
+  import { splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment, type Fx } from './lib/cuts';
+  import { drawFrame } from './lib/segment';
+  import { clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
@@ -379,20 +379,16 @@
       paused = !player.playing;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
-      const f = player.frame();
-      let place: number[] | null = null;
-      if (f && f.videoWidth) {
-        const k = Math.max(w / f.videoWidth, h / f.videoHeight);
-        const dw = f.videoWidth * k, dh = f.videoHeight * k;
-        place = [(w - dw) / 2, (h - dh) / 2, dw, dh];
-        ctx.drawImage(f, place[0], place[1], dw, dh);
-      }
+      const p = player.frame();
+      const f = p && p.videoWidth ? p : null;
+      const k = f ? Math.max(w / f.videoWidth, h / f.videoHeight) : 1;
+      const dw = f ? f.videoWidth * k : w, dh = f ? f.videoHeight * k : h;
       const cap = visibleCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
       capOnScreen = cap ?? null;
-      capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
-      const at = clipAt(clips, durations, tNow);
-      if (cap && f && place && at && clips[at.index].behind)
-        drawSubject(ctx, f, f.videoWidth, f.videoHeight, place[0], place[1], place[2], place[3]);
+      const fx = segments.find((s) => tNow >= s.start && tNow < s.end)?.fx;
+      capBox = null;
+      drawFrame(ctx, f, f?.videoWidth ?? w, f?.videoHeight ?? h, [(w - dw) / 2, (h - dh) / 2, dw, dh], fx, !!cap,
+        () => (capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
       if (capBox && (paused || hover || drag?.onBox)) drawDragBox(ctx, capBox, cv.width / (cv.getBoundingClientRect().width || cv.width));
       id = requestAnimationFrame(tick);
@@ -554,6 +550,9 @@
   const saveState = $derived(saving ? t('saving') : t('saved'));
 
   const cutHere = () => setSegs(splitAt(segments, time));
+  // Effects of the selected strip (captions behind the person, background swap).
+  const selFx = $derived(selected >= 0 && segments[selected] ? (segments[selected].fx ?? {}) : null);
+  const setFx = (p: Partial<Fx>) => selected >= 0 && setSegs(segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, ...p } }));
   const deleteSelected = () => selected >= 0 && (setSegs(remove(segments, selected)), (selected = -1));
   function removeAudioItem() {
     if (!selectedAudio) return false;
@@ -673,8 +672,6 @@
             <li>
               <span class="mono muted small">{i + 1}</span>
               <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
-              <button class="sm icon" class:on={c.behind} aria-pressed={!!c.behind} title={t('textBehind')} aria-label={t('textBehind')}
-                onclick={() => setClips(clips.with(i, { ...c, behind: !c.behind }))}>👤</button>
               <button class="sm icon" onclick={() => setClips(move(clips, i, -1))} disabled={i === 0} aria-label={t('moveUp')}>↑</button>
               <button class="sm icon" onclick={() => setClips(move(clips, i, 1))} disabled={i === clips.length - 1} aria-label={t('moveDown')}>↓</button>
               <button class="sm icon" onclick={() => setClips(clips.toSpliced(i, 1))} aria-label={t('removeClip')}>✕</button>
@@ -848,6 +845,22 @@
           <button class="sm" onclick={removeAudioItem}>{t('removeAudio')}</button>
           <span class="divider"></span>
         {/if}
+        {#if selFx}
+          <button class="sm icon" class:on={selFx.behind} aria-pressed={!!selFx.behind} title={t('textBehind')} aria-label={t('textBehind')}
+            onclick={() => setFx({ behind: !selFx.behind })}>👤</button>
+          <label class="vol">{t('background')}
+            <select value={selFx.bg ?? ''} onchange={(e) => setFx({ bg: (e.currentTarget.value || undefined) as Fx['bg'] })}>
+              <option value="">{t('bgOriginal')}</option>
+              <option value="blur">{t('bgBlur')}</option>
+              <option value="color">{t('bgColor')}</option>
+            </select>
+          </label>
+          {#if selFx.bg === 'color'}
+            <input type="color" value={selFx.bgColor ?? '#00b140'} aria-label={t('bgColor')}
+              onchange={(e) => setFx({ bgColor: e.currentTarget.value })} />
+          {/if}
+          <span class="divider"></span>
+        {/if}
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}>{t('splitAt')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
         <button class="sm icon" onclick={undo} disabled={!past.length} title={t('undo')} aria-label={t('undo')}>↶</button>
@@ -889,7 +902,6 @@
   .pname:hover:not(:disabled) { border-color: var(--border); }
   .pill { background: var(--raised); color: var(--muted); font-size: 12px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
   .actions { display: flex; gap: 8px; align-items: center; }
-  .seq button.on { border-color: var(--accent); background: rgb(200 245 96 / .12); }
   .actions button.on { border-color: var(--accent); background: rgb(200 245 96 / .06); }
   .lang { height: 36px; padding: 0 8px; }
   .panel { background: var(--panel); min-height: 0; display: flex; flex-direction: column; }
