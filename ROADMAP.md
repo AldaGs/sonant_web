@@ -32,8 +32,8 @@ Status from a code review (Nov 2026). ✅ done · 🟡 partly done · ⬜ not st
 7. ✅ **Picture-in-picture video and images**: images can be imported now. The ⧉ button on a video asset adds it as a layer. Layers are muted by default, with a volume slider, and their sound is mixed into the export.
 8. ✅ **Text layers** separate from captions: the T+ button or T key, with editable text, font, colours, word animation from the caption renderer.
 9. ✅ **Transform per layer**: drag to move (snaps to centre lines, Alt for free), corner handles to scale, top knob to rotate (snaps to 0/±90/180), arrow-key nudge. Inspector for size, rotation, opacity, crop (L/T/R/B), flip, bring forward / send backward, reset, delete.
-10. ⬜ **Keyframes** for position, scale, rotation and opacity, with a "punch-in zoom" preset. Next.
-11. ⬜ **Lift mode** (delete leaving a gap) and multiple main-video tracks. Next.
+10. ✅ **Keyframes** for layer position, size, rotation and opacity: ◆ add/remove at the playhead, ◂ ▸ to jump between keyframes, eased in and out, shown as diamonds on the timeline. Once a layer has keyframes, any change at the playhead (drag, handles, sliders, arrows) sets a keyframe there. **Punch-in** presets: on a layer (grows 20% over 0.5s) and on a main-video strip (1.25× zoom easing in at the strip start).
+11. ✅ **Lift**: Shift+Del or the Lift button turns a strip into a gap. It keeps its time but is black and silent, and its captions are hidden, in both preview and export. Toggle it again to restore. Multiple main-video tracks aren't planned, because layers cover picture-in-picture and B-roll.
 - Known gaps: importing a video always appends it to the main sequence (use ⧉ to add it as a layer instead); video layers show nothing for a moment while they seek; text layers use one preset look plus font and colours (the full style panel is caption-only).
 
 ## Phase C: Clip tools

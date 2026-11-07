@@ -1,6 +1,6 @@
 import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
-import { keptCaptions, type Segment } from './cuts.ts';
+import { keptCaptions, zoomPlace, type Segment } from './cuts.ts';
 import { drawCaption, resolveStyle, type Style } from './render.ts';
 import { drawFrame, loadSegmenter } from './segment.ts';
 import { drawOverlay, type Overlay } from './overlay.ts';
@@ -81,7 +81,7 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number): Pr
   for (const s of splitAtBoundaries(segs, starts)) {
     const at = clipAt(src.clips, durations, (s.start + s.end) / 2);
     const buf = at && decoded.get(src.clips[at.index].assetId);
-    if (buf) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume);
+    if (buf && !s.fx?.lift) play(buf, out, s.start - starts[at.index], s.end - s.start, src.clipVolume); // lifted = silent gap
     out += s.end - s.start;
   }
   // Extra audio: placed in output time, cut off at the end of the video.
@@ -185,7 +185,9 @@ export async function exportVideo(
       const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2);
       const offset = at ? starts[at.index] : 0;
       const sink = at ? await sinkFor(src.clips[at.index].assetId) : undefined;      const times = [...frameTimes([piece], opts.fps)];
-      const frames = sink ? sink.canvasesAtTimestamps(times.map((t) => t - offset)) : null;
+      const lifted = !!piece.fx?.lift; // a gap: black, no frames decoded
+      const frames = sink && !lifted ? sink.canvasesAtTimestamps(times.map((t) => t - offset)) : null;
+      const segStart = segs.find((g) => piece.start >= g.start - 1e-6 && piece.start < g.end)?.start ?? piece.start;
       for (const t of times) {
         if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
         const frame = frames ? (await frames.next()).value : null;
@@ -194,7 +196,7 @@ export async function exportVideo(
         const cap = sorted.find((c) => t >= startOf(c) && t < endOf(c));
         await advance(i);
         // Same order as the preview: video, layers, caption (and the person over both with "text behind").
-        drawFrame(ctx, frame?.canvas ?? null, width, height, [0, 0, width, height], piece.fx, !!cap, () => {
+        drawFrame(ctx, frame?.canvas ?? null, width, height, zoomPlace([0, 0, width, height], width, height, piece.fx, t - segStart), piece.fx, !!cap, () => {
           paintLayers(i);
           if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
         });

@@ -320,6 +320,7 @@
             style:top="{(ovLanes.get(o.id) ?? 0) * 26}px" style:width={pct(Math.max(0.05, Math.min(o.len, total - o.at)))}
             title={ovLabel(o)} aria-pressed={o.id === selectedOverlay}
             onpointerdown={(e) => moveOverlay(e, o)} onclick={(e) => e.stopPropagation()}>
+            {#each o.kf ?? [] as k}<span class="kd" style:left="{(k.t / o.len) * 100}%" aria-hidden="true">◆</span>{/each}
             <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span>{ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
         {/each}
       </div>
@@ -327,12 +328,12 @@
       <div class="row">
         {#each segments as s, i}
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events (segment select is mouse-only; keyboard users split/delete via shortcuts) -->
-          <div class="seg" class:sel={i === selected} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
+          <div class="seg" class:sel={i === selected} class:lift={s.fx?.lift} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
             onclick={() => (selected = i)} title={clipName(s)}>
             <div class="thumbs">
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>
-            <span class="cname">{clipName(s)}</span>
+            <span class="cname">{s.fx?.lift ? t('gap') : clipName(s)}{s.fx?.zoom ? ' ⤢' : ''}</span>
             {#if i === selected}
               <div class="handle l" role="slider" tabindex="-1" aria-label={t('trimStart')} aria-valuenow={s.start}
                 onpointerdown={(e) => edge(e, i, 'start')}></div>
@@ -434,6 +435,9 @@
   .ov { position: absolute; top: 0; height: 22px; min-width: 8px; padding: 0 8px; justify-content: flex-start; overflow: hidden;
     white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(190 140 255 / .45);
     background: rgb(190 140 255 / .14); color: #c9a6ff; cursor: grab; touch-action: none; }
+  .kd { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: 9px; color: #ffd84d; pointer-events: none; text-shadow: 0 0 2px #000; }
+  .seg.lift { background: repeating-linear-gradient(45deg, var(--surface) 0 6px, var(--card) 6px 12px); }
+  .seg.lift .thumbs { opacity: .12; }
   .ov.txt { border-color: rgb(255 170 90 / .5); background: rgb(255 170 90 / .14); color: #ffbf80; }
   .ov.sel { box-shadow: 0 0 0 1px currentColor; font-weight: 700; z-index: 2; }
   .ov:hover .edge, .ov.sel .edge { background: rgb(255 255 255 / .35); }

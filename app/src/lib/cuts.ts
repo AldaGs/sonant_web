@@ -2,7 +2,23 @@ import type { Caption } from './captions';
 
 // Kept ranges of the source video, in source seconds, sorted and non-overlapping.
 // fx: per-strip effects. behind = captions behind the person; bg = swap the background.
-export type Fx = { behind?: boolean; bg?: 'color' | 'blur'; bgColor?: string };
+// zoom: punch-in factor (1 = none); zoomIn: ease into it over the strip's first ZOOM_IN seconds.
+// lift: the strip keeps its time on the timeline but shows black, plays silent and hides captions (a gap).
+export type Fx = { behind?: boolean; bg?: 'color' | 'blur'; bgColor?: string; zoom?: number; zoomIn?: boolean; lift?: boolean };
+
+export const PUNCH_IN = 1.25;
+export const ZOOM_IN = 0.4; // seconds
+// Scale a draw rect [x, y, w, h] around the frame centre (W×H) for a strip's punch-in, `into` seconds into the strip.
+export function zoomPlace(place: number[], W: number, H: number, fx: Fx | undefined, into: number): number[] {
+  const z = fx?.zoom ?? 1;
+  if (z === 1) return place;
+  const u = fx?.zoomIn ? Math.min(1, Math.max(0, into / ZOOM_IN)) : 1;
+  const k = 1 + (z - 1) * (1 - (1 - u) ** 3); // ease-out
+  const [x, y, w, h] = place;
+  return [W / 2 + (x - W / 2) * k, H / 2 + (y - H / 2) * k, w * k, h * k];
+}
+// The kept segment containing sequence time t.
+export const segAt = (segs: Segment[], t: number) => segs.find((s) => t >= s.start && t < s.end);
 export type Segment = { start: number; end: number; fx?: Fx };
 
 const MIN = 0.1; // shortest segment allowed
@@ -41,6 +57,7 @@ export const isCut = (segs: Segment[], w: { start: number; end: number }) =>
 
 // Captions without their cut words (source time), for drawing.
 export function keptCaptions(caps: Caption[], segs: Segment[]): Caption[] {
+  segs = segs.filter((s) => !s.fx?.lift); // words in a lifted gap aren't shown either
   return caps.flatMap((c) => {
     const words = c.words.filter((w) => !isCut(segs, w));
     return words.length ? [words.length === c.words.length ? c : { ...c, words }] : [];

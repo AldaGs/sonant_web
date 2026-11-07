@@ -64,3 +64,15 @@ console.log('cuts ok');
   assert.deepEqual(cutRange(halves, 2, 3).map((s) => s.fx), [fx, fx, fx]);
   assert.equal(trim(halves, 0, 1, 4, 10)[0].fx, fx);
 }
+
+// Punch-in zoom and lift.
+{
+  const { zoomPlace, keptCaptions: kc } = await import('./cuts.ts');
+  assert.deepEqual(zoomPlace([0, 0, 100, 50], 100, 50, undefined, 0), [0, 0, 100, 50]);
+  assert.deepEqual(zoomPlace([0, 0, 100, 50], 100, 50, { zoom: 2 }, 0), [-50, -25, 200, 100]);
+  assert.deepEqual(zoomPlace([0, 0, 100, 50], 100, 50, { zoom: 2, zoomIn: true }, 0), [0, 0, 100, 50]);
+  const caps = [{ id: 'a', words: [{ text: 'hi', start: 1, end: 1.5 }] }];
+  assert.equal(kc(caps, [{ start: 0, end: 2 }]).length, 1);
+  assert.equal(kc(caps, [{ start: 0, end: 2, fx: { lift: true } }]).length, 0);
+  console.log('zoom/lift ok');
+}

@@ -116,7 +116,8 @@ export class Player {
         if (!el.paused) el.pause();
         continue;
       }
-      el.volume = Math.min(1, Math.max(0, s.clipVolume));
+      const lifted = s.segments.some((g) => g.fx?.lift && this.t >= g.start && this.t < g.end); // a gap plays silent
+      el.volume = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume));
       const target = this.pending.get(el) ?? el.currentTime;
       const drift = Math.abs(target - at!.local);
       if (drift > (this.playing && !exact ? 0.3 : 0.01)) this.seekTo(el, at!.local);

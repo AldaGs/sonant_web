@@ -1,6 +1,6 @@
 // Run: node src/lib/overlay.test.ts
 import assert from 'node:assert/strict';
-import { trimOverlay, lanes, overlaysAt, placeMedia, hitPlaced, corner, DEFAULT_TF, type Overlay } from './overlay.ts';
+import { tfAt, setKey, keyAt, dropKey, punchKeys, trimOverlay, lanes, overlaysAt, placeMedia, hitPlaced, corner, DEFAULT_TF, type Overlay } from './overlay.ts';
 
 const tf = DEFAULT_TF;
 const v: Overlay = { id: 'v', kind: 'video', at: 2, len: 4, assetId: 'A', offset: 1, tf };
@@ -31,4 +31,18 @@ assert.ok(hitPlaced(box, 100, 145));
 assert.ok(!hitPlaced(box, 145, 100));
 const c = corner(box, 1, 1);
 assert.ok(Math.abs(c.x - 90) < 1e-9 && Math.abs(c.y - 150) < 1e-9);
+// Keyframes: eased in between, held outside, edits near a key replace it.
+const k = setKey(setKey([], 0, { ...tf, x: 0 }), 2, { ...tf, x: 1 });
+const ko: Overlay = { ...img, at: 1, len: 4, kf: k };
+assert.equal(tfAt(ko, 0).x, 0);
+assert.equal(tfAt(ko, 2).x, 0.5); // halfway, ease in-out is symmetric
+assert.ok(tfAt(ko, 1.5).x < 0.25); // eased: slow start
+assert.equal(tfAt(ko, 9).x, 1);
+assert.equal(setKey(k, 2.01, { ...tf, x: 0.7 }).length, 2);
+assert.equal(setKey(k, 2.01, { ...tf, x: 0.7 })[1].x, 0.7);
+assert.ok(keyAt(k, 2) && !keyAt(k, 1));
+assert.equal(dropKey(k, 0).length, 1);
+const pk = punchKeys({ ...img, kf: undefined }, 1);
+assert.deepEqual(pk.map((x) => x.t), [1, 1.5]);
+assert.ok(Math.abs(pk[1].scale - tf.scale * 1.2) < 1e-9);
 console.log('overlay ok');

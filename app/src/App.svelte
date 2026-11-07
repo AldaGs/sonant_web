@@ -4,11 +4,11 @@
   import { groupWords, captionText, setText, setRange, split, mergeNext, toSRT, toVTT, startOf, endOf, setSpeaker, replaceInRange, type Caption, type Word } from './lib/captions';
   import { drawCaption, fontString, DEFAULT_STYLE, migrateStyle, resolveStyle, inBox, type Style, type Box } from './lib/render';
   import { BUNDLED, localFonts, uploadFont, registerFont, type Font, type SavedFont } from './lib/fonts';
-  import { splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment, type Fx } from './lib/cuts';
+  import { zoomPlace, segAt, PUNCH_IN, splitAt, remove, trim, toSource, toOutput, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment, type Fx } from './lib/cuts';
   import { drawFrame } from './lib/segment';
   import { clipStarts, seqDuration, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from './lib/project';
   import { Player } from './lib/player';
-  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newMedia, trimOverlay, textStyle, TEXT_PRESET, type Overlay, type Placed, type Transform } from './lib/overlay';
+  import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
   import { thumbnails, type Thumb } from './lib/thumbs';
   import { audioPeaks } from './lib/waveform';
@@ -316,10 +316,32 @@
     if (snapshot && !ovEditing) ((ovEditing = true), commit());
     overlays = overlays.map((o) => (o.id === id ? { ...o, ...patch } : o));
   }
+  // Transform edits. Once a layer has keyframes, changes to animated values go into the keyframe at the
+  // playhead (added if there isn't one), like CapCut; flip and crop always change the base transform.
   const setTf = (id: string, tf: Partial<Transform>, snapshot = true) => {
     const o = overlays.find((x) => x.id === id);
-    if (o) setOverlay(id, { tf: { ...o.tf, ...tf } }, snapshot);
+    if (!o) return;
+    const animated = !!o.kf?.length && ANIMATED.some((k) => k in tf);
+    if (!animated) return setOverlay(id, { tf: { ...o.tf, ...tf } }, snapshot);
+    const out = outNow(), base = { ...o.tf, ...Object.fromEntries(Object.entries(tf).filter(([k]) => !(ANIMATED as readonly string[]).includes(k))) };
+    setOverlay(id, { tf: base, kf: setKey(o.kf, out - o.at, { ...tfAt(o, out), ...tf }) }, snapshot);
   };
+  // Keyframe controls for the selected layer, at the playhead.
+  const layerT = (o: Overlay) => Math.min(o.len, Math.max(0, outNow() - o.at));
+  function toggleKey(o: Overlay) {
+    const t0 = layerT(o);
+    if (keyAt(o.kf, t0)) setOverlay(o.id, { kf: dropKey(o.kf!, t0) });
+    else setOverlay(o.id, { kf: setKey(o.kf, t0, tfAt(o, outNow())) });
+    doneEditing();
+  }
+  function jumpKey(o: Overlay, dir: -1 | 1) {
+    const t0 = layerT(o), ks = (o.kf ?? []).map((k) => k.t);
+    const t1 = dir > 0 ? ks.find((t) => t > t0 + 1e-3) : ks.findLast((t) => t < t0 - 1e-3);
+    if (t1 !== undefined) seek(toSource(segments, o.at + t1));
+  }
+  const punchIn = (o: Overlay) => (setOverlay(o.id, { kf: punchKeys(o, layerT(o)) }), doneEditing());
+  // Clearing keeps the look at the playhead as the layer's fixed transform.
+  const clearKeys = (o: Overlay) => (setOverlay(o.id, { tf: tfAt(o, outNow()), kf: undefined }), doneEditing());
   const doneEditing = () => (ovEditing = false);
   function removeOverlay() {
     if (!selectedOverlay) return false;
@@ -453,9 +475,10 @@
       const dw = f ? fw * k : w, dh = f ? fh * k : h;
       const cap = visibleCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
       capOnScreen = cap ?? null;
-      const fx = segments.find((s) => tNow >= s.start && tNow < s.end)?.fx;
+      const strip = segAt(segments, tNow), fx = strip?.fx;
+      if (fx?.lift) f = null; // a lifted strip is a gap: black
       capBox = null;
-      drawFrame(ctx, f, f ? fw : w, f ? fh : h, [(w - dw) / 2, (h - dh) / 2, dw, dh], fx, !!cap,
+      drawFrame(ctx, f, f ? fw : w, f ? fh : h, zoomPlace([(w - dw) / 2, (h - dh) / 2, dw, dh], w, h, fx, tNow - (strip?.start ?? 0)), fx, !!cap,
         () => {
           placed = drawLayers(ctx, tNow);
           capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
@@ -635,7 +658,7 @@
       const o = overlays.find((v) => v.id === hit!.id);
       if (!o) return false;
       selectedOverlay = o.id;
-      layerDrag = { id: o.id, mode, x0: x, y0: y, tf: { ...o.tf }, cx: hit.cx, cy: hit.cy,
+      layerDrag = { id: o.id, mode, x0: x, y0: y, tf: { ...tfAt(o, outNow()) }, cx: hit.cx, cy: hit.cy,
         d0: Math.max(1, Math.hypot(x - hit.cx, y - hit.cy)), a0: Math.atan2(y - hit.cy, x - hit.cx), moved: false };
       canvas!.setPointerCapture(e.pointerId);
       return true;
@@ -680,7 +703,10 @@
     const dir = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] }[e.key];
     if (!dir) return;
     e.preventDefault();
-    if (selOverlay) return setTf(selOverlay.id, { x: selOverlay.tf.x + dir[0], y: selOverlay.tf.y + dir[1] });
+    if (selOverlay) {
+      const cur = tfAt(selOverlay, outNow());
+      return (setTf(selOverlay.id, { x: cur.x + dir[0], y: cur.y + dir[1] }), doneEditing());
+    }
     const capId = ownPosition(capOnScreen) ? capOnScreen!.id : null;
     const pos = capId ? resolveStyle(style, capOnScreen!.style) : style;
     moveCaption(capId, pos.x + dir[0], pos.y + dir[1]);
@@ -820,6 +846,7 @@
     else if (e.altKey) return;
     else if (e.key.toLowerCase() === 's') cutHere();
     else if (e.key === 'Escape') (clearCapSelection(), (marks = [null, null]), (selectedOverlay = ''));
+    else if ((e.key === 'Delete' || e.key === 'Backspace') && e.shiftKey && selFx) setFx({ lift: !selFx.lift || undefined });
     else if (e.key === 'Delete' || e.key === 'Backspace')
       cutMarks() || removeOverlay() || (tab === 'transcript' && transcriptView?.toggleSelection()) || removeAudioItem() || deleteSelected();
     // The timeline and the preview canvas handle their own arrows (seek / nudge caption).
@@ -1091,6 +1118,8 @@
     <div class="sheet-bar"><h2>{t('style')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}>✕</button></div>
     {#if selOverlay}
       {@const o = selOverlay}
+      {@const cur = tfAt(o, outTime)}
+      {@const onKey = !!keyAt(o.kf, outTime - o.at)}
       <!-- Layer inspector: live edits are one undo step each (snapshot on first input, closed on change). -->
       <section class="layer" aria-label={t('layer')} onchange={doneEditing} onpointerup={doneEditing}>
         <div class="lhead">
@@ -1111,14 +1140,23 @@
             </label>
           </div>
         {/if}
-        <label class="vol">{t('scale')} <span class="mono small">{Math.round(o.tf.scale * 100)}%</span>
-          <input type="range" min="0.05" max={o.kind === 'text' ? 4 : 1.5} step="0.01" value={o.tf.scale} oninput={(e) => setTf(o.id, { scale: +e.currentTarget.value })} />
+        <div class="keyrow" role="group" aria-label={t('keyframes')}>
+          <button class="sm icon" onclick={() => jumpKey(o, -1)} disabled={!o.kf?.length} title={t('prevKey')} aria-label={t('prevKey')}>◂</button>
+          <button class="sm key" class:on={onKey} aria-pressed={onKey} onclick={() => toggleKey(o)}
+            title={onKey ? t('removeKey') : t('addKey')}>◆ {onKey ? t('removeKey') : t('addKey')}</button>
+          <button class="sm icon" onclick={() => jumpKey(o, 1)} disabled={!o.kf?.length} title={t('nextKey')} aria-label={t('nextKey')}>▸</button>
+          <button class="sm" onclick={() => punchIn(o)} title={t('punchLayerTip')}>⤢ {t('punchIn')}</button>
+          {#if o.kf?.length}<button class="sm" onclick={() => clearKeys(o)}>{t('clearKeys')}</button>{/if}
+        </div>
+        {#if o.kf?.length}<p class="muted small keyhint">{t('keyHint', { n: o.kf.length })}</p>{/if}
+        <label class="vol">{t('scale')} <span class="mono small">{Math.round(cur.scale * 100)}%</span>
+          <input type="range" min="0.05" max={o.kind === 'text' ? 4 : 1.5} step="0.01" value={cur.scale} oninput={(e) => setTf(o.id, { scale: +e.currentTarget.value })} />
         </label>
-        <label class="vol">{t('rotation')} <span class="mono small">{o.tf.rotation}°</span>
-          <input type="range" min="-180" max="180" step="1" value={o.tf.rotation} oninput={(e) => setTf(o.id, { rotation: +e.currentTarget.value })} />
+        <label class="vol">{t('rotation')} <span class="mono small">{Math.round(cur.rotation)}°</span>
+          <input type="range" min="-180" max="180" step="1" value={cur.rotation} oninput={(e) => setTf(o.id, { rotation: +e.currentTarget.value })} />
         </label>
-        <label class="vol">{t('opacity')} <span class="mono small">{Math.round(o.tf.opacity * 100)}%</span>
-          <input type="range" min="0" max="1" step="0.01" value={o.tf.opacity} oninput={(e) => setTf(o.id, { opacity: +e.currentTarget.value })} />
+        <label class="vol">{t('opacity')} <span class="mono small">{Math.round(cur.opacity * 100)}%</span>
+          <input type="range" min="0" max="1" step="0.01" value={cur.opacity} oninput={(e) => setTf(o.id, { opacity: +e.currentTarget.value })} />
         </label>
         {#if o.kind !== 'text'}
           {@const c = o.tf.crop ?? [0, 0, 0, 0]}
@@ -1177,6 +1215,10 @@
           <span class="divider"></span>
         {/if}
         {#if selFx}
+          <button class="sm" class:on={!!selFx.zoom} aria-pressed={!!selFx.zoom} title={t('punchTip')}
+            onclick={() => setFx(selFx.zoom ? { zoom: undefined, zoomIn: undefined } : { zoom: PUNCH_IN, zoomIn: true })}>⤢ {t('punchIn')}</button>
+          <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
+            onclick={() => setFx({ lift: !selFx.lift || undefined })}>{t('lift')}</button>
           <button class="sm icon" class:on={selFx.behind} aria-pressed={!!selFx.behind} title={t('textBehind')} aria-label={t('textBehind')}
             onclick={() => setFx({ behind: !selFx.behind })}>👤</button>
           <label class="vol">{t('background')}
@@ -1254,7 +1296,7 @@
         <h3>{t('keysTitle')}</h3>
         <dl>
           {#each [['Space', 'k.play'], ['J / K / L', 'k.jkl'], ['← / →', 'k.frame'], ['Shift + ← / →', 'k.second'], ['Home / End', 'k.ends'],
-            ['S', 'k.split'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
+            ['S', 'k.split'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['Shift + Del', 'k.lift'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
             ['A', 'k.auto'], ['T', 'k.text'], ['Ctrl/⌘ + Z', 'undo'], ['Ctrl/⌘ + Shift + Z', 'redo'], ['Ctrl/⌘ + S', 'k.save'], ['Esc', 'k.esc'], ['?', 'keysTitle']] as [k, d]}
             <dt><kbd>{k}</kbd></dt><dd>{t(d)}</dd>
           {/each}
@@ -1452,6 +1494,9 @@
   .layer h3 { margin: 0; font-size: 13px; color: #6ab8ff; }
   .layer textarea { width: 100%; resize: vertical; }
   .layer .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+  .layer .keyrow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .layer .key.on { color: #ffd84d; border-color: #ffd84d; }
+  .layer .keyhint { margin: -4px 0 0; }
   .layer .crop { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .layer input[type=color] { width: 44px; height: 28px; padding: 0; border: 0; background: none; }
   .keys-bg { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .55); display: grid; place-items: center; padding: 16px; }
