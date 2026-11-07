@@ -5,8 +5,9 @@
   import type { Style } from './render';
   import { t } from './i18n.svelte';
 
-  let { source, name, segments, captions, style, srcW, srcH }: {
+  let { source, name, segments, captions, style, srcW, srcH, canvasAspect = 'source' }: {
     source: () => ExportSource; name: string; segments: Segment[]; captions: Caption[]; style: Style; srcW: number; srcH: number;
+    canvasAspect?: Aspect; // the project's canvas shape: the default output shape
   } = $props();
 
   let dialog = $state<HTMLDialogElement>();
@@ -28,6 +29,7 @@
 
   export function open() {
     error = '';
+    aspect = canvasAspect;
     dialog?.showModal();
   }
 
@@ -101,6 +103,7 @@
         <option value="9:16">{t('ex.vertical')}</option>
         <option value="16:9">{t('ex.wide')}</option>
         <option value="1:1">{t('ex.square')}</option>
+        <option value="4:5">4:5</option>
       </select>
     </label>
     <label>{t('ex.fps')}

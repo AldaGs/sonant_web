@@ -10,6 +10,9 @@
   import { Player } from './lib/player';
   import { Transitioner, TRANSITIONS, TRANS_DUR } from './lib/transitions';
   import { Grader, COLOR_PRESETS, parseCube, type Color, type Lut } from './lib/grade';
+  import { coverPlace, median } from './lib/reframe';
+  import { outputSize, type Aspect } from './lib/export';
+  import { subjectCenter } from './lib/segment';
   import { cleanup, cleanupRanges } from './lib/cleanup.svelte';
   import { speechRanges } from './lib/audio';
   import { beatsOfFile } from './lib/beats';
@@ -50,8 +53,13 @@
   const hasMedia = $derived(clips.length > 0);
   const videoIds = $derived([...new Set(clips.map((c) => c.assetId))]);
   const firstVideo = $derived(clips.map((c) => assets.find((a) => a.id === c.assetId)).find((a) => a?.width));
-  const frameW = $derived(firstVideo?.width || 1280);
-  const frameH = $derived(firstVideo?.height || 720);
+  const srcW = $derived(firstVideo?.width || 1280);
+  const srcH = $derived(firstVideo?.height || 720);
+  // Canvas shape for the whole project (Original, 9:16, 1:1, 4:5, 16:9); videos cover it around each strip's focus.
+  let canvasAspect = $state<Aspect>('source');
+  const canvasSize = $derived(outputSize(srcW, srcH, 'source', canvasAspect));
+  const frameW = $derived(canvasSize.width);
+  const frameH = $derived(canvasSize.height);
 
   // ---- Editing state ----
   let time = $state(0); // sequence time
@@ -228,6 +236,7 @@
     style = migrateStyle(doc.style ?? {});
     language = doc.language ?? null;
     showTr = doc.showTr ?? false;
+    canvasAspect = doc.aspect ?? 'source';
     Promise.all((doc.luts ?? []).map((l) => store.get<Lut>('lut:' + l.id))).then((r) => (luts = r.filter((x): x is Lut => !!x)));
     // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
     if (!fonts.some((f) => f.family === style.family)) fonts = [...fonts, { family: style.family, weight: style.weight }];
@@ -244,7 +253,7 @@
 
 
   async function saveNow() {
-    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), luts: luts.map((l) => ({ id: l.id, name: l.name })), words: wordCache };
+    const doc: Doc = { ...$state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr }), luts: luts.map((l) => ({ id: l.id, name: l.name })), aspect: canvasAspect, words: wordCache };
     const meta: Partial<ProjectMeta> = { duration: outDuration(segments), clips: clips.length };
     if (Date.now() - lastThumb > 10000) {
       const th = thumbnail();
@@ -254,7 +263,7 @@
   }
   $effect(() => {
     $state.snapshot({ name, captions, segments, style, language, speakers, assets, clips, audios, clipVolume, overlays, showTr });
-    void luts.length;
+    void luts.length, canvasAspect;
     void (clips.length && thumbs[clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
     if (!ready) return;
     saving = true;
@@ -521,7 +530,7 @@
       if (fx?.lift) f = null; // a lifted strip is a gap: black
       else if (f && fx?.color) f = grader.apply(f, fw, fh, fx.color, lutMap.get(fx.color.lut ?? ''));
       capBox = null;
-      drawFrame(ctx, f, f ? fw : w, f ? fh : h, zoomPlace([(w - dw) / 2, (h - dh) / 2, dw, dh], w, h, fx, tNow - (strip?.start ?? 0)), fx, !!cap,
+      drawFrame(ctx, f, f ? fw : w, f ? fh : h, zoomPlace(f ? coverPlace(w, h, fw, fh, fx?.focus) : [0, 0, w, h], w, h, fx, tNow - (strip?.start ?? 0)), fx, !!cap,
         () => {
           placed = drawLayers(ctx, tNow);
           capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
@@ -574,6 +583,58 @@
     if (!colorEditing) ((colorEditing = true), commit());
     const color = replace ? patch : { ...segments[selected].fx?.color, ...patch };
     segments = segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, color } });
+  }
+  // Reframing only matters when the canvas shape differs from the footage.
+  const reframes = $derived(Math.abs(frameW / frameH - srcW / srcH) > 0.01);
+  function setFocus(focus: { x: number; y: number } | undefined) {
+    if (selected < 0 || !segments[selected]) return;
+    if (!colorEditing) ((colorEditing = true), commit());
+    segments = segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, focus } });
+  }
+  // Auto-reframe: find the person in a few frames of the strip and centre on them (median, so one miss doesn't matter).
+  let reframing = $state(false);
+  async function focusOf(i: number): Promise<{ x: number; y: number } | null> {
+    const s = segments[i], starts = clipStarts(clips, durations);
+    const ci = clips.findIndex((_, k) => s.start >= starts[k] - 1e-6 && s.start < starts[k] + (durations.get(clips[k].assetId) ?? 0));
+    if (ci < 0) return null;
+    const v = document.createElement('video');
+    v.muted = true;
+    v.src = urls[clips[ci].assetId];
+    await new Promise((r, j) => ((v.onloadeddata = r), (v.onerror = j)));
+    const xs: number[] = [], ys: number[] = [];
+    for (let k = 0; k < 5; k++) {
+      v.currentTime = s.start - starts[ci] + ((k + 0.5) / 5) * (s.end - s.start);
+      await new Promise((r) => (v.onseeked = r));
+      const c = await subjectCenter(v, v.videoWidth, v.videoHeight).catch(() => null);
+      if (c) (xs.push(c.x), ys.push(c.y));
+    }
+    v.removeAttribute('src');
+    return xs.length ? { x: median(xs), y: median(ys) } : null;
+  }
+  async function autoReframe(i: number) {
+    reframing = true;
+    error = '';
+    try {
+      const f = await focusOf(i);
+      if (!f) return void (error = 'noPerson');
+      commit();
+      segments = segments.with(i, { ...segments[i], fx: { ...segments[i].fx, focus: f } });
+    } catch {
+      error = 'noPerson';
+    } finally {
+      reframing = false;
+    }
+  }
+  async function autoReframeAll() {
+    reframing = true;
+    try {
+      const fs: ({ x: number; y: number } | null)[] = [];
+      for (let i = 0; i < segments.length; i++) fs.push(await focusOf(i).catch(() => null));
+      commit();
+      segments = segments.map((s, i) => (fs[i] ? { ...s, fx: { ...s.fx, focus: fs[i]! } } : s));
+    } finally {
+      reframing = false;
+    }
   }
   function colorToAll() {
     commit();
@@ -1258,6 +1319,13 @@
         <span class="mono tcode">{tc(outTime)} <span class="muted">/ {tc(outDuration(segments))}</span></span>
       </div>
       <div class="row zoomctl">
+        <select class="ratio" bind:value={canvasAspect} aria-label={t('canvasRatio')} title={t('canvasRatio')}>
+          <option value="source">{t('ex.original')}</option>
+          <option value="9:16">9:16</option>
+          <option value="1:1">1:1</option>
+          <option value="4:5">4:5</option>
+          <option value="16:9">16:9</option>
+        </select>
         <button class="sm icon" onclick={() => (zoom = Math.max(0.5, zoom - 0.25))} aria-label={t('zoomOut')}>−</button>
         <span class="mono small zl">{zoom === 1 ? t('fit') : `${Math.round(zoom * 100)}%`}</span>
         <button class="sm icon" onclick={() => (zoom = Math.min(3, zoom + 0.25))} aria-label={t('zoomIn')}>+</button>
@@ -1314,6 +1382,21 @@
           </label>
         {/if}
         <button class="sm" onclick={colorToAll} disabled={segments.length < 2}>{t('colorAll')}</button>
+        {#if reframes}
+          {@const fc = segments[selected].fx?.focus ?? { x: 0.5, y: 0.5 }}
+          <div class="lhead"><h3>{t('reframe')}</h3></div>
+          <label class="vol">{t('focusX')} <span class="mono small">{Math.round(fc.x * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.01" value={fc.x} oninput={(e) => setFocus({ ...fc, x: +e.currentTarget.value })} />
+          </label>
+          <label class="vol">{t('focusY')} <span class="mono small">{Math.round(fc.y * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.01" value={fc.y} oninput={(e) => setFocus({ ...fc, y: +e.currentTarget.value })} />
+          </label>
+          <div class="lrow">
+            <button class="sm" onclick={() => autoReframe(selected)} disabled={reframing}>{reframing ? t('detecting') : '◎ ' + t('autoReframe')}</button>
+            <button class="sm" onclick={autoReframeAll} disabled={reframing}>{t('autoReframeAll')}</button>
+            <button class="sm" onclick={() => (setFocus(undefined), (colorEditing = false))}>{t('center')}</button>
+          </div>
+        {/if}
         {#if !grader.ok}<p class="muted small">{t('noWebgl')}</p>{/if}
       </section>
     {/if}
@@ -1537,7 +1620,7 @@
       </div>
     </div>
   {/if}
-  <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} {style} srcW={frameW} srcH={frameH}
+  <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} {style} {srcW} {srcH} {canvasAspect}
     source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume })} />
 {/if}
 
@@ -1736,6 +1819,7 @@
   .tpl[open] summary { margin-bottom: 4px; }
   .tpl-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .tpl-item { display: flex; gap: 2px; }
+  .ratio { height: 30px; font-size: 12px; }
   .trbox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
   .trbox select { height: 32px; font-size: 12px; }
   textarea.tr { margin-top: 4px; font-size: 12px; color: #9fd0ff; border-style: dashed; }

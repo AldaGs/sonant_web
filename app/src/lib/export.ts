@@ -4,13 +4,14 @@ import { keptCaptions, zoomPlace, outLen, srcIn, type Segment } from './cuts.ts'
 import { stretch } from './stretch.ts';
 import { Transitioner, TRANS_DUR } from './transitions.ts';
 import { Grader, type Lut } from './grade.ts';
+import { coverPlace } from './reframe.ts';
 import { drawCaption, resolveStyle, type Style } from './render.ts';
 import { drawFrame, loadSegmenter } from './segment.ts';
 import { drawOverlay, type Overlay } from './overlay.ts';
 import { duckGain, normalizeGain } from './audio.ts';
 import { DUCK_LEVEL, clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
 
-export type Aspect = 'source' | '16:9' | '9:16' | '1:1';
+export type Aspect = 'source' | '16:9' | '9:16' | '1:1' | '4:5';
 export type Res = 'source' | 1080 | 720 | 540 | 480;
 export type Quality = 'draft' | 'standard' | 'high';
 // loudness: normalize the mix to −14 LUFS (TikTok/YouTube/Spotify target). voice: clean up the clips' own sound
@@ -21,7 +22,7 @@ const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
 // Output frame size. `res` sets the short side (like "1080p" means 1080 on the short side).
 export function outputSize(srcW: number, srcH: number, res: Res, aspect: Aspect) {
-  const ratio = aspect === 'source' ? srcW / srcH : aspect === '16:9' ? 16 / 9 : aspect === '9:16' ? 9 / 16 : 1;
+  const ratio = aspect === 'source' ? srcW / srcH : aspect === '16:9' ? 16 / 9 : aspect === '9:16' ? 9 / 16 : aspect === '4:5' ? 4 / 5 : 1;
   const short = res === 'source' ? Math.min(srcW, srcH) : res;
   return ratio >= 1 ? { width: even(short * ratio), height: even(short) } : { width: even(short), height: even(short / ratio) };
 }
@@ -214,12 +215,15 @@ export async function exportVideo(
 
   // Video: for each kept piece, pull its clip's frames (one decoder per asset), draw + caption, encode.
   const videoTask = (async () => {
-    const sinks = new Map<string, InstanceType<typeof CanvasSink>>();
+    const sinks = new Map<string, { sink: InstanceType<typeof CanvasSink>; w: number; h: number }>();
     const sinkFor = async (assetId: string) => {
       if (!sinks.has(assetId)) {
         const f = src.files.get(assetId);
         const track = f && (await new Input({ source: new BlobSource(f), formats: ALL_FORMATS }).getPrimaryVideoTrack());
-        if (track) sinks.set(assetId, new CanvasSink(track, { width, height, fit: 'cover', poolSize: 2 }));
+        // Decode at "cover" size (aspect kept), then each strip places it around its focus point.
+        const k = track && Math.max(width / track.displayWidth, height / track.displayHeight);
+        if (track && k) sinks.set(assetId, { sink: new CanvasSink(track, { width: even(track.displayWidth * k), height: even(track.displayHeight * k), fit: 'fill', poolSize: 2 }),
+          w: even(track.displayWidth * k), h: even(track.displayHeight * k) });
       }
       return sinks.get(assetId);
     };
@@ -230,7 +234,8 @@ export async function exportVideo(
     for (const piece of splitAtBoundaries(segs, starts)) {
       const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2);
       const offset = at ? starts[at.index] : 0;
-      const sink = at ? await sinkFor(src.clips[at.index].assetId) : undefined;      const times = [...frameTimes([piece], opts.fps)];
+      const decoded = at ? await sinkFor(src.clips[at.index].assetId) : undefined, sink = decoded?.sink;
+      const sw = decoded?.w ?? width, sh = decoded?.h ?? height;      const times = [...frameTimes([piece], opts.fps)];
       const lifted = !!piece.fx?.lift; // a gap: black, no frames decoded
       const frames = sink && !lifted ? sink.canvasesAtTimestamps(times.map((t) => t - offset)) : null;
       const si = segs.findIndex((g) => piece.start >= g.start - 1e-6 && piece.start < g.end);
@@ -245,8 +250,8 @@ export async function exportVideo(
         await advance(i);
         // Same order as the preview: video, layers, caption (and the person over both with "text behind").
         const color = piece.fx?.color;
-        const img = frame?.canvas && color ? grader.apply(frame.canvas, width, height, color, lutOf(color.lut)) : frame?.canvas ?? null;
-        drawFrame(ctx, img, width, height, zoomPlace([0, 0, width, height], width, height, piece.fx, t - segStart), piece.fx, !!cap, () => {
+        const img = frame?.canvas && color ? grader.apply(frame.canvas, sw, sh, color, lutOf(color.lut)) : frame?.canvas ?? null;
+        drawFrame(ctx, img, sw, sh, zoomPlace(coverPlace(width, height, sw, sh, piece.fx?.focus), width, height, piece.fx, t - segStart), piece.fx, !!cap, () => {
           paintLayers(i);
           if (cap) drawCaption(ctx, cap, t, resolveStyle(style, cap.style));
         });

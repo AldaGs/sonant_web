@@ -37,10 +37,10 @@ Status from a code review (Nov 2026). ✅ done · 🟡 partly done · ⬜ not st
 - Known gaps: importing a video always appends it to the main sequence (use ⧉ to add it as a layer instead); video layers show nothing for a moment while they seek; text layers use one preset look plus font and colours (the full style panel is caption-only).
 
 ## Phase C: Clip tools
-11. **Speed**: 0.25–4× per strip (playbackRate in preview, resample frames in export, pitch-preserved audio), plus freeze frame.
-12. **Transitions** between strips: cross-fade, dip to black, zoom, whip. These need two decoders live at the boundary (preload the next clip's `<video>`).
-13. **Color**: brightness, contrast, saturation and temperature through canvas `filter` or a WebGL pass, plus .cube LUT import and filter presets.
-14. **Reframe / auto-reframe**: pick the crop for 9:16 per strip and track the face with the existing segmenter mask centroid.
+11. ✅ **Speed** per strip (0.25×–4×): the preview uses the browser's pitch-preserving playbackRate, and export uses a WSOLA time-stretch so voices keep their pitch. **Freeze** holds the frame at the playhead (1s, adjustable, silent). The player now keeps an output-time clock so freeze frames play correctly.
+12. ✅ **Transitions** into a strip: cross-fade, dip to black, flash white, zoom, whip pan, slide (0.4s). They blend from the held last frame of the previous strip, so the outgoing side doesn't move. Same code in preview and export.
+13. ✅ **Color** per strip on the GPU (WebGL2): brightness, contrast, saturation, temperature, 7 presets, **.cube LUT import** with strength, and apply-to-all. LUT data is stored per project in the browser; it isn't packed into `.sonant` files yet.
+14. ✅ **Canvas shape** for the project (Original, 9:16, 1:1, 4:5, 16:9), which is also the export default. Each strip has a **focus point** (sliders) that keeps the important part in frame, and **Follow person** / **All strips** find the person with the segmenter (median of 5 frames). Auto-reframe couldn't be run in the dev sandbox (CDN blocked); manual focus was tested in preview and export.
 
 ## Phase D: Smart features
 15. ✅ **Silences and fillers**: a Clean up panel with filler/pause switches, a minimum pause slider, and a slider for the breathing room kept. **Preview** strikes the words and shows ⏸ chips in the transcript, plus red ranges on the timeline. **Apply** shows the seconds it will save. **Auto-clean after transcribing** is optional, and its cut is a separate undo step.
