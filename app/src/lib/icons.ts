@@ -44,6 +44,11 @@ import download from '@material-symbols/svg-400/rounded/download.svg?raw';
 import video_library from '@material-symbols/svg-400/rounded/video_library.svg?raw';
 import description from '@material-symbols/svg-400/rounded/description.svg?raw';
 import closed_caption from '@material-symbols/svg-400/rounded/closed_caption.svg?raw';
+import light_mode from '@material-symbols/svg-400/rounded/light_mode.svg?raw';
+import contrast from '@material-symbols/svg-400/rounded/contrast.svg?raw';
+import water_drop from '@material-symbols/svg-400/rounded/water_drop.svg?raw';
+import thermostat from '@material-symbols/svg-400/rounded/thermostat.svg?raw';
+import filter_vintage from '@material-symbols/svg-400/rounded/filter_vintage.svg?raw';
 import palette from '@material-symbols/svg-400/rounded/palette.svg?raw';
 import text_fields from '@material-symbols/svg-400/rounded/text_fields.svg?raw';
 import colorize from '@material-symbols/svg-400/rounded/colorize.svg?raw';
@@ -107,6 +112,11 @@ export const ICONS = {
   closed_caption: m(closed_caption),
   text_fields: m(text_fields),
   palette: m(palette),
+  light_mode: m(light_mode),
+  contrast: m(contrast),
+  water_drop: m(water_drop),
+  thermostat: m(thermostat),
+  filter_vintage: m(filter_vintage),
   colorize: m(colorize),
   block: m(block),
   format_line_spacing: m(format_line_spacing),
