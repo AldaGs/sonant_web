@@ -51,10 +51,14 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - Note: RNNoise is trained on speech, so it also lowers music and pure tones. Use it on talking clips, not music.
 - Later: apply it to video layers and voiceover items. Optionally a stronger model (DeepFilterNet) as a "High quality" choice when the GPU setting allows.
 
-## Phase 4: Effects pack ⬜
-- Vignette, film grain, glow/bloom, RGB split and camera shake on punch-ins, in the `grade.ts` shader. Motion blur on zoom and whip transitions (`transitions.ts`).
-- Reverse strip, which needs reversed frame decoding in export, plus a proxy for the preview.
-- Progress-bar and emoji/sticker layers as built-in templates (`templates.ts`).
+## Phase 4: Effects pack 🟡
+- ✅ **Effects in the colour shader** (`grade.ts`, WebGL2, preview and export): vignette, film grain (changes 24 times a second), glow/bloom and RGB split. Each has a slider in the strip's Color panel and on the phone colour sheet. There are new looks too: Film, Dreamy, Glitch and VHS.
+- ✅ **Camera shake**: a **Shake** menu on each strip (none, subtle, medium or strong handheld wobble). Auto-zoom has a **Shake as each zoom lands** option, a 0.45s burst. The frame is enlarged slightly so no edges show (`autozoom.ts`).
+- ✅ **Zoom blur** on the zoom transition, for both the outgoing and incoming frames. The whip transition already had blur.
+- ✅ **Progress bar** template: a layer across the whole video. Its colour, track, thickness and top/bottom position can be changed.
+- ✅ **Stickers** templates: 🔥, 😱 WOW, 👍 Like & subscribe and 👉. These are emoji text layers that pop in. Stickers and the progress bar leave the caption style alone.
+- ✅ Tests: shake bounds and coverage (`autozoom.test.ts`), bar placement and progress (`templates.test.ts`). In a browser test, every shader effect changed the pixels as expected, and the bar and sticker rendered over a video.
+- ⬜ **Reverse strip**: postponed. The browser can't play a `<video>` backwards, so the preview would have to step through frames one at a time, which is choppy without decoding to a reversed proxy first. Plan: build a reversed proxy (WebCodecs, like `proxy.ts`) and reversed audio, then use them in both preview and export.
 
 ## Phase 5: Text-to-speech voiceover ⬜
 - A local TTS model (Kokoro or Piper, ONNX in a worker, the same pattern as Whisper). It turns a script or the selected captions into a clip on the Music & VO track. Voices in EN and ES.

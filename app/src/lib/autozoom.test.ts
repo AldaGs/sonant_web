@@ -29,3 +29,15 @@ assert.deepEqual(scalePlace([0, 0, 100, 100], 100, 100, 2), [-50, -50, 200, 200]
 assert.deepEqual(scalePlace([1, 2, 3, 4], 10, 10, 1), [1, 2, 3, 4]);
 
 console.log('autozoom ok');
+
+// camera shake
+import { shakeAt, shakePlace, zoomShake, shakeScale } from './autozoom.ts';
+assert.deepEqual(shakeAt(1, 0), [0, 0]);
+for (let t = 0; t < 3; t += 0.013) { const [x, y] = shakeAt(t, 1); assert.ok(Math.abs(x) <= 0.0121 && Math.abs(y) <= 0.0121); }
+// the enlargement always covers the offset, so no edge shows
+assert.ok((shakeScale(1) - 1) / 2 >= 0.0121);
+const sp = shakePlace([0, 0, 100, 100], 100, 100, 1, 0.7);
+assert.ok(sp[0] <= 0 && sp[1] <= 0 && sp[0] + sp[2] >= 100 && sp[1] + sp[3] >= 100);
+assert.deepEqual(shakePlace([1, 2, 3, 4], 10, 10, 0, 1), [1, 2, 3, 4]);
+assert.ok(zoomShake(m, 1.01) > 0.8 && zoomShake(m, 1.5) === 0 && zoomShake(m, 0.5) === 0);
+console.log('shake ok');

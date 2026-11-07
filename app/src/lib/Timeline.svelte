@@ -93,7 +93,7 @@
   }
   const ovLanes = $derived(stackLanes(overlays));
   const ovCount = $derived(Math.max(1, ...[...ovLanes.values()].map((l) => l + 1)));
-  const ovLabel = (o: Overlay) => (o.kind === 'text' ? o.text ?? '' : names.get(o.assetId ?? '') ?? '');
+  const ovLabel = (o: Overlay) => (o.bar ? t('tpl.b-progress') : o.kind === 'text' ? o.text ?? '' : names.get(o.assetId ?? '') ?? '');
   const ovIcon = (o: Overlay) => (o.kind === 'text' ? 'title' : o.kind === 'image' ? 'image' : 'picture_in_picture_alt') as IconName;
 
   // Beat times of an audio item in output time (only the part that plays).

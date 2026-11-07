@@ -8,6 +8,7 @@ import type { Caption } from './captions';
 export type Fx = { behind?: boolean; bg?: 'color' | 'blur' | 'image'; bgColor?: string; bgImage?: string /* image asset id */; zoom?: number; zoomIn?: boolean; lift?: boolean;
   speed?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number;
   color?: import('./grade').Color; focus?: import('./reframe').Focus;
+  shake?: number; /* handheld camera shake 0..1 */
   key?: import('./layerfx').ChromaKey /* green screen on the strip: keyed area shows the background (bg) */ };
 
 // How long a strip lasts in the output, and the source time `o` seconds into it.

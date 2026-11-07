@@ -10,7 +10,7 @@
   import { Player } from './lib/player';
   import { Transitioner, TRANSITIONS, TRANS_DUR } from './lib/transitions';
   import ColorGrader from './lib/ColorGrader.svelte';
-  import { Grader, COLOR_PRESETS, parseCube, type Color, type Lut } from './lib/grade';
+  import { Grader, COLOR_PRESETS, COLOR_LOOKS, EFFECTS, parseCube, type Color, type Lut } from './lib/grade';
   import { coverPlace, median } from './lib/reframe';
   import { SAFE_ZONES, drawSafeZones, overlapsZone, type Platform } from './lib/safezones';
   import { outputSize, type Aspect } from './lib/export';
@@ -26,7 +26,7 @@
   import KeyControls from './lib/KeyControls.svelte';
   import PerfDialog from './lib/PerfDialog.svelte';
   import { cleanAudio, cleanKey, DENOISE_LEVELS } from './lib/denoise';
-  import { zoomMoments, autoZoomAt, scalePlace, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
+  import { zoomMoments, autoZoomAt, scalePlace, shakePlace, zoomShake, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
   import { importFile, loadFile, mediaKind } from './lib/assets';
@@ -471,7 +471,7 @@
   // Apply: caption look + its text layers (at the playhead, or stuck to the end).
   function applyTemplate(tp: Template) {
     commit();
-    style = { ...structuredClone($state.snapshot(tp.style)), x: style.x, y: tp.style.y };
+    if (!tp.keepStyle) style = { ...structuredClone($state.snapshot(tp.style)), x: style.x, y: tp.style.y };
     const added = placeLayers(tp, outNow(), outDuration(segments));
     overlays = [...overlays, ...added];
     if (added[0]) selectedOverlay = added[0].id;
@@ -693,11 +693,11 @@
       capOnScreen = cap ?? null;
       const strip = segAt(segments, tNow), fx = strip?.fx;
       if (fx?.lift) f = null; // a lifted strip is a gap: black
-      else if (f && fx?.color) f = grader.apply(f, fw, fh, fx.color, lutMap.get(fx.color.lut ?? ''));
+      else if (f && fx?.color) f = grader.apply(f, fw, fh, fx.color, lutMap.get(fx.color.lut ?? ''), tNow);
       capBox = null;
       let below: Placed[] = [];
       const anyBehind = overlaysAt(overlays, player.o).some((o) => o.behind);
-      drawFrame(ctx, f, f ? fw : w, f ? fh : h, f ? scalePlace(zoomPlace(coverPlace(w, h, fw, fh, fx?.focus), w, h, fx, tNow - (strip?.start ?? 0)), w, h, autoZoomAt(zooms, autoZoom?.scale ?? 1, tNow)) : [0, 0, w, h], fx, !!cap,
+      drawFrame(ctx, f, f ? fw : w, f ? fh : h, f ? shakePlace(scalePlace(zoomPlace(coverPlace(w, h, fw, fh, fx?.focus), w, h, fx, tNow - (strip?.start ?? 0)), w, h, autoZoomAt(zooms, autoZoom?.scale ?? 1, tNow)), w, h, Math.max(fx?.shake ?? 0, autoZoom?.shake ? zoomShake(zooms, tNow) : 0), tNow) : [0, 0, w, h], fx, !!cap,
         () => {
           placed = [...below, ...drawLayers(ctx, tNow, false)];
           capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(style, cap.style)) : null;
@@ -1554,6 +1554,7 @@
               <label class="sl">{t('azGap')} <span class="mono">{autoZoom.gap}s</span>
                 <input type="range" min="1" max="8" step="0.5" bind:value={autoZoom.gap} /></label>
               <label class="chk"><input type="checkbox" bind:checked={autoZoom.sentences} /> {t('azSentences')}</label>
+              <label class="chk"><input type="checkbox" bind:checked={autoZoom.shake} /> {t('azShake')}</label>
               <span class="muted small">{zooms.length ? t('azCount').replace('{n}', String(zooms.length)) : t('azNone')}</span>
             {/if}
           </div>
@@ -1700,12 +1701,22 @@
           {#each Object.entries(COLOR_PRESETS) as [k, v]}
             <button class="sm" onclick={() => (setColor({ ...v, lut: c.lut, lutMix: c.lutMix }, true), (colorEditing = false))}>{t('col.' + k)}</button>
           {/each}
+          {#each Object.entries(COLOR_LOOKS) as [k, v]}
+            <button class="sm" onclick={() => (setColor({ ...v, lut: c.lut, lutMix: c.lutMix }, true), (colorEditing = false))}>{t('col.' + k)}</button>
+          {/each}
         </div>
         {#each [['b', 'brightness'], ['c', 'contrast'], ['s', 'saturation'], ['temp', 'temperature']] as [k, label]}
           {@const v = (c as Record<string, number>)[k] ?? 0}
           <label class="vol">{t(label)} <span class="mono small">{v > 0 ? '+' : ''}{Math.round(v * 100)}</span>
             <input type="range" min="-1" max="1" step="0.01" value={v} oninput={(e) => setColor({ [k]: +e.currentTarget.value })}
               ondblclick={() => (setColor({ [k]: 0 }), (colorEditing = false))} />
+          </label>
+        {/each}
+        {#each EFFECTS as k}
+          {@const v = c[k] ?? 0}
+          <label class="vol">{t('fx.' + k)} <span class="mono small">{Math.round(v * 100)}%</span>
+            <input type="range" min="0" max="1" step="0.01" value={v} oninput={(e) => setColor({ [k]: +e.currentTarget.value || undefined })}
+              ondblclick={() => (setColor({ [k]: undefined }), (colorEditing = false))} />
           </label>
         {/each}
         <div class="lrow">
@@ -1751,7 +1762,17 @@
           <h3>{o.motion ? t('addTitle') : o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
           <button class="sm icon" onclick={closeLayer} aria-label={t('ex.close')}><Icon name="close" /></button>
         </div>
-        {#if o.kind === 'text'}
+        {#if o.bar}
+          {@const b = o.bar}
+          <div class="lrow">
+            <label class="vol">{t('barColor')}<input type="color" value={b.color} oninput={(e) => setOverlay(o.id, { bar: { ...b, color: e.currentTarget.value } })} onchange={doneEditing} /></label>
+            <label class="chk"><input type="checkbox" checked={!!b.track} onchange={(e) => (setOverlay(o.id, { bar: { ...b, track: e.currentTarget.checked ? 'rgba(255,255,255,0.25)' : '' } }), doneEditing())} /> {t('barTrack')}</label>
+            <label class="chk"><input type="checkbox" checked={!!b.top} onchange={(e) => (setOverlay(o.id, { bar: { ...b, top: e.currentTarget.checked || undefined } }), doneEditing())} /> {t('barTop')}</label>
+          </div>
+          <label class="vol">{t('barH')} <span class="mono small">{(b.h * 100).toFixed(1)}%</span>
+            <input type="range" min="0.003" max="0.03" step="0.001" value={b.h} oninput={(e) => setOverlay(o.id, { bar: { ...b, h: +e.currentTarget.value } })} onchange={doneEditing} />
+          </label>
+        {:else if o.kind === 'text'}
           <label class="vol">{t('text')}
             <textarea rows="2" value={o.text} oninput={(e) => setOverlay(o.id, { text: e.currentTarget.value })}></textarea>
           </label>
@@ -1765,7 +1786,7 @@
             </label>
           </div>
         {/if}
-        {#if o.kind === 'text'}
+        {#if o.kind === 'text' && !o.bar}
           {@const m = o.motion}
           <div class="lrow">
             <label class="vol">{t('titleAnim')}
@@ -1936,6 +1957,11 @@
           {/if}
           <button class="sm" class:on={!!selFx.zoom} aria-pressed={!!selFx.zoom} title={t('punchTip')}
             onclick={() => setFx(selFx.zoom ? { zoom: undefined, zoomIn: undefined } : { zoom: PUNCH_IN, zoomIn: true })}><Icon name="zoom_in" /> {t('punchIn')}</button>
+          <label class="vol inline" title={t('shakeTip')}>{t('shake')}
+            <select value={selFx.shake ?? 0} onchange={(e) => setFx({ shake: +e.currentTarget.value || undefined })}>
+              {#each [0, 0.3, 0.6, 1] as v}<option value={v}>{t('shake.' + v)}</option>{/each}
+            </select>
+          </label>
           <button class="sm" class:on={!!selFx.lift} aria-pressed={!!selFx.lift} title={t('liftTip')}
             onclick={() => setFx({ lift: !selFx.lift || undefined })}>{t('lift')}</button>
           <button class="sm icon" class:on={selFx.behind} aria-pressed={!!selFx.behind} title={t('textBehind')} aria-label={t('textBehind')}
@@ -2059,7 +2085,7 @@
     </div>
   {/if}
   <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} {style} {srcW} {srcH} {canvasAspect}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume, zoomShake: !!autoZoom?.shake, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
 {/if}
 
 <style>

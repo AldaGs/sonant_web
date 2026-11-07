@@ -52,6 +52,10 @@ import thermostat from '@material-symbols/svg-400/rounded/thermostat.svg?raw';
 import filter_vintage from '@material-symbols/svg-400/rounded/filter_vintage.svg?raw';
 import palette from '@material-symbols/svg-400/rounded/palette.svg?raw';
 import text_fields from '@material-symbols/svg-400/rounded/text_fields.svg?raw';
+import vignette from '@material-symbols/svg-400/rounded/vignette.svg?raw';
+import grain from '@material-symbols/svg-400/rounded/grain.svg?raw';
+import flare from '@material-symbols/svg-400/rounded/flare.svg?raw';
+import blur_on from '@material-symbols/svg-400/rounded/blur_on.svg?raw';
 import tune from '@material-symbols/svg-400/rounded/tune.svg?raw';
 import colorize from '@material-symbols/svg-400/rounded/colorize.svg?raw';
 import block from '@material-symbols/svg-400/rounded/block.svg?raw';
@@ -122,6 +126,10 @@ export const ICONS = {
   filter_vintage: m(filter_vintage),
   colorize: m(colorize),
   tune: m(tune),
+  vignette: m(vignette),
+  grain: m(grain),
+  flare: m(flare),
+  blur_on: m(blur_on),
   block: m(block),
   format_line_spacing: m(format_line_spacing),
   format_letter_spacing: m(format_letter_spacing),

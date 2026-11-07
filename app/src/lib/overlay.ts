@@ -31,7 +31,10 @@ export type Overlay = {
   blend?: Blend; // how the layer mixes with what's under it (default normal)
   key?: ChromaKey; // media only: green screen
   mask?: Mask; // media only: shape mask
+  bar?: ProgressBar; // text layer drawn as a progress bar instead of text
 };
+// A bar that fills across the frame over the layer's time. h: thickness, fraction of frame height.
+export type ProgressBar = { color: string; track: string; h: number; top?: boolean };
 // Animated title. The layer animates in over `in` seconds and out over the last `out` seconds.
 // With path 's' it travels left to right along a horizontal S curve centred on its transform's x/y.
 export type Motion = {
@@ -192,6 +195,7 @@ function textCaption(o: Overlay): Caption {
 // Draw one overlay at output time t. `src` is the decoded frame/image (null for text or not ready).
 export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number, src: CanvasImageSource | null, sw: number, sh: number): Placed | null {
   const W = ctx.canvas.width, H = ctx.canvas.height;
+  if (o.bar) return drawBar(ctx, o, t);
   if (o.kind === 'text' && hasPath(o.motion)) return drawOnPath(ctx, o, t);
   const tf = liveTf(o, t, W / H);
   ctx.save();
@@ -218,6 +222,21 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number
   }
   ctx.restore();
   return placed;
+}
+
+// Progress bar: the track across the whole frame, the fill growing with the layer's time.
+export const barProgress = (o: Overlay, t: number) => Math.min(1, Math.max(0, (t - o.at) / Math.max(1e-3, o.len)));
+function drawBar(ctx: CanvasRenderingContext2D, o: Overlay, t: number): Placed {
+  const W = ctx.canvas.width, H = ctx.canvas.height, b = o.bar!, h = Math.max(2, Math.round(b.h * H));
+  const y = b.top ? 0 : H - h;
+  ctx.save();
+  ctx.globalAlpha *= Math.max(0, Math.min(1, o.tf.opacity));
+  if (o.blend) ctx.globalCompositeOperation = compositeOp(o.blend);
+  if (b.track) ((ctx.fillStyle = b.track), ctx.fillRect(0, y, W, h));
+  ctx.fillStyle = b.color;
+  ctx.fillRect(0, y, W * barProgress(o, t), h);
+  ctx.restore();
+  return { id: o.id, cx: W / 2, cy: y + h / 2, w: W, h: Math.max(h, 12), rot: 0 };
 }
 
 // Is canvas point (px, py) inside a placed overlay (rotation respected)? grow = extra margin in px.
