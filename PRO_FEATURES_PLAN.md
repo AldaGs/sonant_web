@@ -29,7 +29,18 @@ All of it is in `lib/layerfx.ts` and goes through `drawOverlay`, so preview and 
 - ✅ **Masks** on media layers: ellipse, rectangle or linear, with size/angle/position, feather and invert.
 - ✅ Layer inspector: a Blend menu, plus "Chroma key" and "Mask" sections. Saved and undoable like other layer edits.
 - ✅ Tests: `node src/lib/layerfx.test.ts`. I also ran a browser check of the canvas masks and key.
-- Later: an eyedropper that picks the key colour from the preview. Masks that follow keyframes. Chroma key on main-video strips.
+- Later: masks that follow keyframes.
+
+## Phase 2b: Performance settings, key eyedropper, green screen on strips ✅
+- ✅ **Performance** dialog (⚙ in the editor header). It's per device and stored in localStorage (`lib/perf.ts`).
+  - Shows the GPU name and whether WebGPU and WebGL2 are available.
+  - Acceleration has three options. **Auto** uses the GPU unless it's software-only (SwiftShader, llvmpipe). **GPU** always uses it. **CPU only** never does.
+  - Acceleration controls three things: Whisper (WebGPU or WASM, which switches on the next run), the person segmenter (MediaPipe GPU or CPU delegate) and the chroma key.
+  - **Chroma key resolution**: Auto (full on GPU, 1280px on CPU), 1920, 1280 or 720.
+- ✅ **GPU chroma key**: a WebGL2 shader with the same maths as the CPU key. A browser test shows identical pixels.
+- ✅ **Key eyedropper**: "Pick from preview" switches keys off in the preview, and a click samples a 7×7 average there. Esc cancels. It works in every browser, unlike the system EyeDropper.
+- ✅ **Chroma key on main-video strips**: the keyed area shows the strip's Background (colour, image or blur; black when it's set to Original). "Text behind" puts captions and layers under the keyed person with no segmentation model.
+- ✅ Tests: `node src/lib/perf.test.ts`.
 
 ## Phase 3: AI noise reduction / voice isolation ⬜
 - RNNoise (WASM) in an AudioWorklet for the preview, and offline in export (`audio.ts`). Include a strength mix.

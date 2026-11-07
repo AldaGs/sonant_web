@@ -169,7 +169,7 @@ export async function exportVideo(
     throw new Error('err.noH264');
   const aCodec = (await canEncodeAudio('aac')) ? 'aac' : 'opus';
 
-  if (segs.some((s) => s.fx?.behind || s.fx?.bg) || src.overlays?.some((o) => o.behind)) await loadSegmenter(); // every exported frame must be segmented
+  if (segs.some((s) => !s.fx?.key && (s.fx?.behind || s.fx?.bg)) || src.overlays?.some((o) => o.behind)) await loadSegmenter(); // every exported frame must be segmented
   const total = frameCount(segs, opts.fps);
   const mix = await mixAudio(src, segs, total / opts.fps, opts);
   if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');

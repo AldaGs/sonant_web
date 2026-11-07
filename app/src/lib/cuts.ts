@@ -7,7 +7,8 @@ import type { Caption } from './captions';
 // speed: playback rate (0.25–4). hold: a freeze frame, the strip's first frame shown for `hold` seconds.
 export type Fx = { behind?: boolean; bg?: 'color' | 'blur' | 'image'; bgColor?: string; bgImage?: string /* image asset id */; zoom?: number; zoomIn?: boolean; lift?: boolean;
   speed?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number;
-  color?: import('./grade').Color; focus?: import('./reframe').Focus };
+  color?: import('./grade').Color; focus?: import('./reframe').Focus;
+  key?: import('./layerfx').ChromaKey /* green screen on the strip: keyed area shows the background (bg) */ };
 
 // How long a strip lasts in the output, and the source time `o` seconds into it.
 export const outLen = (s: Segment) => s.fx?.hold ?? (s.end - s.start) / (s.fx?.speed ?? 1);

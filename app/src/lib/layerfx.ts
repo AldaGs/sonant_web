@@ -1,3 +1,5 @@
+import { gpuFor, keyCap } from './perf.ts';
+
 // Per-layer compositing: chroma key (green screen), shape masks and blend modes.
 // Shared by preview and export (drawOverlay), so both look the same.
 
@@ -120,6 +122,11 @@ export function applyMask(c: CanvasRenderingContext2D | OffscreenCanvasRendering
   c.restore();
 }
 
+// While the preview's key eyedropper is open, keys are skipped so the user picks from the original colours.
+export const keyBypass = { on: false };
+// Settings-driven options for processed().
+export const keyOpts = () => ({ gpu: gpuFor.key(), cap: keyCap() });
+
 // Reused scratch canvas for keyed / masked layers.
 let scratch: { c: OffscreenCanvas | HTMLCanvasElement; x: CanvasRenderingContext2D } | null = null;
 function scratchCanvas(w: number, h: number) {
@@ -131,15 +138,96 @@ function scratchCanvas(w: number, h: number) {
   return scratch;
 }
 
-const MAX_KEY_PX = 1280; // keying runs on the CPU: cap the work per frame
+// The same key as keyPixels, as a WebGL2 shader: full resolution at video frame rates on most GPUs.
+const KEY_VS = `#version 300 es
+in vec2 p; out vec2 uv; uniform vec4 crop;
+void main() { uv = crop.xy + vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5) * crop.zw; gl_Position = vec4(p, 0.0, 1.0); }`;
+const KEY_FS = `#version 300 es
+precision highp float;
+in vec2 uv; out vec4 o; uniform sampler2D src; uniform vec3 key; uniform float tol, soft, spill;
+const vec3 L = vec3(0.299, 0.587, 0.114);
+void main() {
+  vec4 c = texture(src, uv); vec3 k = key * 255.0, x = c.rgb * 255.0;
+  float ky = dot(k, L), y = dot(x, L);
+  vec2 kc = vec2(k.b - ky, k.r - ky), pc = vec2(x.b - y, x.r - y);
+  float km = max(length(kc), 1.0); vec2 u = kc / km; float al = dot(pc, u);
+  float d = length(pc - al * u) / km + max(0.0, 0.35 - al / km) * 2.0;
+  float a = clamp((d - tol) / max(soft, 1e-3), 0.0, 1.0);
+  vec3 r = c.rgb;
+  int dom = (k.g >= k.r && k.g >= k.b) ? 1 : (k.b >= k.r ? 2 : 0);
+  float ch = r[dom], cap = (r[(dom + 1) % 3] + r[(dom + 2) % 3]) * 0.5;
+  if (spill > 0.0 && ch > cap && dot(pc, kc) > 0.2 * km * length(pc)) r[dom] = ch - (ch - cap) * spill;
+  o = vec4(r * c.a * a, c.a * a);
+}`;
+class KeyGL {
+  canvas: OffscreenCanvas | HTMLCanvasElement;
+  gl: WebGL2RenderingContext | null;
+  u: Record<string, WebGLUniformLocation | null> = {};
+  constructor() {
+    this.canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(2, 2) : document.createElement('canvas');
+    const gl = (this.gl = this.canvas.getContext('webgl2', { premultipliedAlpha: true }) as WebGL2RenderingContext | null);
+    if (!gl) return;
+    const sh = (t: number, src: string) => { const x = gl.createShader(t)!; gl.shaderSource(x, src); gl.compileShader(x); return x; };
+    const p = gl.createProgram()!;
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, KEY_VS));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, KEY_FS));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { this.gl = null; return; }
+    gl.useProgram(p);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(p, 'p');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    for (const n of ['crop', 'key', 'tol', 'soft', 'spill']) this.u[n] = gl.getUniformLocation(p, n);
+    gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+      gl.texParameteri(gl.TEXTURE_2D, k, v);
+  }
+  apply(src: CanvasImageSource, iw: number, ih: number, sx: number, sy: number, sw: number, sh: number, w: number, h: number, k: ChromaKey) {
+    const gl = this.gl!;
+    if (this.canvas.width !== w || this.canvas.height !== h) ((this.canvas.width = w), (this.canvas.height = h));
+    gl.viewport(0, 0, w, h);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src as TexImageSource);
+    gl.uniform4f(this.u.crop, sx / iw, sy / ih, sw / iw, sh / ih);
+    const [r, g, b] = hexRgb(k.color);
+    gl.uniform3f(this.u.key, r / 255, g / 255, b / 255);
+    gl.uniform1f(this.u.tol, k.tol);
+    gl.uniform1f(this.u.soft, k.soft);
+    gl.uniform1f(this.u.spill, k.spill);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    return this.canvas;
+  }
+}
+let keyGL: KeyGL | null | undefined;
+const glKeyer = () => (keyGL === undefined ? (keyGL = new KeyGL()).gl ? keyGL : (keyGL = null) : keyGL);
+
+// Natural size of a drawable source (needed to turn the crop into texture coordinates).
+function natural(src: CanvasImageSource): [number, number] {
+  const s = src as { videoWidth?: number; videoHeight?: number; naturalWidth?: number; naturalHeight?: number; width?: number | SVGAnimatedLength; height?: number | SVGAnimatedLength };
+  return [s.videoWidth || s.naturalWidth || (typeof s.width === 'number' ? s.width : 0), s.videoHeight || s.naturalHeight || (typeof s.height === 'number' ? s.height : 0)];
+}
 
 // Draw a cropped source region into a w×h box with key and mask applied; returns a canvas to draw, or null
-// when neither is set (draw the source directly).
+// when neither is set (draw the source directly). opts.gpu: use the shader for the key; opts.cap: longest side
+// the key works at (the result is scaled back up when drawn).
 export function processed(src: CanvasImageSource, sx: number, sy: number, sw: number, sh: number, w: number, h: number,
-  key?: ChromaKey, mask?: Mask): CanvasImageSource | null {
+  key?: ChromaKey, mask?: Mask, opts: { gpu?: boolean; cap?: number } = {}): CanvasImageSource | null {
+  if (keyBypass.on) key = undefined;
   if (!key && !mask) return null;
-  const k = Math.min(1, MAX_KEY_PX / Math.max(w, h, 1));
+  const k = key ? Math.min(1, (opts.cap ?? 1280) / Math.max(w, h, 1)) : 1;
   const cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(h * k));
+  const gl = key && opts.gpu ? glKeyer() : null;
+  const [iw, ih] = gl ? natural(src) : [0, 0];
+  if (gl && iw && ih) {
+    const out = gl.apply(src, iw, ih, sx, sy, sw, sh, cw, ch, key!);
+    if (!mask) return out;
+    const { c, x } = scratchCanvas(cw, ch);
+    x.clearRect(0, 0, cw, ch);
+    x.drawImage(out, 0, 0);
+    applyMask(x, mask, cw, ch);
+    return c;
+  }
   const { c, x } = scratchCanvas(cw, ch);
   x.clearRect(0, 0, cw, ch);
   x.drawImage(src, sx, sy, sw, sh, 0, 0, cw, ch);

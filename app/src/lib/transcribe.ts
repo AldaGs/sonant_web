@@ -1,6 +1,7 @@
 // User-facing messages are i18n keys (see i18n.svelte.ts); the UI translates them.
 import type { In, Out } from './whisper.worker';
 import type { Word } from './captions';
+import { gpuFor } from './perf';
 
 let worker: Worker | null = null;
 
@@ -36,6 +37,6 @@ export async function transcribe(
       else if (data.type === 'done') resolve(data.words);
       else reject(new Error(data.message));
     };
-    worker!.postMessage({ audio, language } satisfies In, [audio.buffer]);
+    worker!.postMessage({ audio, language, gpu: gpuFor.whisper() } satisfies In, [audio.buffer]);
   });
 }

@@ -1,5 +1,5 @@
 import type { Caption } from './captions.ts';
-import { processed, compositeOp, type Blend, type ChromaKey, type Mask } from './layerfx.ts';
+import { processed, keyOpts, compositeOp, type Blend, type ChromaKey, type Mask } from './layerfx.ts';
 import { drawCaption, drawText, fontString, resolveStyle, PRESETS, type Style } from './render.ts';
 
 // A layer drawn over the main video: picture-in-picture video, an image, or a text/sticker.
@@ -211,7 +211,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number
     ctx.translate(p.cx, p.cy);
     ctx.rotate((tf.rotation * Math.PI) / 180);
     if (tf.flipX) ctx.scale(-1, 1);
-    const fx = processed(src, p.src[0], p.src[1], p.src[2], p.src[3], p.w, p.h, o.key, o.mask);
+    const fx = processed(src, p.src[0], p.src[1], p.src[2], p.src[3], p.w, p.h, o.key, o.mask, o.key ? keyOpts() : undefined);
     if (fx) ctx.drawImage(fx, -p.w / 2, -p.h / 2, p.w, p.h);
     else ctx.drawImage(src, p.src[0], p.src[1], p.src[2], p.src[3], -p.w / 2, -p.h / 2, p.w, p.h);
     placed = { id: o.id, cx: p.cx, cy: p.cy, w: p.w, h: p.h, rot: tf.rotation };

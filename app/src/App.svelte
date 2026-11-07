@@ -22,7 +22,9 @@
   import { beatsOfFile } from './lib/beats';
   import { translateTexts, translated, type Dir } from './lib/translate';
   import { autoEmphasis, clearEmphasis, hasEmphasis } from './lib/keywords';
-  import { BLENDS, DEFAULT_KEY, DEFAULT_MASK, type Blend } from './lib/layerfx';
+  import { BLENDS, DEFAULT_MASK, DEFAULT_KEY, keyBypass, type Blend, type ChromaKey } from './lib/layerfx';
+  import KeyControls from './lib/KeyControls.svelte';
+  import PerfDialog from './lib/PerfDialog.svelte';
   import { zoomMoments, autoZoomAt, scalePlace, DEFAULT_AUTOZOOM, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, placeLayers, fromProject, type Template } from './lib/templates';
   import { drawOverlay, overlaysAt, hitPlaced, corner, newText, newTitle, sPoint, hasPath, DEFAULT_MOTION, TITLE_PATHS, TITLE_STYLES, newMedia, trimOverlay, textStyle, TEXT_PRESET, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Placed, type Transform, type Motion } from './lib/overlay';
@@ -917,6 +919,11 @@
     const k = canvas!.width / (r.width || canvas!.width);
     const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k;
     const grow = e.pointerType === 'mouse' ? 0 : 14;
+    if (pickKey) {
+      if (e.type === 'pointerdown') samplePick(x, y);
+      else canvas!.style.cursor = 'crosshair';
+      return;
+    }
     if (layerPointer(e, x, y, k, grow)) return;
     if (e.type === 'pointerdown') {
       const onBox = onCaption(e);
@@ -1168,6 +1175,44 @@
   const cutHere = () => (setSegs(splitAt(segments, time)), announce(t('a11y.split', { t: tc(outTime) })));
   // Effects of the selected strip (captions behind the person, background swap).
   const selFx = $derived(selected >= 0 && segments[selected] ? (segments[selected].fx ?? {}) : null);
+  // Strip chroma key: live while dragging a slider, one undo step per gesture.
+  let stripKeyEditing = false;
+  function setStripKey(k: ChromaKey | undefined, final: boolean) {
+    if (selected < 0) return;
+    if (!stripKeyEditing) ((stripKeyEditing = true), commit());
+    segments = segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, key: k } });
+    if (final) stripKeyEditing = false;
+  }
+  // Key colour eyedropper: keys are switched off in the preview, the next click samples the frame there.
+  let pickKey = $state<string | null>(null); // layer id, 'strip', or null
+  let pickStrip = -1;
+  function startPick(target: string) {
+    if (pickKey === target) return endPick();
+    pickKey = target;
+    pickStrip = selected;
+    keyBypass.on = true;
+  }
+  function endPick() {
+    pickKey = null;
+    keyBypass.on = false;
+    if (canvas) canvas.style.cursor = '';
+  }
+  function samplePick(x: number, y: number) {
+    const c = canvas!.getContext('2d')!, r = 3;
+    const d = c.getImageData(Math.max(0, Math.round(x) - r), Math.max(0, Math.round(y) - r), r * 2 + 1, r * 2 + 1).data;
+    const sum = [0, 0, 0];
+    for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) sum[j] += d[i + j];
+    const hex = '#' + sum.map((v) => Math.round(v / (d.length / 4)).toString(16).padStart(2, '0')).join('');
+    if (pickKey === 'strip') {
+      const s = segments[pickStrip];
+      if (s) (commit(), (segments = segments.with(pickStrip, { ...s, fx: { ...s.fx, key: { ...(s.fx?.key ?? DEFAULT_KEY), color: hex } } })));
+    } else {
+      const o = overlays.find((v) => v.id === pickKey);
+      if (o) (setOverlay(o.id, { key: { ...(o.key ?? DEFAULT_KEY), color: hex } }), doneEditing());
+    }
+    endPick();
+  }
+  let showPerf = $state(false);
   const setFx = (p: Partial<Fx>) => selected >= 0 && setSegs(segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, ...p } }));
   const deleteSelected = () => selected >= 0 && (setSegs(remove(segments, selected)), (selected = -1), announce(t('a11y.deleted')), true);
   function removeAudioItem() {
@@ -1229,6 +1274,7 @@
     else if (e.key === '?') showKeys = true;
     else if (e.altKey) return;
     else if (e.key.toLowerCase() === 's') cutHere();
+    else if (e.key === 'Escape' && pickKey) endPick();
     else if (e.key === 'Escape') (clearCapSelection(), (marks = [null, null]), (selectedOverlay = ''));
     else if ((e.key === 'Delete' || e.key === 'Backspace') && e.shiftKey && selFx) setFx({ lift: !selFx.lift || undefined });
     else if (e.key === 'Delete' || e.key === 'Backspace')
@@ -1292,6 +1338,7 @@
         <option value="es">ES</option>
       </select>
       <a class="btn mob-close icon" href="#/" title={t('allProjects')} aria-label={t('allProjects')}><Icon name="close" /></a>
+      <button class="desk icon" onclick={() => (showPerf = true)} title={t('perf.title')} aria-label={t('perf.title')}><Icon name="tune" /></button>
       <a class="btn desk icon" href="#/help" target="_blank" rel="noopener" title={t('help')} aria-label={t('help')}><Icon name="help" /></a>
       <a class="btn desk" href="#/" title={t('allProjects')}>
         <Icon name="grid_view" />
@@ -1740,19 +1787,8 @@
           </select>
         </label>
         {#if o.kind !== 'text'}
-          <details class="lfx" open={!!o.key}>
-            <summary>{t('chroma')}</summary>
-            <label class="chk"><input type="checkbox" checked={!!o.key} onchange={(e) => (setOverlay(o.id, { key: e.currentTarget.checked ? { ...DEFAULT_KEY } : undefined }), doneEditing())} /> {t('chromaOn')}</label>
-            {#if o.key}
-              {@const k = o.key}
-              <label class="vol">{t('keyColor')}<input type="color" value={k.color} oninput={(e) => setOverlay(o.id, { key: { ...k, color: e.currentTarget.value } })} onchange={doneEditing} /></label>
-              {#each [['keyTol', 'tol', 0, 1], ['keySoft', 'soft', 0, 0.5], ['keySpill', 'spill', 0, 1]] as [label, f, lo, hi] (f)}
-                <label class="vol">{t(label as string)} <span class="mono small">{Math.round(k[f as 'tol'] * 100)}%</span>
-                  <input type="range" min={lo} max={hi} step="0.01" value={k[f as 'tol']} oninput={(e) => setOverlay(o.id, { key: { ...k, [f as string]: +e.currentTarget.value } })} onchange={doneEditing} />
-                </label>
-              {/each}
-            {/if}
-          </details>
+          <KeyControls key={o.key} picking={pickKey === o.id} onpick={() => startPick(o.id)}
+            set={(k, final) => (setOverlay(o.id, { key: k }), final && doneEditing())} />
           <details class="lfx" open={!!o.mask}>
             <summary>{t('mask')}</summary>
             <select value={o.mask?.shape ?? 'none'} aria-label={t('mask')}
@@ -1875,6 +1911,9 @@
             <input type="color" value={selFx.bgColor ?? '#00b140'} aria-label={t('bgColor')}
               onchange={(e) => setFx({ bgColor: e.currentTarget.value })} />
           {/if}
+          <div class="stripkey">
+            <KeyControls key={selFx.key} picking={pickKey === 'strip'} onpick={() => startPick('strip')} set={setStripKey} />
+          </div>
           <span class="divider"></span>
         {/if}
         <button class="sm" onclick={addText} disabled={!hasMedia} title={t('addTextTip')}><Icon name="title" /> {t('addText')}</button>
@@ -1939,6 +1978,7 @@
   </nav>
 </div>
 
+{#if showPerf}<PerfDialog onclose={() => (showPerf = false)} />{/if}
 {#if hasMedia}
   <div class="sr-only" aria-live="polite" role="status">{liveMsg}</div>
   <dialog class="hist" bind:this={histDialog} aria-label={t('history')}>
@@ -2175,6 +2215,7 @@
   .layer .keyrow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
   .layer .key.on { color: #ffd84d; border-color: #ffd84d; }
   .layer .keyhint { margin: -4px 0 0; }
+  .stripkey { flex-basis: 100%; max-width: 360px; }
   .layer .lfx summary { cursor: pointer; font-size: 0.85em; margin: 4px 0; }
   .layer .lfx { display: grid; gap: 6px; }
   .layer .crop { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

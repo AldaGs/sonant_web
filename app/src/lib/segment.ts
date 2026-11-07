@@ -1,5 +1,7 @@
 import type { ImageSegmenter } from '@mediapipe/tasks-vision';
 import type { Fx } from './cuts';
+import { processed, keyOpts } from './layerfx.ts';
+import { gpuFor } from './perf.ts';
 
 // Person segmentation (MediaPipe selfie segmenter) for "captions behind the person" and background swap.
 // Wasm + model come from CDNs on first use, so the app doesn't load them until a strip needs them.
@@ -17,7 +19,7 @@ export function loadSegmenter(): Promise<void> {
       baseOptions: { modelAssetPath: MODEL, delegate },
       runningMode: 'IMAGE', outputConfidenceMasks: true, outputCategoryMask: false,
     });
-    seg = await make('GPU').catch(() => make('CPU'));
+    seg = await (gpuFor.segmenter() ? make('GPU').catch(() => make('CPU')) : make('CPU'));
   })().catch((e) => ((loading = null), Promise.reject(e))));
 }
 
@@ -96,23 +98,22 @@ export function drawFrame(
   bgImg?: { src: CanvasImageSource; w: number; h: number } | null,
 ) {
   const [dx, dy, dw, dh] = place;
+  const keyed = src && fx?.key ? processed(src, 0, 0, sw, sh, dw, dh, fx.key, undefined, keyOpts()) : null;
+  if (src && keyed) {
+    // Green screen: the background (colour, image, blur, or black) shows through the keyed area.
+    // "Text behind" draws captions and layers under the keyed subject, no segmentation needed.
+    paintBg(ctx, fx!, src, place, bgImg);
+    under?.();
+    const behind = !!fx!.behind && hasCaption;
+    if (behind) caption();
+    ctx.drawImage(keyed, dx, dy, dw, dh);
+    if (!behind) caption();
+    return;
+  }
   const wantsUnder = !!under;
   const ready = !!src && (!!fx?.bg || wantsUnder || (!!fx?.behind && hasCaption)) && updateMask(src, sw, sh);
   if (src && ready && fx?.bg) {
-    const W = ctx.canvas.width, H = ctx.canvas.height;
-    if (fx.bg === 'color') ((ctx.fillStyle = fx.bgColor ?? '#00b140'), ctx.fillRect(0, 0, W, H));
-    else if (fx.bg === 'image') {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, W, H);
-      if (bgImg) { // cover-fit, centred
-        const k = Math.max(W / bgImg.w, H / bgImg.h), iw = bgImg.w * k, ih = bgImg.h * k;
-        ctx.drawImage(bgImg.src, (W - iw) / 2, (H - ih) / 2, iw, ih);
-      }
-    } else {
-      ctx.filter = `blur(${Math.round(Math.max(W, H) / 50)}px)`;
-      ctx.drawImage(src, dx - dw * 0.05, dy - dh * 0.05, dw * 1.1, dh * 1.1); // oversize so the blur has no dark rim
-      ctx.filter = 'none';
-    }
+    paintBg(ctx, fx, src, place, bgImg);
     under?.();
     paintSubject(ctx, src, place);
   } else {
@@ -122,4 +123,22 @@ export function drawFrame(
   }
   caption();
   if (src && ready && fx?.behind && hasCaption) paintSubject(ctx, src, place);
+}
+
+// The replacement background of a strip: colour, cover-fit image, blurred copy of the frame, or black.
+function paintBg(ctx: CanvasRenderingContext2D, fx: Fx, src: CanvasImageSource, place: number[], bgImg?: { src: CanvasImageSource; w: number; h: number } | null) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, [dx, dy, dw, dh] = place;
+  if (fx.bg === 'color') ((ctx.fillStyle = fx.bgColor ?? '#00b140'), ctx.fillRect(0, 0, W, H));
+  else if (fx.bg === 'blur') {
+    ctx.filter = `blur(${Math.round(Math.max(W, H) / 50)}px)`;
+    ctx.drawImage(src, dx - dw * 0.05, dy - dh * 0.05, dw * 1.1, dh * 1.1); // oversize so the blur has no dark rim
+    ctx.filter = 'none';
+  } else {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    if (fx.bg === 'image' && bgImg) { // cover-fit, centred
+      const k = Math.max(W / bgImg.w, H / bgImg.h), iw = bgImg.w * k, ih = bgImg.h * k;
+      ctx.drawImage(bgImg.src, (W - iw) / 2, (H - ih) / 2, iw, ih);
+    }
+  }
 }

@@ -52,6 +52,7 @@ import thermostat from '@material-symbols/svg-400/rounded/thermostat.svg?raw';
 import filter_vintage from '@material-symbols/svg-400/rounded/filter_vintage.svg?raw';
 import palette from '@material-symbols/svg-400/rounded/palette.svg?raw';
 import text_fields from '@material-symbols/svg-400/rounded/text_fields.svg?raw';
+import tune from '@material-symbols/svg-400/rounded/tune.svg?raw';
 import colorize from '@material-symbols/svg-400/rounded/colorize.svg?raw';
 import block from '@material-symbols/svg-400/rounded/block.svg?raw';
 import format_line_spacing from '@material-symbols/svg-400/rounded/format_line_spacing.svg?raw';
@@ -120,6 +121,7 @@ export const ICONS = {
   thermostat: m(thermostat),
   filter_vintage: m(filter_vintage),
   colorize: m(colorize),
+  tune: m(tune),
   block: m(block),
   format_line_spacing: m(format_line_spacing),
   format_letter_spacing: m(format_letter_spacing),
