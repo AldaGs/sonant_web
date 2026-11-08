@@ -126,3 +126,7 @@ input[type='range']:active::-moz-range-thumb, input[type='range'].dragging::-moz
 input[type='range']:focus { outline: none; }
 input[type='range']:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgb(200 245 96 / .35); }
 input[type='range']:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px rgb(200 245 96 / .35); }
+
+/* Hide scrollbars everywhere; content still scrolls. */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; }
