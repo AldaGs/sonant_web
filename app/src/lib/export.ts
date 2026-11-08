@@ -116,16 +116,16 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
     // A reversed strip takes its sound from the reversed copy, which starts at the strip's rev.start.
     const at = at0 && rev ? { ...at0, base: rev.start } : at0 && { ...at0, base: starts[at0.index] };
     const buf = at && decoded.get(rev ? rev.assetId : src.clips[at.index].assetId);
-    const speed = s.fx?.speed ?? 1;
+    const speed = s.fx?.speed ?? 1, vol = src.clipVolume * (s.fx?.vol ?? 1);
     if (buf && !s.fx?.lift && !s.fx?.hold) { // lifted gaps and freeze frames are silent
-      if (speed === 1) play(buf, out, s.start - at.base, s.end - s.start, src.clipVolume, voice);
+      if (speed === 1) play(buf, out, s.start - at.base, s.end - s.start, vol, voice);
       else {
         // Sped-up / slowed-down strips: time-stretched so voices keep their pitch.
         const a = Math.floor((s.start - at.base) * buf.sampleRate), z = Math.min(buf.length, Math.ceil((s.end - at.base) * buf.sampleRate));
         const ch = stretch(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c).subarray(a, z)), speed);
         const piece = new AudioBuffer({ length: ch[0].length, numberOfChannels: ch.length, sampleRate: buf.sampleRate });
         ch.forEach((d, c) => piece.copyToChannel(d as Float32Array<ArrayBuffer>, c));
-        play(piece, out, 0, piece.duration, src.clipVolume, voice);
+        play(piece, out, 0, piece.duration, vol, voice);
       }
     }
     out += outLen(s);

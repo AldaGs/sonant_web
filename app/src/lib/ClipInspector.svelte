@@ -15,7 +15,7 @@
   let { selFx, selected, segments, imageAssets, revPct, stabPct, pickingKey,
     setFx, reverseStrip, stabilize, startPick, setStripKey,
     selColor, luts, setColor, oncolordone, importLut, colorToAll,
-    reframes, setFocus, autoReframe, autoReframeAll, reframing, webgl }: {
+    reframes, setFocus, autoReframe, autoReframeAll, reframing, webgl, deselect }: {
     selFx: Fx; selected: number; segments: Segment[]; imageAssets: Asset[];
     revPct: number | null; stabPct: number | null; pickingKey: boolean;
     setFx: (p: Partial<Fx>) => void; reverseStrip: (i: number) => void; stabilize: (i: number) => void;
@@ -23,13 +23,13 @@
     selColor: Color; luts: Lut[]; setColor: (patch: Partial<Color>, replace?: boolean) => void; oncolordone: () => void;
     importLut: (file: File | undefined) => void; colorToAll: () => void;
     reframes: boolean; setFocus: (f: { x: number; y: number } | undefined) => void;
-    autoReframe: (i: number) => void; autoReframeAll: () => void; reframing: boolean; webgl: boolean;
+    autoReframe: (i: number) => void; autoReframeAll: () => void; reframing: boolean; webgl: boolean; deselect: () => void;
   } = $props();
   const c = $derived(selColor);
 </script>
 
 <section class="layer clipfx" aria-label={t('clipH')}>
-  <div class="lhead"><h3>{t('clipH')}</h3></div>
+  <div class="lhead"><h3>{t('clipH')}</h3><button class="sm" onclick={deselect} title={t('deselectTip')}>{t('deselect')}</button></div>
   <div class="lrow">
   {#if selected > 0}
     <label class="vol inline">{t('transIn')}
@@ -84,6 +84,10 @@
     <input type="color" value={selFx.bgColor ?? '#00b140'} aria-label={t('bgColor')}
       onchange={(e) => setFx({ bgColor: e.currentTarget.value })} />
   {/if}
+  <label class="vol">{t('volume')} <span class="mono small">{Math.round((selFx.vol ?? 1) * 100)}%</span>
+    <input type="range" min="0" max="1" step="0.05" value={selFx.vol ?? 1} ondblclick={() => setFx({ vol: undefined })}
+      oninput={(e) => setFx({ vol: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })} />
+  </label>
   <div class="stripkey">
     <KeyControls key={selFx.key} picking={pickingKey} onpick={() => startPick('strip')} set={setStripKey} />
   </div>

@@ -9,6 +9,7 @@ export type Fx = { behind?: boolean; bg?: 'color' | 'blur' | 'image'; bgColor?: 
   speed?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number;
   color?: import('./grade').Color; focus?: import('./reframe').Focus;
   shake?: number; /* handheld camera shake 0..1 */
+  vol?: number; /* this strip's sound, 0..1 × the clips' volume (each split piece keeps its own) */
   stab?: import('./stabilize').Stab; /* stabilization corrections */
   rev?: { assetId: string; start: number; end: number }; /* reversed: plays this copy, made of [start, end) sequence time backwards */
   key?: import('./layerfx').ChromaKey /* green screen on the strip: keyed area shows the background (bg) */ };
