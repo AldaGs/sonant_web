@@ -20,6 +20,16 @@ Object.defineProperty(HTMLInputElement.prototype, 'value', {
   set(v) { desc.set!.call(this, v); if (this.type === 'range') fill(this) },
 })
 addEventListener('input', (e) => { const el = e.target as HTMLInputElement; if (el?.type === 'range') fill(el) }, true)
+// Touch browsers don't reliably apply :active to a slider while dragging, so mark it ourselves.
+let dragged: HTMLInputElement | null = null
+const endDrag = () => { dragged?.classList.remove('dragging'); dragged = null }
+addEventListener('pointerdown', (e) => {
+  const el = e.target as HTMLInputElement
+  if (el instanceof HTMLInputElement && el.type === 'range' && !el.disabled) { dragged = el; el.classList.add('dragging') }
+}, true)
+for (const t of ['pointerup', 'touchend', 'touchcancel', 'blur']) addEventListener(t, endDrag, true)
+addEventListener('touchstart', () => {}, { passive: true }) // lets iOS Safari apply :active at all
+
 new MutationObserver((ms) => {
   for (const m of ms) {
     if (m.type === 'attributes') { const el = m.target as HTMLInputElement; if (el.type === 'range') fill(el); continue }

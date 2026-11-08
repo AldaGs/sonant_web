@@ -120,9 +120,9 @@ input[type='range']::-moz-range-thumb {
   width: 14px; height: 14px; border-radius: 50%; background: #0f0f0f; border: 2.5px solid var(--accent); box-sizing: border-box;
   transition: transform .15s ease, opacity .15s ease;
 }
-input[type='range']:active { --tk: 14px; }
-input[type='range']:active::-webkit-slider-thumb { transform: scale(0); opacity: 0; }
-input[type='range']:active::-moz-range-thumb { transform: scale(0); opacity: 0; }
+input[type='range']:active, input[type='range'].dragging { --tk: 14px; }
+input[type='range']:active::-webkit-slider-thumb, input[type='range'].dragging::-webkit-slider-thumb { transform: scale(0); opacity: 0; }
+input[type='range']:active::-moz-range-thumb, input[type='range'].dragging::-moz-range-thumb { transform: scale(0); opacity: 0; }
 input[type='range']:focus { outline: none; }
 input[type='range']:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgb(200 245 96 / .35); }
 input[type='range']:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px rgb(200 245 96 / .35); }
