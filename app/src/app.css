@@ -70,3 +70,29 @@ h2, h3 { font-family: var(--display); font-weight: 700; font-size: 15px; margin:
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Panel kit: form rows, sections and checkboxes shared by the editor's side panels. */
+.vol { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.vol input { accent-color: var(--accent); }
+.vol.inline { display: flex; align-items: center; gap: 6px; }
+.vol.inline input { width: 90px; }
+.chk { display: flex; gap: 6px; align-items: center; font-size: 12px; white-space: nowrap; }
+.sl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+.sl input { grid-column: 1 / -1; accent-color: var(--accent); }
+.small { font-size: 12px; }
+.sub { margin-top: 8px; }
+.aname { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trbox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
+.trbox select { height: 32px; font-size: 12px; }
+.layer { display: grid; gap: 10px; padding: 12px; margin: 0 0 12px; border: 1px solid #6ab8ff55; border-radius: 10px; background: var(--card); }
+.layer .lhead { display: flex; justify-content: space-between; align-items: center; }
+.layer h3 { margin: 0; font-size: 13px; color: #6ab8ff; }
+.layer textarea { width: 100%; resize: vertical; }
+.layer .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+.layer .keyrow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.layer .key.on { color: #ffd84d; border-color: #ffd84d; }
+.layer .keyhint { margin: -4px 0 0; }
+.layer .lfx summary { cursor: pointer; font-size: 0.85em; margin: 4px 0; }
+.layer .lfx { display: grid; gap: 6px; }
+.layer .crop { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.layer input[type=color] { width: 44px; height: 28px; padding: 0; border: 0; background: none; }
