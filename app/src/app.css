@@ -100,7 +100,7 @@ h2, h3 { font-family: var(--display); font-weight: 700; font-size: 15px; margin:
 /* Sliders: thin track + dot at the value; while dragging the track grows into a filled pill (thumb hides).
    --p (0–100%) is kept in sync by main.ts. */
 input[type='range'] {
-  -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer;
+  -webkit-appearance: none; appearance: none; background: transparent; border: 0; border-radius: 0; cursor: pointer;
   height: 20px; margin: 0; padding: 0; --p: 50%; --tk: 4px;
 }
 input[type='range']:disabled { opacity: .4; cursor: default; }
