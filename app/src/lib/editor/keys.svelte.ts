@@ -30,7 +30,7 @@ export function createKeys(ed: Ed) {
     else if (e.altKey) return;
     else if (e.key.toLowerCase() === 's') ed.cutHere();
     else if (e.key === 'Escape' && ed.pickKey) ed.endPick();
-    else if (e.key === 'Escape') (ed.clearCapSelection(), (ed.marks = [null, null]), (ed.selectedOverlay = ''));
+    else if (e.key === 'Escape') (ed.deselect(), (ed.marks = [null, null]));
     else if ((e.key === 'Delete' || e.key === 'Backspace') && e.shiftKey && ed.selFx) ed.setFx({ lift: !ed.selFx.lift || undefined });
     else if (e.key === 'Delete' || e.key === 'Backspace')
       cutMarks() || ed.removeOverlay() || (ed.tab === 'transcript' && ed.transcriptView?.toggleSelection()) || ed.removeAudioItem() || ed.deleteSelected();

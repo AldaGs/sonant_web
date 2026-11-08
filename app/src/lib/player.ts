@@ -142,7 +142,7 @@ export class Player {
         continue;
       }
       const lifted = s.segments.some((g) => g.fx?.lift && this.t >= g.start && this.t < g.end); // a gap plays silent
-      const vol = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume));
+      const vol = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume * (segAt(s.segments, this.t)?.fx?.vol ?? 1)));
       const clean = this.clean.get(id);
       setVolume(el, vol);
       el.muted = !!clean; // the cleaned copy plays the sound instead

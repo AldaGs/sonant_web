@@ -484,8 +484,8 @@
         {#each segments as s, i}
           <div class="seg" class:sel={i === selected} role="button" tabindex="0" aria-pressed={i === selected}
             aria-label={t('a11y.strip', { n: i + 1, name: clipName(s), a: fmtT(segPos[i].start), b: fmtT(segPos[i].start + segPos[i].len) })}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selected = i; } }} class:lift={s.fx?.lift} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
-            onclick={() => (selected = i)} title={clipName(s)}>
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selected = i; selectedOverlay = ''; selectedAudio = ''; } }} class:lift={s.fx?.lift} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
+            onclick={() => ((selected = i), (selectedOverlay = ''), (selectedAudio = ''))} title={clipName(s)}>
             <div class="thumbs">
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>

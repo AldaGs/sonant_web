@@ -118,6 +118,7 @@ export interface Ed {
   readonly selectedCap: Caption | null;
   readonly selectedCapId: string | null;
   selectedCapIds: string[];
+  readonly deselect: () => void;
   selectedOverlay: string;
   readonly selectedSet: Set<string>;
   readonly setAudio: (id: string, patch: Partial<AudioItem>) => AudioItem[];

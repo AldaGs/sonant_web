@@ -10,6 +10,7 @@
   import { median } from './lib/reframe';
   import { SAFE_ZONES, type Platform } from './lib/safezones';
   import { outputSize, type Aspect } from './lib/export';
+  import { untrack } from 'svelte';
   import { cleanup, cleanupRanges } from './lib/cleanup.svelte';
   import { speechRanges } from './lib/audio';
   import { translated, type Dir } from './lib/translate';
@@ -316,9 +317,11 @@
   });
   $effect(() => {
     const i = stripUnder;
-    if (autoSelect && !pressing && i !== -2 && selected !== i) selected = i;
+    if (autoSelect && !pressing && i !== -2 && untrack(() => selected) !== i) selected = i;
   });
 
+  // Clear every selection so the inspector goes back to the caption styles.
+  const deselect = () => ((selected = -1), (selectedAudio = ''), (selectedOverlay = ''), (selectedCapIds = []));
   const currentCap = $derived(visibleCaps.find((c) => time >= startOf(c) && time < endOf(c)) ?? selectedCap);
   const currentAnim = $derived(currentCap?.style?.animation ?? style.animation);
   const animName = $derived(t('anim.' + currentAnim));
@@ -444,7 +447,7 @@
     get selectedCap() { return selectedCap; },
     get selectedCapId() { return selectedCapId; },
     get selectedCapIds() { return selectedCapIds; }, set selectedCapIds(v) { selectedCapIds = v; },
-    get selectedOverlay() { return selectedOverlay; }, set selectedOverlay(v) { selectedOverlay = v; },
+    deselect, get selectedOverlay() { return selectedOverlay; }, set selectedOverlay(v) { selectedOverlay = v; },
     get selectedSet() { return selectedSet; },
     get setAudio() { return setAudio; },
     get setCaps() { return setCaps; },
@@ -652,7 +655,7 @@
       <ClipInspector {selFx} {selected} {segments} {imageAssets} {revPct} {stabPct} pickingKey={pickKey === 'strip'}
         {setFx} {reverseStrip} {stabilize} {startPick} {setStripKey}
         {selColor} {luts} {setColor} oncolordone={() => (colorEditing = false)} {importLut} {colorToAll}
-        {reframes} {setFocus} {autoReframe} {autoReframeAll} {reframing} webgl={grader.ok} />
+        {reframes} {setFocus} {autoReframe} {autoReframeAll} {reframing} webgl={grader.ok} {deselect} />
     {/if}
     {#if selOverlay}
       <LayerInspector o={selOverlay} {outTime} {fonts} {overlays} {pickKey} {doneEditing} {closeLayer} {setOverlay} {setMotion} {setTf}
