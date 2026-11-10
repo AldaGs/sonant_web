@@ -60,5 +60,5 @@ import as before.
 
 ## Next ideas
 - Roll and slip on V1 strips; automatic cross-dissolve between touching items on a track.
-- Alt+drag to edit one side of a linked pair; drag-to-reorder strips on touch screens.
+- Alt+drag to edit one side of a linked pair. (Touch reordering is done: long-press the selected strip.)
 - Nested sequences, adjustment layers, audio effects per track, and keyframes for color and effects.

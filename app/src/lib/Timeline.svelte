@@ -198,6 +198,58 @@
     };
     el.onpointerup = el.onpointercancel = () => (el.onpointermove = el.onpointerup = el.onpointercancel = null);
   }
+  // Touch: a swipe on a strip still pans the timeline; a long press on the selected strip picks it up.
+  // While held, the finger moves the drop marker (the view scrolls near the edges); lifting drops it.
+  const HOLD_MS = 400, HOLD_SLOP = 8;
+  let holdId: number | null = null; // pointer that is carrying a strip (pan ignores it)
+  function holdStrip(e: PointerEvent, i: number) {
+    if (i !== selected || (e.target as Element).closest('.handle')) return; // unselected: pan / tap to select
+    const x0 = e.clientX, y0 = e.clientY;
+    let last = e, raf = 0;
+    const timer = setTimeout(() => {
+      holdId = e.pointerId;
+      navigator.vibrate?.(15);
+      stripDrop = outAt(last);
+      raf = requestAnimationFrame(edgeScroll);
+    }, HOLD_MS);
+    // Near the left/right edge of the timeline, keep scrolling so the strip can travel past what's on screen.
+    const edgeScroll = () => {
+      if (holdId === null || !scroller) return;
+      const r = scroller.getBoundingClientRect(), zone = 36;
+      const dir = last.clientX < r.left + zone ? -1 : last.clientX > r.right - zone ? 1 : 0;
+      if (dir) {
+        if (centered) onseek(Math.max(0, Math.min(total, view + dir * total / (zoom * 120))));
+        else scroller.scrollLeft += dir * 8;
+        stripDrop = outAt(last);
+      }
+      raf = requestAnimationFrame(edgeScroll);
+    };
+    const move = (m: PointerEvent) => {
+      if (m.pointerId !== e.pointerId) return;
+      last = m;
+      if (holdId === null) {
+        if (Math.hypot(m.clientX - x0, m.clientY - y0) > HOLD_SLOP) clearTimeout(timer); // it's a swipe
+        return;
+      }
+      m.preventDefault();
+      stripDrop = outAt(m);
+    };
+    const end = (u: PointerEvent) => {
+      if (u.pointerId !== e.pointerId) return;
+      clearTimeout(timer);
+      cancelAnimationFrame(raf);
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', end);
+      removeEventListener('pointercancel', end);
+      if (holdId === null) return;
+      holdId = null;
+      stripDrop = null;
+      if (u.type === 'pointerup') (eatNextClick(), onmovestrip(i, outAt(u)));
+    };
+    addEventListener('pointermove', move, { passive: false });
+    addEventListener('pointerup', end);
+    addEventListener('pointercancel', end);
+  }
   // ---- Tools ----
   const outAt = (e: PointerEvent) => {
     const r = inner!.getBoundingClientRect();
@@ -234,7 +286,8 @@
       eatNextClick();
       return onrazor('s', '', outAt(e));
     }
-    if (i !== selected || e.button !== 0 || e.pointerType === 'touch' || (e.target as Element).closest('.handle')) return;
+    if (e.pointerType === 'touch') return holdStrip(e, i);
+    if (i !== selected || e.button !== 0 || (e.target as Element).closest('.handle')) return;
     e.stopPropagation();
     const el = e.currentTarget as HTMLElement, x0 = e.clientX;
     let moved = false;
@@ -382,7 +435,7 @@
     let on = false, lx = x0, lt = performance.now(), vel = 0; // vel in px/ms
     const clampT = (v: number) => Math.max(0, Math.min(total, v));
     const move = (m: PointerEvent) => {
-      if (pinching || m.pointerId !== e.pointerId || (!on && Math.abs(m.clientX - x0) < 3)) return;
+      if (pinching || m.pointerId !== e.pointerId || m.pointerId === holdId || (!on && Math.abs(m.clientX - x0) < 3)) return;
       on = true;
       panAt = performance.now();
       if (!centered) { if (scroller) scroller.scrollLeft = sl0 - (m.clientX - x0); return; }
@@ -676,7 +729,7 @@
           <div class="seg" class:sel={i === selected} role="button" tabindex="0" aria-pressed={i === selected}
             aria-label={t('a11y.strip', { n: i + 1, name: clipName(s), a: fmtT(segPos[i].start), b: fmtT(segPos[i].start + segPos[i].len) })}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selected = i; selectedOverlay = ''; selectedAudio = ''; } }} class:lift={s.fx?.lift} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
-            onclick={() => ((selected = i), (selectedOverlay = ''), (selectedAudio = ''))} onpointerdown={(e) => grabStrip(e, i)} title={clipName(s)}>
+            onclick={() => ((selected = i), (selectedOverlay = ''), (selectedAudio = ''))} onpointerdown={(e) => grabStrip(e, i)} oncontextmenu={(e) => i === selected && e.preventDefault()} title={clipName(s)}>
             <div class="thumbs">
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>
@@ -863,6 +916,8 @@
   /* Grab area around the playhead's head, wider than it looks so a finger can catch it. */
   .knob { position: absolute; top: -4px; left: -12px; width: 26px; height: 26px; pointer-events: auto; touch-action: none; cursor: ew-resize; z-index: 3; }
   /* On touch, unselected items pan (in JS) instead of dragging, so let vertical scroll through. */
+  /* A selected strip keeps the finger (long press picks it up), so the page doesn't scroll away under it. */
+  @media (pointer: coarse) { .seg.sel { touch-action: none; } }
   @media (pointer: coarse) { .cap:not(.sel), .aud:not(.sel), .ov:not(.sel), :not(.sel) > .edge { touch-action: pan-y; } }
   /* Centred playhead: half-width spacers let time 0 and the end both reach the centre line;
      swipes anywhere (tracks, ruler) scroll natively, and scroll position is the playhead time. */
