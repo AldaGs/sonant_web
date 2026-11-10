@@ -28,7 +28,7 @@ export function createKeys(ed: Ed) {
     else if (e.code === 'Space' && !(e.target as HTMLElement).closest?.('button')) (e.preventDefault(), ed.toggle());
     else if (e.key === '?') ed.showKeys = true;
     else if (e.altKey) return;
-    else if (e.key.toLowerCase() === 's') ed.cutHere();
+    else if (e.key.toLowerCase() === 's') e.shiftKey ? ed.cutAll() : ed.cutHere();
     else if (e.key === 'Escape' && ed.pickKey) ed.endPick();
     else if (e.key === 'Escape') (ed.deselect(), (ed.marks = [null, null]));
     else if ((e.key === 'Delete' || e.key === 'Backspace') && e.shiftKey && ed.selFx) ed.setFx({ lift: !ed.selFx.lift || undefined });

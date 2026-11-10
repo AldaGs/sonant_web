@@ -84,3 +84,35 @@ export const isHidden = (t: Tracks, x: { track?: number }) => !!t.v[trackOf(x)]?
 export const isMuted = (t: Tracks, x: { track?: number }) => !!t.a[trackOf(x)]?.muted;
 export const isLockedV = (t: Tracks, x: { track?: number }) => !!t.v[trackOf(x)]?.locked;
 export const isLockedA = (t: Tracks, x: { track?: number }) => !!t.a[trackOf(x)]?.locked;
+
+// ---- Splitting (razor) ----
+const MIN_PART = 0.05; // don't leave slivers shorter than this
+type Keyed = { t: number };
+// Keys for one half of a split at d seconds into the item: the left half keeps keys up to d,
+// the right half keeps keys from d on, moved so d becomes 0. Each half gets a key at the cut
+// (copied from the nearest one) so the animation doesn't jump.
+function splitKeys<K extends Keyed>(ks: K[] | undefined, d: number, right: boolean): K[] | undefined {
+  if (!ks?.length) return ks;
+  const at = (ks.findLast((k) => k.t <= d) ?? ks[0]);
+  const part = right ? ks.filter((k) => k.t > d).map((k) => ({ ...k, t: k.t - d })) : ks.filter((k) => k.t < d);
+  const edge = { ...at, t: right ? 0 : d };
+  return right ? [edge, ...part] : [...part, edge];
+}
+
+/** Cut a layer in two at output time t. Returns null when t isn't inside it (with some room on both sides). */
+export function splitOverlay<O extends import('./overlay').Overlay>(o: O, t: number, newId: string): [O, O] | null {
+  const d = t - o.at;
+  if (d < MIN_PART || o.len - d < MIN_PART) return null;
+  const left = { ...o, len: d, kf: splitKeys(o.kf, d, false), maskKf: splitKeys(o.maskKf, d, false),
+    ...(o.motion && { motion: { ...o.motion, out: 0 } }) };
+  const right = { ...o, id: newId, at: t, len: o.len - d, kf: splitKeys(o.kf, d, true), maskKf: splitKeys(o.maskKf, d, true),
+    ...(o.kind === 'video' && { offset: (o.offset ?? 0) + d }), ...(o.motion && { motion: { ...o.motion, in: 0 } }) };
+  return [left, right];
+}
+
+/** Cut an audio item in two at output time t (assetDur: its file's length). */
+export function splitAudio<A extends import('./project').AudioItem>(a: A, t: number, assetDur: number, newId: string): [A, A] | null {
+  const off = a.offset ?? 0, len = Math.max(0, Math.min(a.len ?? Infinity, assetDur - off)), d = t - a.at;
+  if (d < MIN_PART || len - d < MIN_PART) return null;
+  return [{ ...a, len: d }, { ...a, id: newId, at: t, offset: off + d, len: len - d }];
+}

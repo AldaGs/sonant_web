@@ -351,6 +351,8 @@
   const saveState = $derived(saving ? t('saving') : t('saved'));
 
   const cutHere = () => (setSegs(splitAt(segments, time)), announce(t('a11y.split', { t: tc(outTime) })));
+  // Shift+S: split every unlocked track at the playhead.
+  const cutAll = () => splitAll() && announce(t('a11y.split', { t: tc(outTime) }));
   // Effects of the selected strip (captions behind the person, background swap).
   const selFx = $derived(selected >= 0 && segments[selected] ? (segments[selected].fx ?? {}) : null);
   // Key colour eyedropper: keys are switched off in the preview, the next click samples the frame there.
@@ -393,6 +395,7 @@
     get clips() { return clips; }, set clips(v) { clips = v; },
     get commit() { return commit; },
     get cutHere() { return cutHere; },
+    get cutAll() { return cutAll; },
     get cutRanges() { return cutRanges; },
     get deleteSelected() { return deleteSelected; },
     get denoise() { return denoise; }, set denoise(v) { denoise = v; },
@@ -511,7 +514,7 @@
   const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline } = createEdit(ed);
   const { previewUrl, buildProxy, dropProxy, register, openHistory, restoreVersion, ago, saveToFile, importMedia, addVoiceover } = createMedia(ed);
   const { aimZooms, stabilize, reverseStrip, renderItem, setVoiceFx, detectSpeakers, findClips, setHlLen, makeAllShorts, previewClip, makeShort, run, cutAudioSilences, autoReframe, autoReframeAll, colorToAll, translateAll, detectBeatsFor, cutOnBeats } = createJobs(ed);
-  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
+  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
   const { leave, pointer, nudge, startPick, endPick } = createPreview(ed);
   const { step, keys } = createKeys(ed);
 </script>
@@ -724,6 +727,7 @@
         <button class="sm" onclick={addTitle} disabled={!hasMedia} title={t('addTitleTip')}><Icon name="animation" /> {t('addTitle')}</button>
         <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}><Icon name="content_cut" /> {t('splitAt')}</button>
+        <button class="sm" onclick={cutAll} title={t('splitAllTip')}><Icon name="content_cut" /> {t('splitAll')}</button>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
         <button class="sm icon" class:on={snapOn} aria-pressed={snapOn} title={t('snapTip')} aria-label={t('snap')}
           onclick={() => (snapOn = !snapOn)}><Icon name="magnet" /></button>
@@ -800,7 +804,7 @@
         <h3>{t('keysTitle')}</h3>
         <dl>
           {#each [['Space', 'k.play'], ['J / K / L', 'k.jkl'], ['← / →', 'k.frame'], ['Shift + ← / →', 'k.second'], ['Home / End', 'k.ends'],
-            ['S', 'k.split'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['Shift + Del', 'k.lift'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
+            ['S', 'k.split'], ['Shift + S', 'k.splitAll'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['Shift + Del', 'k.lift'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
             ['A', 'k.auto'], ['T', 'k.text'], ['Ctrl/⌘ + Z', 'undo'], ['Ctrl/⌘ + Shift + Z', 'redo'], ['Ctrl/⌘ + S', 'k.save'], ['Esc', 'k.esc'], ['?', 'keysTitle']] as [k, d]}
             <dt><kbd>{k}</kbd></dt><dd>{t(d)}</dd>
           {/each}

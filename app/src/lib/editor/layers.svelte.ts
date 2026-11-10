@@ -1,8 +1,8 @@
 // Layers over the video (text, titles, images, videos): adding, editing, keyframes, stacking, templates.
 import { type Style } from '../render';
-import { trim, outDuration } from '../cuts';
+import { trim, outDuration, splitAt, toSource } from '../cuts';
 import { itemLen, type Asset } from '../project';
-import { moveToTrack, removeTrack, setFlag, trackOf, isLockedV, type TrackFlags } from '../tracks';
+import { moveToTrack, removeTrack, setFlag, trackOf, isLockedV, isLockedA, splitOverlay, splitAudio, byTrack, type TrackFlags } from '../tracks';
 import { type ChromaKey } from '../layerfx';
 import { placeLayers, fromProject, type Template } from '../templates';
 import { newText, newTitle, DEFAULT_MOTION, newMedia, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Transform, type Motion } from '../overlay';
@@ -111,6 +111,26 @@ export function createLayers(ed: Ed) {
       ((ed.audios = r.items), (ed.tracks = { ...ed.tracks, a: r.flags }));
     }
   }
+  // Razor on every track: split the main strip and every unlocked layer and audio item under the playhead,
+  // as one undo step. Returns how many items were cut.
+  function splitAll(): number {
+    const t = ed.outNow(), src = toSource(ed.segments, t);
+    const segs = src === null ? ed.segments : splitAt(ed.segments, src);
+    let n = segs.length - ed.segments.length;
+    const ovs = ed.overlays.flatMap((o) => {
+      const r = isLockedV(ed.tracks, o) ? null : splitOverlay(o, t, crypto.randomUUID());
+      return r ? (n++, r) : [o];
+    });
+    const auds = ed.audios.flatMap((a) => {
+      const r = isLockedA(ed.tracks, a) ? null : splitAudio(a, t, ed.durations.get(a.assetId) ?? 0, crypto.randomUUID());
+      return r ? (n++, r) : [a];
+    });
+    if (!n) return 0;
+    ed.commit();
+    if (segs !== ed.segments) ed.segments = segs;
+    ((ed.overlays = byTrack(ovs)), (ed.audios = auds));
+    return n;
+  }
   // Track header switches: hide (V) / mute (A) and lock.
   const setTrack = (kind: 'v' | 'a', track: number, patch: TrackFlags) => (ed.tracks = { ...ed.tracks, [kind]: setFlag(ed.tracks[kind], track, patch) });
   // An extra empty track on top, to drop things onto.
@@ -137,5 +157,5 @@ export function createLayers(ed: Ed) {
     if (final) stripKeyEditing = false;
   }
 
-  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, setTrack, addTrack, dropTrack, setStripKey };
+  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, setTrack, addTrack, dropTrack, setStripKey };
 }

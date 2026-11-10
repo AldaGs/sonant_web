@@ -34,3 +34,22 @@ assert.equal(removeTrack([it('x', 0, 1, 1)], [], 1), null);
 assert.deepEqual(removeTrack([it('x', 0, 1, 2)], [{}, { locked: true }, { muted: true }], 1), { items: [it('x', 0, 1, 1)], flags: [{}, { muted: true }] });
 assert.deepEqual(setFlag([], 1, { locked: true }), [{}, { locked: true }]);
 console.log('tracks ok');
+
+{
+  const { splitOverlay, splitAudio } = await import('./tracks.ts');
+  const o = { id: 'o', kind: 'video' as const, at: 2, len: 4, offset: 1, track: 1, tf: { x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1 },
+    kf: [{ t: 0, x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }, { t: 3, x: 1, y: 0, scale: 1, rotation: 0, opacity: 1 }] };
+  const [l, r] = splitOverlay(o, 3, 'o2')!;
+  assert.deepEqual([l.at, l.len, l.offset, r.at, r.len, r.offset, r.id, r.track], [2, 1, 1, 3, 3, 2, 'o2', 1]);
+  assert.deepEqual(l.kf!.map((k) => k.t), [0, 1]);
+  assert.deepEqual(r.kf!.map((k) => k.t), [0, 2]);
+  assert.equal(splitOverlay(o, 2.01, 'x'), null);
+  assert.equal(splitOverlay(o, 7, 'x'), null);
+  const t = { ...o, kind: 'text' as const, offset: undefined };
+  assert.equal(splitOverlay(t, 4, 'y')![1].offset, undefined);
+  const a: import('./project.ts').AudioItem = { id: 'a', assetId: 'A', at: 1, volume: 1, offset: 2 };
+  const [al, ar] = splitAudio(a, 4, 10, 'b')!; // plays file 2..10 from 1..9
+  assert.deepEqual([al.len, ar.at, ar.offset, ar.len], [3, 4, 5, 5]);
+  assert.equal(splitAudio(a, 9.5, 10, 'b'), null);
+  console.log('split ok');
+}
