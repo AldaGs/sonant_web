@@ -1,4 +1,4 @@
-import { DUCK_LEVEL, clipAt, clipLen, clipStarts, itemLen, type AudioItem, type Clip } from './project';
+import { DUCK_LEVEL, clipAt, clipLen, clipStarts, clipBases, itemLen, type AudioItem, type Clip } from './project';
 import { nextKept, toOutput, toSource, outDuration, segAt, type Segment } from './cuts';
 import type { Overlay } from './overlay';
 import { duckGain } from './audio';
@@ -75,7 +75,7 @@ export class Player {
     const now = performance.now();
     if (this.playing && s.clips.length) {
       const segs = s.segments, dt = (now - this.last) / 1000, total = outDuration(segs);
-      const starts = clipStarts(s.clips, s.durations);
+      const starts = clipBases(s.clips, s.durations); // file time 0 of each clip, in sequence time
       const at = clipAt(s.clips, s.durations, this.t);
       const seg = segAt(segs, this.t), rev = seg?.fx?.rev;
       // A reversed strip plays its reversed copy forwards: copy time 0 = the strip's start.
@@ -85,7 +85,7 @@ export class Player {
         // The playing video is the clock (keeps lips in sync; its playbackRate carries the strip's speed).
         const base = rev ? rev.start : starts[at.index];
         this.t = base + el.currentTime;
-        const len = rev ? rev.end - rev.start : clipLen(s.durations, s.clips[at.index]);
+        const len = rev ? rev.end - rev.start : (s.clips[at.index].in ?? 0) + clipLen(s.durations, s.clips[at.index]); // file time the clip ends
         if (rev && this.t >= seg!.end - 0.02) this.t = seg!.end; // reversed strip done: next strip
         else if (el.currentTime >= len - 0.04 || el.ended) this.t = Math.max(this.t, base + len); // clip done: next one
         const k = nextKept(segs, this.t);
@@ -134,7 +134,7 @@ export class Player {
     const at0 = clipAt(s.clips, s.durations, this.t);
     const rev = segAt(s.segments, this.t)?.fx?.rev;
     // In a reversed strip the reversed copy is the active video, at copy time t − rev.start.
-    const at = at0 && rev ? { ...at0, local: this.t - rev.start } : at0;
+    const at = at0 && rev ? { ...at0, file: this.t - rev.start } : at0;
     const activeId = rev && at0 ? rev.assetId : at0 ? s.clips[at0.index].assetId : null;
     for (const [id, el] of this.videos) {
       if (id !== activeId) {
@@ -151,8 +151,8 @@ export class Player {
       if (el.playbackRate !== rate) el.playbackRate = rate; // pitch is preserved by the browser
       const frozen = !!seg?.fx?.hold;
       const target = this.pending.get(el) ?? el.currentTime;
-      const drift = Math.abs(target - at!.local);
-      if (drift > (this.playing && !exact ? 0.3 : 0.01)) this.seekTo(el, at!.local);
+      const drift = Math.abs(target - at!.file);
+      if (drift > (this.playing && !exact ? 0.3 : 0.01)) this.seekTo(el, at!.file);
       if (this.playing && !frozen && el.paused) el.play().catch(() => {});
       if ((!this.playing || frozen) && !el.paused) el.pause();
       if (clean) {

@@ -13,7 +13,7 @@ import { drawCaption, resolveStyle, type Style } from './render.ts';
 import { drawFrame, loadSegmenter } from './segment.ts';
 import { drawOverlay, type Overlay } from './overlay.ts';
 import { duckGain, normalizeGain } from './audio.ts';
-import { DUCK_LEVEL, clipAt, clipStarts, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
+import { DUCK_LEVEL, clipAt, clipStarts, clipBases, splitAtBoundaries, itemLen, type Asset, type AudioItem, type Clip } from './project.ts';
 
 export type Aspect = 'source' | '16:9' | '9:16' | '1:1' | '4:5';
 export type Res = 'source' | 2160 | 1080 | 720 | 540 | 480;
@@ -109,12 +109,12 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
   };
 
   // Clip audio: each kept piece, back to back in output time.
-  const starts = clipStarts(src.clips, durations);
+  const starts = clipStarts(src.clips, durations), bases = clipBases(src.clips, durations);
   let out = 0;
   for (const s of splitAtBoundaries(segs, starts)) {
     const at0 = clipAt(src.clips, durations, (s.start + s.end) / 2), rev = s.fx?.rev;
     // A reversed strip takes its sound from the reversed copy, which starts at the strip's rev.start.
-    const at = at0 && rev ? { ...at0, base: rev.start } : at0 && { ...at0, base: starts[at0.index] };
+    const at = at0 && rev ? { ...at0, base: rev.start } : at0 && { ...at0, base: bases[at0.index] };
     const buf = at && decoded.get(rev ? rev.assetId : src.clips[at.index].assetId);
     const speed = s.fx?.speed ?? 1, vol = src.clipVolume * (s.fx?.vol ?? 1);
     if (buf && !s.fx?.lift && !s.fx?.hold) { // lifted gaps and freeze frames are silent
@@ -247,14 +247,14 @@ export async function exportVideo(
       }
       return sinks.get(assetId);
     };
-    const starts = clipStarts(src.clips, durations);
+    const starts = clipStarts(src.clips, durations), bases = clipBases(src.clips, durations);
     const trans = new Transitioner();
     const grader = new Grader(), lutOf = (id?: string) => src.luts?.find((l) => l.id === id);
     let i = 0;
     for (const piece of splitAtBoundaries(segs, starts)) {
       const at = clipAt(src.clips, durations, (piece.start + piece.end) / 2), rev = piece.fx?.rev;
       // Reversed strip: frames come from the reversed copy, which starts at rev.start.
-      const offset = rev ? rev.start : at ? starts[at.index] : 0;
+      const offset = rev ? rev.start : at ? bases[at.index] : 0;
       const clipId = rev ? rev.assetId : at ? src.clips[at.index].assetId : undefined;
       const still = clipId && assets.get(clipId)?.kind === 'image' ? await stillFor(clipId) : null;
       const decoded = clipId && !still ? await sinkFor(clipId) : undefined, sink = decoded?.sink;

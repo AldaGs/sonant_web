@@ -16,8 +16,10 @@
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
     pending = [], beats, out, zooms = [], onzoom,
     overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
+    onmovestrip = () => false,
     tracks = NO_TRACKS, onretrack = () => {}, ontrack = () => {}, onaddtrack = () => {}, ondroptrack = () => false,
   }: {
+    onmovestrip?: (i: number, out: number) => boolean; // drop a V1 strip at another place (output time)
     tracks?: Tracks; // track switches (hide/mute, lock), V2… and A2…
     onretrack?: (kind: 'v' | 'a', id: string, track: number) => void; // move an item to another track, live
     ontrack?: (kind: 'v' | 'a', track: number, patch: TrackFlags) => void;
@@ -62,7 +64,7 @@
   function segThumbs(s: Segment): Thumb[] {
     const at = clipAt(clips, durations, (s.start + s.end) / 2);
     if (!at) return [];
-    const off = starts[at.index];
+    const off = starts[at.index] - (clips[at.index].in ?? 0); // thumbnails are in file time
     return (thumbs[clips[at.index].assetId] ?? []).filter((th) => th.t >= s.start - off && th.t < s.end - off);
   }
   const clipName = (s: Segment) => {
@@ -126,6 +128,30 @@
       const p = trimOverlay(o, side, d + nearest([x + d], pts, on, idOut), dur), n = { ...o, ...p };
       if (fits(overlays, ovLen, o.id, trackOf(o), n.at, n.len)) onoverlay(o.id, p);
     });
+  }
+  // Drag the selected V1 strip (mouse/pen, not its trim handles) to move it elsewhere in the sequence.
+  // A marker shows where it will land; it's dropped at the nearest clip boundary.
+  let stripDrop = $state<number | null>(null);
+  function grabStrip(e: PointerEvent, i: number) {
+    if (i !== selected || e.button !== 0 || e.pointerType === 'touch' || (e.target as Element).closest('.handle')) return;
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement, x0 = e.clientX;
+    let moved = false;
+    const at = (m: PointerEvent) => {
+      const r = inner!.getBoundingClientRect();
+      return Math.max(0, Math.min(total, ((m.clientX - r.left) / r.width) * total));
+    };
+    el.setPointerCapture(e.pointerId);
+    el.onpointermove = (m) => {
+      if (!moved && Math.abs(m.clientX - x0) < 5) return;
+      moved = true;
+      stripDrop = at(m);
+    };
+    el.onpointerup = el.onpointercancel = (u) => {
+      el.onpointermove = el.onpointerup = el.onpointercancel = null;
+      stripDrop = null;
+      if (moved && u.type === 'pointerup') (eatNextClick(), onmovestrip(i, at(u)));
+    };
   }
   // ---- Tracks ----
   // Layer tracks are drawn top-down from the highest (V3 above V2, like an NLE); audio tracks A2, A3… go down.
@@ -411,7 +437,7 @@
       if (!at) continue;
       const id = cl[at.index].assetId, p = pk[id], dur = durs.get(id) ?? 0;
       if (!p || !dur) continue;
-      const la = at.local, lb = Math.min(dur, at.local + Math.max(0, b - a));
+      const la = at.file, lb = Math.min(dur, at.file + Math.max(0, b - a));
       let m = 0;
       for (let i = Math.floor((la / dur) * p.length), end = Math.max(i + 1, Math.ceil((lb / dur) * p.length)); i < end && i < p.length; i++) m = Math.max(m, p[i]);
       const h = Math.max(dpr, m * (cv.height - 2 * dpr));
@@ -549,7 +575,7 @@
           <div class="seg" class:sel={i === selected} role="button" tabindex="0" aria-pressed={i === selected}
             aria-label={t('a11y.strip', { n: i + 1, name: clipName(s), a: fmtT(segPos[i].start), b: fmtT(segPos[i].start + segPos[i].len) })}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selected = i; selectedOverlay = ''; selectedAudio = ''; } }} class:lift={s.fx?.lift} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
-            onclick={() => ((selected = i), (selectedOverlay = ''), (selectedAudio = ''))} title={clipName(s)}>
+            onclick={() => ((selected = i), (selectedOverlay = ''), (selectedAudio = ''))} onpointerdown={(e) => grabStrip(e, i)} title={clipName(s)}>
             <div class="thumbs">
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>
@@ -626,6 +652,7 @@
         {@const x = toOutput(segments, a)}
         {#if x !== null}<div class="pend" style:left={pct(x)} style:width={pct(Math.max(0.01, b - a))} aria-hidden="true"></div>{/if}
       {/each}
+      {#if stripDrop !== null}<div class="sdrop" style:left={pct(stripDrop)} aria-hidden="true"></div>{/if}
       {#if guide !== null}<div class="guide" style:left={pct(guide)} aria-hidden="true"></div>{/if}
       {#if playhead !== null}
         <div class="playhead" style:left={pct(playhead)}>
@@ -667,7 +694,8 @@
   .tick { position: absolute; top: 0; font-size: 11px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
   .tick:first-child { transform: none; }
   .seg { position: absolute; top: 0; bottom: 0; overflow: hidden; border-radius: 6px; background: var(--surface); border: 2px solid var(--border-soft); }
-  .seg.sel { border-color: var(--accent); }
+  .seg.sel { border-color: var(--accent); cursor: grab; }
+  .sdrop { position: absolute; top: 20px; bottom: 0; width: 3px; transform: translateX(-1px); background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; z-index: 4; }
   .thumbs { display: flex; height: 100%; overflow: hidden; pointer-events: none; }
   .thumbs img { height: 100%; width: 0; flex: 1; object-fit: cover; opacity: .8; }
   .handle { position: absolute; top: 0; bottom: 0; width: 10px; background: var(--accent); cursor: ew-resize; touch-action: none; }

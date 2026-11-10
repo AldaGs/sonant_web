@@ -1,19 +1,22 @@
 # Pro editing roadmap
 
-Goal: move Sonant from a caption editor toward NLE-style (Premiere-like) editing, on top of the
+Goal: make Sonant a complete video editor with NLE-style (Premiere-like) editing, on top of the
 multi-track timeline (V1/A1 main sequence, V2… layers, A2… music & VO, see `app/src/lib/tracks.ts`).
 
 Phases are ordered by dependency: each one builds on helpers from the previous.
 
-## Phase 1 — Razor across all tracks  ✅ started
+## Phase 1 — Razor across all tracks  ✅ done
 - `splitOverlay` / `splitAudio` in `tracks.ts`: cut an item in two at an output time, keeping
   file offsets, keyframes, mask keyframes and title in/out animation consistent on both halves.
 - **Shift+S** ("Split all tracks"): splits the main strip plus every unlocked layer and audio item
   under the playhead. **S** keeps splitting only the main strip.
 - Toolbar button next to Split.
 
-## Phase 2 — Free in/out on V1 clips
-Today a V1 clip always spans its whole file and strips are "kept ranges" inside it.
+## Phase 2 — Free in/out on V1 clips  ✅ done
+Before, a V1 clip always spanned its whole file and strips were "kept ranges" inside it.
+Done: `Clip.in` + `len`, `clipBases` (file time = sequence time − base) used by the player, export, thumbnails,
+waveform, transcription and AI jobs; `extendClip` (edge drag reveals/hides footage), `isolateStrip` +
+drag-to-reorder strips on V1; trims inside a clip no longer cross into the neighbouring clip.
 - Add `in`/`out` to `Clip` (source trim), so a clip can start mid-file without a deleted region.
 - `clipLen` = `out − in`; `clipAt` returns file time `in + local`. Migrate: absent = whole file.
 - Edge-drag on a clip's first/last strip extends back into hidden media (currently clamped).

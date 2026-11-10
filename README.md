@@ -1,6 +1,6 @@
 # Sonant
 
-Browser-based caption editor for short videos, in English and Spanish. Transcribe speech, edit by deleting words, style animated captions, combine clips with music or voiceover, make basic cuts and export an MP4 with the captions burned in. It is not a full video editor.
+Browser-based video editor, in English and Spanish. The goal is a complete editor: a multi-track timeline with video, image, text and audio layers, NLE-style editing (split, trim, reorder, ripple, roll, slip), transitions and keyframes, plus Sonant's AI tools: transcribe speech, edit by deleting words, style animated captions, and export an MP4 with the captions burned in. See the [editing roadmap](docs/editing-roadmap.md) for what's done and what's next.
 
 Everything runs locally in the browser. No server, no account, and your media never leaves your device.
 
@@ -58,6 +58,8 @@ Everything runs locally in the browser. No server, no account, and your media ne
   - Rows for layer tracks, video thumbnails, clip waveform, caption blocks, text animation, and audio tracks.
   - Time ruler and zoom (wheel scrubs, pinch or Ctrl+wheel zooms; on phones, swipe to scrub under a fixed centre playhead).
   - Split, delete, trim and undo/redo; snapping to edges, the playhead and music beats.
+  - **Clips with in/out points:** a clip on V1 can show any part of its file. Drag a strip's outer edge past the clip's end to bring back hidden footage (or drag it in to hide some); clips after it move along. The same file can be used several times.
+  - **Reorder strips:** select a strip on V1 and drag it (mouse or pen) to another place; a white marker shows where it lands. It becomes its own clip and drops in at the nearest clip boundary, and its words and captions move with it.
   - Keyboard and screen-reader friendly: focusable items with spoken labels.
   - Drag caption and audio blocks to move them, or drag their **edges** to retime captions and trim audio.
 - **Audio:** duck music under speech, find beats and cut the video on them.

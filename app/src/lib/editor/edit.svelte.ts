@@ -2,8 +2,8 @@
 import { setText, toSRT, toVTT, startOf, type Caption } from '../captions';
 import { resolveStyle, type Style } from '../render';
 import { localFonts, uploadFont } from '../fonts';
-import { remove, trim, toOutput, captionsForOutput, type Segment, type Fx } from '../cuts';
-import { clipAt, clipLen, resizeClip, STILL_LEN, clipStarts, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from '../project';
+import { remove, trim, toOutput, nextKept, outDuration, captionsForOutput, type Segment, type Fx } from '../cuts';
+import { clipAt, clipLen, resizeClip, isolateStrip, extendClip, STILL_LEN, clipStarts, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from '../project';
 import * as store from '../store';
 import { t } from '../i18n.svelte';
 import Timeline from '../Timeline.svelte';
@@ -103,24 +103,52 @@ export function createEdit(ed: Ed) {
     const r = resizeClip(ed.clips, i, len, ed.durations, ed.segments, ed.captions);
     ((ed.clips = r.clips), (ed.segments = r.segments), (ed.captions = r.captions), (ed.selected = -1));
   }
-  // Timeline edge drag. The end edge of an image clip's last strip retimes the clip itself, so a still
-  // can be made as long as wanted (a still has no file length to run out of); later clips move with it.
+  // Timeline edge drag. Inside a clip, an edge moves up to the neighbouring strip. On the clip's own edge,
+  // dragging outward reveals more of the file (or makes a still longer), dragging inward hides it again and
+  // the clips after it move. Each call is measured from the state when the drag began (`trimFrom`).
+  let trimFrom: { clips: Clip[]; segments: Segment[]; captions: Caption[]; i: number } | null = null;
+  const trimDone = () => (trimFrom = null);
   function trimStrip(i: number, s: number, e: number) {
-    const seg = ed.segments[i];
-    const at = seg && clipAt(ed.clips, ed.durations, (seg.start + seg.end) / 2);
-    if (at && ed.kindOf(ed.clips[at.index].assetId) === 'image') {
-      const c0 = clipStarts(ed.clips, ed.durations)[at.index], end0 = c0 + clipLen(ed.durations, ed.clips[at.index]);
-      if (Math.abs(seg.end - end0) < 1e-6 && Math.abs(e - seg.end) > 1e-6) {
-        const len = Math.min(600, Math.max(seg.start - c0 + 0.1, e - c0));
-        const next = ed.clips.with(at.index, { ...ed.clips[at.index], len });
-        const r = remapProject(ed.clips, next, ed.durations, ed.segments, ed.captions);
-        const j = r.segments.findIndex((x) => Math.abs(x.end - end0) < 1e-6 && x.start >= c0 - 1e-6);
-        if (j >= 0) r.segments[j] = { ...r.segments[j], start: Math.max(c0, s), end: c0 + len };
-        ((ed.clips = next), (ed.segments = r.segments), (ed.captions = r.captions));
-        return;
-      }
+    if (!trimFrom || trimFrom.i !== i) trimFrom = { ...$state.snapshot({ clips: ed.clips, segments: ed.segments, captions: ed.captions }), i };
+    const o = trimFrom, seg = o.segments[i];
+    const at = seg && clipAt(o.clips, ed.durations, (seg.start + seg.end) / 2);
+    if (!at) return;
+    const still = ed.kindOf(o.clips[at.index].assetId) === 'image';
+    const c0 = clipStarts(o.clips, ed.durations)[at.index], c1 = c0 + clipLen(ed.durations, o.clips[at.index]);
+    const atStart = Math.abs(seg.start - c0) < 1e-6, atEnd = Math.abs(seg.end - c1) < 1e-6;
+    const side = Math.abs(s - seg.start) > 1e-9 ? 'start' : Math.abs(e - seg.end) > 1e-9 ? 'end' : null;
+    if (side === 'end' && atEnd && (e > c1 || still) || side === 'start' && atStart && s < c0 && !still) {
+      const r = extendClip(o.clips, at.index, side, side === 'end' ? e : s, ed.durations, o.segments, o.captions, still);
+      if (r) ((ed.clips = r.clips), (ed.segments = normalize(r.segments)), (ed.captions = r.captions));
+      return;
     }
-    ed.segments = trim(ed.segments, i, s, e, ed.duration);
+    // Within the clip: never past its edges or the neighbouring strips.
+    const segs = trim(o.segments, i, Math.max(c0, s), Math.min(c1, e), ed.duration);
+    ((ed.clips = o.clips), (ed.captions = o.captions), (ed.segments = segs));
+  }
+  // Drag a V1 strip to another place in the sequence. The strip becomes its own clip (same file, its own
+  // in/out) and is inserted at the clip boundary nearest `out` (output time); everything else closes up.
+  function moveStrip(i: number, out: number) {
+    const g = ed.segments[i];
+    if (!g) return false;
+    const iso = isolateStrip(ed.clips, ed.durations, g.start, g.end);
+    if (!iso) return false;
+    // Output time of each clip boundary (a boundary inside a cut counts from the next kept moment).
+    const starts = clipStarts(iso.clips, ed.durations);
+    const bounds = [...starts, ed.duration].map((t) => {
+      const k = nextKept(ed.segments, t);
+      return k === null ? outDuration(ed.segments) : toOutput(ed.segments, k) ?? 0;
+    });
+    let k = 0;
+    bounds.forEach((p, j) => Math.abs(p - out) < Math.abs(bounds[k] - out) && (k = j));
+    if (k === iso.index || k === iso.index + 1) return false;
+    const order = iso.clips.filter((_, j) => j !== iso.index);
+    order.splice(k > iso.index ? k - 1 : k, 0, iso.clips[iso.index]);
+    commit();
+    const r = remapProject(iso.clips, order, ed.durations, ed.segments, ed.captions);
+    ((ed.clips = order), (ed.segments = normalize(r.segments)), (ed.captions = r.captions));
+    ed.selected = r.segments.findIndex((x) => Math.abs(x.start - clipStarts(order, ed.durations)[k > iso.index ? k - 1 : k]) < 1e-6 && x.end - x.start > 0);
+    return true;
   }
   function addAudio(assetId: string, at = toOutput(ed.segments, ed.time) ?? 0) {
     commit();
@@ -219,5 +247,5 @@ export function createEdit(ed: Ed) {
     else ed.importMedia(e.dataTransfer?.files);
   }
 
-  return { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline };
+  return { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline };
 }
