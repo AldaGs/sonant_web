@@ -595,7 +595,7 @@
         <MediaPanel {assets} {used} {urls} {thumbs} {proxyPct} {clips} {names} {durations} {kindOf} {fmt}
           {importMedia} {addToTimeline} {addOverlay} {buildProxy} {dropProxy} {removeAsset} {setClips} {setClipLen} />
       {:else if leftTab === 'audio'}
-        <AudioPanel {selAudio} {unlinkSound} {assets} {names} hasClips={clips.length > 0} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
+        <AudioPanel {selAudio} {unlinkSound} outNow={() => outClock} {assets} {names} hasClips={clips.length > 0} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
           {setAudio} {cutOnBeats} {detectBeatsFor} {setVoiceFx} {renderItem} {commit} {removeAudioItem} {cutAudioSilences}
           voCaps={captionsForOutput(displayCaps, segments)} {selectedSet} {language} {addVoiceover} />
       {:else}

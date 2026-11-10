@@ -8,6 +8,7 @@
   import { maskAt, setMaskKey, maskReveal } from './overlay';
   import { TITLE_PATHS, TITLE_STYLES, textStyle, tfAt, keyAt, type Overlay, type Transform, type Motion } from './overlay';
   import type { Font } from './fonts';
+  import { LAYER_TRANS, type LayerTrans } from './layertrans';
 
   let { o, outTime, fonts, overlays, pickKey, doneEditing, closeLayer, setOverlay, setMotion, setTf,
     jumpKey, toggleKey, punchIn, clearKeys, startPick, removeOverlay, restack, layerT, outNow, linkedSound, setAudio, detachSound, unlinkSound }: {
@@ -124,6 +125,26 @@
       {#each BLENDS as b (b)}<option value={b}>{t('bl.' + b)}</option>{/each}
     </select>
   </label>
+  <details class="lfx" open={!!(o.trIn || o.trOut)}>
+    <summary>{t('layerTrans')}</summary>
+    {#each [['trIn', 'ltrIn'], ['trOut', 'ltrOut']] as const as [key, label]}
+      {@const tr = o[key] as LayerTrans | undefined}
+      <div class="lrow">
+        <label class="vol inline">{t(label)}
+          <select value={tr?.kind ?? ''} onchange={(e) => (setOverlay(o.id, { [key]: e.currentTarget.value ? { kind: e.currentTarget.value, d: tr?.d ?? Math.min(0.5, o.len / 2) } : undefined }), doneEditing())}>
+            <option value="">{t('trans.none')}</option>
+            {#each LAYER_TRANS as k}<option value={k}>{t('ltr.' + k)}</option>{/each}
+          </select>
+        </label>
+        {#if tr}
+          <label class="vol inline">{t('duration')} <span class="mono small">{tr.d.toFixed(1)}s</span>
+            <input type="range" min="0.1" max={Math.max(0.2, Math.min(3, o.len))} step="0.1" value={tr.d}
+              oninput={(e) => setOverlay(o.id, { [key]: { ...tr, d: +e.currentTarget.value } })} onchange={doneEditing} />
+          </label>
+        {/if}
+      </div>
+    {/each}
+  </details>
   {#if o.kind !== 'text'}
     <KeyControls key={o.key} picking={pickKey === o.id} onpick={() => startPick(o.id)}
       set={(k, final) => (setOverlay(o.id, { key: k }), final && doneEditing())} />

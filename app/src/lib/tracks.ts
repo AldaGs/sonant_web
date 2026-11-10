@@ -103,9 +103,9 @@ function splitKeys<K extends Keyed>(ks: K[] | undefined, d: number, right: boole
 export function splitOverlay<O extends import('./overlay').Overlay>(o: O, t: number, newId: string): [O, O] | null {
   const d = t - o.at;
   if (d < MIN_PART || o.len - d < MIN_PART) return null;
-  const left = { ...o, len: d, kf: splitKeys(o.kf, d, false), maskKf: splitKeys(o.maskKf, d, false),
+  const left = { ...o, len: d, kf: splitKeys(o.kf, d, false), maskKf: splitKeys(o.maskKf, d, false), trOut: undefined,
     ...(o.motion && { motion: { ...o.motion, out: 0 } }) };
-  const right = { ...o, id: newId, at: t, ...(o.link && { link: `${o.link}@${t.toFixed(3)}` }), len: o.len - d, kf: splitKeys(o.kf, d, true), maskKf: splitKeys(o.maskKf, d, true),
+  const right = { ...o, id: newId, at: t, trIn: undefined, ...(o.link && { link: `${o.link}@${t.toFixed(3)}` }), len: o.len - d, kf: splitKeys(o.kf, d, true), maskKf: splitKeys(o.maskKf, d, true),
     ...(o.kind === 'video' && { offset: (o.offset ?? 0) + d }), ...(o.motion && { motion: { ...o.motion, in: 0 } }) };
   return [left, right];
 }
@@ -114,5 +114,6 @@ export function splitOverlay<O extends import('./overlay').Overlay>(o: O, t: num
 export function splitAudio<A extends import('./project').AudioItem>(a: A, t: number, assetDur: number, newId: string): [A, A] | null {
   const off = a.offset ?? 0, len = Math.max(0, Math.min(a.len ?? Infinity, assetDur - off)), d = t - a.at;
   if (d < MIN_PART || len - d < MIN_PART) return null;
-  return [{ ...a, len: d }, { ...a, id: newId, at: t, offset: off + d, len: len - d, ...(a.link && { link: `${a.link}@${t.toFixed(3)}` }) }];
+  const vl = a.volKf && splitKeys(a.volKf, d, false), vr = a.volKf && splitKeys(a.volKf, d, true);
+  return [{ ...a, len: d, fadeOut: undefined, volKf: vl }, { ...a, id: newId, at: t, offset: off + d, len: len - d, fadeIn: undefined, volKf: vr, ...(a.link && { link: `${a.link}@${t.toFixed(3)}` }) }];
 }

@@ -16,6 +16,7 @@ export const STILL_LEN = 5; // default seconds for an image clip
 // vfx: voice changer applied (assetId then points at the rendered copy, src at the original file).
 export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number; duck?: boolean;
   vfx?: import('./voicefx').VoiceFx; dn?: number /* noise reduction level */; src?: string;
+  volKf?: import('./layertrans').VolKey[] /* volume points, seconds from the item's start */; fadeIn?: number; fadeOut?: number;
   link?: string /* shared with the video layer this is the sound of (links.ts) */;
   track?: number /* 0 = A2, the first track under the clips' own sound; see tracks.ts */ };
 export const DUCK_LEVEL = 0.25; // ≈ −12 dB under speech

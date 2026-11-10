@@ -8,6 +8,7 @@
   import { clipAt, clipStarts, itemLen, trimAudio, type AudioItem, type Clip } from './project';
   import { t } from './i18n.svelte';
   import { trimOverlay, type Overlay } from './overlay';
+  import { envelopeAt, hasEnvelope, type VolKey } from './layertrans';
   import { fits, trackCount, trackOf, NO_TRACKS, type Tracks, type TrackFlags } from './tracks';
 
   let {
@@ -138,6 +139,30 @@
   }
   // The link of the selected item: its partner on the other track is outlined too.
   const selLink = $derived(overlays.find((o) => o.id === selectedOverlay)?.link ?? audios.find((a) => a.id === selectedAudio)?.link);
+  // ---- Volume line on audio items ----
+  // The item's volume envelope (fades and points) as a line: top = 150%, bottom = silent.
+  const ENV_N = 48;
+  const envPath = (a: AudioItem) => {
+    const len = audLen(a) || 1;
+    return Array.from({ length: ENV_N + 1 }, (_, i) => `${(i / ENV_N) * 100},${(1 - envelopeAt(a, (i / ENV_N) * len, len) / 1.5) * 100}`).join(' ');
+  };
+  // Drag a volume point up or down (and along, between its neighbours).
+  function dragVolKey(e: PointerEvent, a: AudioItem, k: number) {
+    e.stopPropagation();
+    if (isLocked('a', a)) return;
+    const el = e.currentTarget as HTMLElement, box = el.parentElement!.getBoundingClientRect();
+    const kf = a.volKf!, k0 = kf[k], x0 = e.clientX, y0 = e.clientY, len = audLen(a);
+    let moved = false;
+    el.setPointerCapture(e.pointerId);
+    el.onpointermove = (m) => {
+      if (!moved) ((moved = true), oncommit());
+      const lo = k > 0 ? kf[k - 1].t + 0.01 : 0, hi = k < kf.length - 1 ? kf[k + 1].t - 0.01 : len;
+      const t0 = Math.max(lo, Math.min(hi, k0.t + ((m.clientX - x0) / box.width) * len));
+      const v = Math.max(0, Math.min(1.5, k0.v - ((m.clientY - y0) / box.height) * 1.5));
+      onaudio(a.id, { volKf: kf.map((x, i): VolKey => (i === k ? { t: t0, v: Math.round(v * 100) / 100 } : x)) });
+    };
+    el.onpointerup = el.onpointercancel = () => (el.onpointermove = el.onpointerup = el.onpointercancel = null);
+  }
   // ---- Tools ----
   const outAt = (e: PointerEvent) => {
     const r = inner!.getBoundingClientRect();
@@ -677,6 +702,15 @@
             onpointerdown={(e) => moveAudio(e, item)} onclick={(e) => e.stopPropagation()}
             onkeydown={(e) => !isLocked('a', item) && keyMove(e, (d) => fits(audios, audLen, item.id, trackOf(item), Math.max(0, item.at + d), audLen(item)) && onaudio(item.id, { at: Math.max(0, item.at + d) }))}
             aria-label={t('a11y.item', { name: names.get(item.assetId) ?? '', a: fmtT(item.at) })}>
+            {#if hasEnvelope(item) || item.id === selectedAudio}
+              <svg class="env" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points={envPath(item)} vector-effect="non-scaling-stroke" />
+              </svg>
+              {#each item.volKf ?? [] as k, ki}
+                <span class="vk" style:left="{(k.t / (audLen(item) || 1)) * 100}%" style:top="calc(2px + {(1 - k.v / 1.5)} * (100% - 4px))"
+                  title="{Math.round(k.v * 100)}%" aria-hidden="true" onpointerdown={(e) => dragVolKey(e, item, ki)}></span>
+              {/each}
+            {/if}
             {#each beatsOf(item) as b}<span class="beat" style:left="{((b - item.at) / audLen(item)) * 100}%" aria-hidden="true"></span>{/each}
             <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span><Icon name={item.link ? 'link' : 'music_note'} size={13} /> {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
         {/each}
@@ -739,6 +773,9 @@
   .t-razor .ov, .t-razor .aud, .t-razor .seg { cursor: crosshair; }
   .t-slip .ov, .t-slip .aud { cursor: ew-resize; }
   .ov.pair:not(.sel), .aud.pair:not(.sel) { box-shadow: 0 0 0 1px currentColor; }
+  .env { position: absolute; inset: 2px 0; width: 100%; height: calc(100% - 4px); overflow: visible; pointer-events: none; }
+  .env polyline { fill: none; stroke: #ffd84d; stroke-width: 1.5; opacity: .85; }
+  .vk { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #ffd84d; border: 1px solid #111; cursor: move; touch-action: none; z-index: 2; }
   .sdrop { position: absolute; top: 20px; bottom: 0; width: 3px; transform: translateX(-1px); background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; z-index: 4; }
   .thumbs { display: flex; height: 100%; overflow: hidden; pointer-events: none; }
   .thumbs img { height: 100%; width: 0; flex: 1; object-fit: cover; opacity: .8; }

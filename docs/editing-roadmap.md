@@ -39,7 +39,11 @@ side is not done: use Unlink.
 - "Unlink" / "Link" actions in the inspectors. Migration: existing `volume` → linked audio item.
 - Player/export already handle audio items, so the layer video always plays muted.
 
-## Phase 5 — Layer transitions and audio keyframes
+## Phase 5 — Layer transitions and audio keyframes  ✅ done
+Done: `layertrans.ts` (applyTrans, envelopeAt, setVolKey) with tests. `trIn`/`trOut` on layers, drawn in the shared
+`drawOverlay` (preview + export); `fadeIn`/`fadeOut`/`volKf` on audio items, applied by the player per frame and
+baked into the export mix as a gain curve. Linked layer sound now goes through the export's voice bus.
+Still open: automatic cross-dissolve between touching items on a track (use fade out + fade in).
 - Layer transitions: `transIn` / `transOut` on overlays (fade, slide, zoom, wipe) with a duration,
   drawn in `drawLayers` and the export renderer; cross-dissolve when two items on a track touch.
 - Audio volume keyframes: `volKf: {t, v}[]` on audio items, a rubber-band line drawn in the clip,

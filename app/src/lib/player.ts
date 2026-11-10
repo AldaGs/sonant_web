@@ -1,4 +1,5 @@
 import { DUCK_LEVEL, clipAt, clipLen, clipStarts, clipBases, itemLen, type AudioItem, type Clip } from './project';
+import { envelopeAt, hasEnvelope } from './layertrans';
 import { nextKept, toOutput, toSource, outDuration, segAt, type Segment } from './cuts';
 import type { Overlay } from './overlay';
 import { duckGain } from './audio';
@@ -207,7 +208,8 @@ export class Player {
       const inside = into >= 0 && into < itemLen(item, s.durations.get(item.assetId) ?? 0);
       const local = into + (item.offset ?? 0);
       const duck = item.duck && out !== null ? duckGain(s.speech, out, DUCK_LEVEL) : 1;
-      setVolume(el, item.volume * duck);
+      const env = hasEnvelope(item) ? envelopeAt(item, into, itemLen(item, s.durations.get(item.assetId) ?? 0)) : 1;
+      setVolume(el, item.volume * duck * env);
       if (this.playing && inside) {
         if (Math.abs(el.currentTime - local) > 0.3) el.currentTime = local;
         if (el.paused) el.play().catch(() => {});

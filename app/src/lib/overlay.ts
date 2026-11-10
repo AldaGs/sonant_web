@@ -1,4 +1,5 @@
 import type { Caption } from './captions.ts';
+import { applyTrans } from './layertrans.ts';
 import { processed, keyOpts, compositeOp, type Blend, type ChromaKey, type Mask } from './layerfx.ts';
 import { drawCaption, drawText, fontString, resolveStyle, PRESETS, type Style } from './render.ts';
 
@@ -33,6 +34,8 @@ export type Overlay = {
   mask?: Mask; // media only: shape mask
   maskKf?: MaskKey[]; // mask animation: size / angle / position / feather keyed over the layer's time (sorted by t)
   bar?: ProgressBar; // text layer drawn as a progress bar instead of text
+  trIn?: import('./layertrans.ts').LayerTrans; // transition in (fade, zoom, slide, wipe) over its first d seconds
+  trOut?: import('./layertrans.ts').LayerTrans; // and out over its last d seconds
   link?: string; // video: shared with its sound's audio item (see links.ts)
   track?: number; // 0 = V2 (just above the main video); higher tracks draw on top. See tracks.ts
 };
@@ -224,9 +227,24 @@ function textCaption(o: Overlay): Caption {
 // Draw one overlay at output time t. `src` is the decoded frame/image (null for text or not ready).
 export function drawOverlay(ctx: CanvasRenderingContext2D, o: Overlay, t: number, src: CanvasImageSource | null, sw: number, sh: number): Placed | null {
   const W = ctx.canvas.width, H = ctx.canvas.height;
+  if (o.trIn || o.trOut) {
+    // Transitions: progress bars and path titles take the fade and wipe parts; other layers get all of it below.
+    const special = o.bar || (o.kind === 'text' && hasPath(o.motion));
+    const tr = applyTrans(o, t, { x: 0.5, y: 0.5, scale: 1, opacity: 1 });
+    ctx.save();
+    if (tr.clip) (ctx.beginPath(), ctx.rect(tr.clip[0] * W, 0, Math.max(0, tr.clip[1] - tr.clip[0]) * W, H), ctx.clip());
+    if (special) ctx.globalAlpha *= tr.tf.opacity;
+    const p = special ? (o.bar ? drawBar(ctx, o, t) : drawOnPath(ctx, o, t)) : drawLayer(ctx, o, t, src, sw, sh);
+    ctx.restore();
+    return p;
+  }
+  return drawLayer(ctx, o, t, src, sw, sh);
+}
+function drawLayer(ctx: CanvasRenderingContext2D, o: Overlay, t: number, src: CanvasImageSource | null, sw: number, sh: number): Placed | null {
+  const W = ctx.canvas.width, H = ctx.canvas.height;
   if (o.bar) return drawBar(ctx, o, t);
   if (o.kind === 'text' && hasPath(o.motion)) return drawOnPath(ctx, o, t);
-  const tf = liveTf(o, t, W / H);
+  const tf = o.trIn || o.trOut ? applyTrans(o, t, liveTf(o, t, W / H)).tf : liveTf(o, t, W / H);
   ctx.save();
   ctx.globalAlpha *= Math.max(0, Math.min(1, tf.opacity));
   if (o.blend) ctx.globalCompositeOperation = compositeOp(o.blend);

@@ -1,4 +1,5 @@
 import { decodeFileAudio } from './audiodecode.ts';
+import { envelopeAt, hasEnvelope } from './layertrans.ts';
 import { audioCodec } from './aacenc.ts';
 import type { Caption } from './captions.ts';
 import { startOf, endOf } from './captions.ts';
@@ -136,7 +137,11 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
     if (!buf || item.at >= seconds) continue;
     const len = Math.min(itemLen(item, buf.duration), seconds - item.at);
     const speech = src.speech ?? [];
-    if (len > 0) play(buf, item.at, item.offset ?? 0, len, item.duck && speech.length ? (t) => item.volume * duckGain(speech, t, DUCK_LEVEL) : item.volume);
+    const full = itemLen(item, buf.duration), env = hasEnvelope(item), duck = item.duck && speech.length;
+    // Linked sound of a video layer goes through the voice bus, like the layer's sound used to.
+    if (len > 0) play(buf, item.at, item.offset ?? 0, len, duck || env
+      ? (t) => item.volume * (duck ? duckGain(speech, t, DUCK_LEVEL) : 1) * (env ? envelopeAt(item, t - item.at, full) : 1)
+      : item.volume, item.link ? voice : ctx.destination);
   }
   // Sound of picture-in-picture layers that aren't muted.
   for (const o of ovAudio) {
