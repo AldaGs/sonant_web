@@ -43,6 +43,7 @@
   import { createPreview } from './lib/editor/preview.svelte';
   import { createKeys } from './lib/editor/keys.svelte';
   import { TOOLS, type Tool } from './lib/tools';
+  import { reconcile } from './lib/links';
   import { assignTracks, byTrack, isHidden, isMuted, type Tracks } from './lib/tracks';
   import { itemLen as audItemLen } from './lib/project';
 
@@ -70,6 +71,12 @@
   // lowest free track above whatever they overlap, so new layers land on top like before.
   $effect(() => {
     if (overlays.some((o) => o.track === undefined)) overlays = byTrack(assignTracks(overlays, (o) => o.len));
+  });
+  // Linked picture + sound (links.ts): after any edit, the side that changed leads and its partner follows.
+  const linkMem = new Map<string, { at: number; len: number; offset: number }>();
+  $effect(() => {
+    const r = reconcile(overlays, audios, (id) => durations.get(id) ?? 0, linkMem);
+    if (r) ((overlays = r.overlays), (audios = r.audios));
   });
   $effect(() => {
     if (audios.some((a) => a.track === undefined)) audios = assignTracks(audios, (a) => audItemLen(a, durations.get(a.assetId) ?? 0));
@@ -519,7 +526,7 @@
   const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline } = createEdit(ed);
   const { previewUrl, buildProxy, dropProxy, register, openHistory, restoreVersion, ago, saveToFile, importMedia, addVoiceover } = createMedia(ed);
   const { aimZooms, stabilize, reverseStrip, renderItem, setVoiceFx, detectSpeakers, findClips, setHlLen, makeAllShorts, previewClip, makeShort, run, cutAudioSilences, autoReframe, autoReframeAll, colorToAll, translateAll, detectBeatsFor, cutOnBeats } = createJobs(ed);
-  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
+  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
   const { leave, pointer, nudge, startPick, endPick } = createPreview(ed);
   const { step, keys } = createKeys(ed);
 </script>
@@ -588,7 +595,7 @@
         <MediaPanel {assets} {used} {urls} {thumbs} {proxyPct} {clips} {names} {durations} {kindOf} {fmt}
           {importMedia} {addToTimeline} {addOverlay} {buildProxy} {dropProxy} {removeAsset} {setClips} {setClipLen} />
       {:else if leftTab === 'audio'}
-        <AudioPanel {selAudio} {assets} {names} hasClips={clips.length > 0} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
+        <AudioPanel {selAudio} {unlinkSound} {assets} {names} hasClips={clips.length > 0} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
           {setAudio} {cutOnBeats} {detectBeatsFor} {setVoiceFx} {renderItem} {commit} {removeAudioItem} {cutAudioSilences}
           voCaps={captionsForOutput(displayCaps, segments)} {selectedSet} {language} {addVoiceover} />
       {:else}
@@ -687,7 +694,8 @@
     {/if}
     {#if selOverlay}
       <LayerInspector o={selOverlay} {outTime} {fonts} {overlays} {pickKey} {doneEditing} {closeLayer} {setOverlay} {setMotion} {setTf}
-        {jumpKey} {toggleKey} {punchIn} {clearKeys} {startPick} {removeOverlay} {restack} {layerT} {outNow} />
+        {jumpKey} {toggleKey} {punchIn} {clearKeys} {startPick} {removeOverlay} {restack} {layerT} {outNow}
+        linkedSound={selOverlay.link ? audios.find((a) => a.link === selOverlay.link) : undefined} {setAudio} {detachSound} {unlinkSound} />
     {/if}
     {#if !selOverlay}
     <StylePanel

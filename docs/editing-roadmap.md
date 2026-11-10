@@ -29,7 +29,11 @@ Still open: roll and slip on V1 strips (V1 trims already ripple, since the main 
 - Roll: drag the cut between two adjacent items on one track (one grows, the other shrinks).
 - Slip: drag inside a video layer / clip to change `offset` while keeping position and length (needs Phase 2 for V1).
 
-## Phase 4 — Linked video and audio for layer videos
+## Phase 4 — Linked video and audio for layer videos  ✅ done
+Done: `links.ts` (linkedAudio, linkLegacy, reconcile, unlink) with tests. A `link` id pairs a video layer with
+its audio item; after every edit a reconcile step makes the partner follow whichever side changed (and
+deletes it when one side is deleted). Splits give both right halves the same new link. Alt+drag to edit one
+side is not done: use Unlink.
 - A video layer's sound becomes its own `AudioItem` on an A track, linked by `link: string` (shared id).
 - Moving / trimming / splitting / deleting one moves the other while linked; Alt+drag edits one side.
 - "Unlink" / "Link" actions in the inspectors. Migration: existing `volume` → linked audio item.

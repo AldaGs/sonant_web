@@ -84,7 +84,7 @@
   // Drag sideways to move in time, up/down to change track. Nothing lands on top of another item:
   // a move that would overlap on that track is skipped, so the item stops at its neighbour.
   function moveAudio(e: PointerEvent, item: AudioItem) {
-    selectedAudio = item.id;
+    ((selectedAudio = item.id), (selectedOverlay = ''), (selected = -1)); // one selection at a time, so Delete hits what you clicked
     if (isLocked('a', item)) return void e.stopPropagation();
     if (toolBody(e, 'a', item.id)) return;
     const a = item.at, len = audLen(item), pts = outPoints(item.id), k0 = trackOf(item);
@@ -113,7 +113,7 @@
   // Layers: drag sideways to move in time, up/down to change track (up = higher track = drawn on top).
   function moveOverlay(e: PointerEvent, o: Overlay) {
     if (isLocked('v', o)) return void e.stopPropagation();
-    selectedOverlay = o.id;
+    ((selectedOverlay = o.id), (selectedAudio = ''), (selected = -1));
     if (toolBody(e, 'v', o.id)) return;
     const a = o.at, pts = outPoints(o.id), k0 = trackOf(o);
     drag(e, (d, on, dy) => {
@@ -136,6 +136,8 @@
       if (fits(overlays, ovLen, o.id, trackOf(o), n.at, n.len)) onoverlay(o.id, p);
     });
   }
+  // The link of the selected item: its partner on the other track is outlined too.
+  const selLink = $derived(overlays.find((o) => o.id === selectedOverlay)?.link ?? audios.find((a) => a.id === selectedAudio)?.link);
   // ---- Tools ----
   const outAt = (e: PointerEvent) => {
     const r = inner!.getBoundingClientRect();
@@ -598,14 +600,14 @@
       <div class="row layers">
         {#each Array.from({ length: vCount }, (_, i) => i) as i}<div class="lane" style:top="{i * V_ROW}px" style:height="{V_ROW - 4}px" aria-hidden="true"></div>{/each}
         {#each overlays as o (o.id)}
-          <button class="ov" class:sel={o.id === selectedOverlay} class:txt={o.kind === 'text'} class:locked={isLocked('v', o)} class:off={tracks.v[trackOf(o)]?.hidden} style:left={pct(o.at)}
+          <button class="ov" class:sel={o.id === selectedOverlay} class:pair={!!o.link && o.link === selLink} class:txt={o.kind === 'text'} class:locked={isLocked('v', o)} class:off={tracks.v[trackOf(o)]?.hidden} style:left={pct(o.at)}
             style:top="{ovTop(o)}px" style:width={pct(Math.max(0.05, Math.min(o.len, total - o.at)))}
             title={ovLabel(o)} aria-pressed={o.id === selectedOverlay}
             onpointerdown={(e) => moveOverlay(e, o)} onclick={(e) => e.stopPropagation()}
             onkeydown={(e) => !isLocked('v', o) && keyMove(e, (d) => fits(overlays, ovLen, o.id, trackOf(o), Math.max(0, o.at + d), o.len) && onoverlay(o.id, { at: Math.max(0, o.at + d) }))}
             aria-label={t('a11y.item', { name: ovLabel(o), a: fmtT(o.at) })}>
             {#each o.kf ?? [] as k}<span class="kd" style:left="{(k.t / o.len) * 100}%" aria-hidden="true"><Icon name="diamond" size={10} /></span>{/each}
-            <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span><Icon name={ovIcon(o)} size={13} /> {ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
+            <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span><Icon name={ovIcon(o)} size={13} />{#if o.link}<Icon name="link" size={12} />{/if} {ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
         {/each}
       </div>
 
@@ -669,14 +671,14 @@
       <div class="row music">
         {#each Array.from({ length: aCount }, (_, i) => i) as i}<div class="lane" style:top="{i * A_ROW}px" style:height="{A_ROW - 4}px" aria-hidden="true"></div>{/each}
         {#each audios as item (item.id)}
-          <button class="aud" class:sel={item.id === selectedAudio} class:locked={isLocked('a', item)} class:off={tracks.a[trackOf(item)]?.muted} style:left={pct(item.at)}
+          <button class="aud" class:sel={item.id === selectedAudio} class:pair={!!item.link && item.link === selLink} class:locked={isLocked('a', item)} class:off={tracks.a[trackOf(item)]?.muted} style:left={pct(item.at)}
             style:top="{trackOf(item) * A_ROW}px" style:width={pct(Math.min(audLen(item), total - item.at))}
             title={names.get(item.assetId)} aria-pressed={item.id === selectedAudio}
             onpointerdown={(e) => moveAudio(e, item)} onclick={(e) => e.stopPropagation()}
             onkeydown={(e) => !isLocked('a', item) && keyMove(e, (d) => fits(audios, audLen, item.id, trackOf(item), Math.max(0, item.at + d), audLen(item)) && onaudio(item.id, { at: Math.max(0, item.at + d) }))}
             aria-label={t('a11y.item', { name: names.get(item.assetId) ?? '', a: fmtT(item.at) })}>
             {#each beatsOf(item) as b}<span class="beat" style:left="{((b - item.at) / audLen(item)) * 100}%" aria-hidden="true"></span>{/each}
-            <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span><Icon name="music_note" size={13} /> {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
+            <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span><Icon name={item.link ? 'link' : 'music_note'} size={13} /> {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
         {/each}
       </div>
 
@@ -736,6 +738,7 @@
   .seg.sel { border-color: var(--accent); cursor: grab; }
   .t-razor .ov, .t-razor .aud, .t-razor .seg { cursor: crosshair; }
   .t-slip .ov, .t-slip .aud { cursor: ew-resize; }
+  .ov.pair:not(.sel), .aud.pair:not(.sel) { box-shadow: 0 0 0 1px currentColor; }
   .sdrop { position: absolute; top: 20px; bottom: 0; width: 3px; transform: translateX(-1px); background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; z-index: 4; }
   .thumbs { display: flex; height: 100%; overflow: hidden; pointer-events: none; }
   .thumbs img { height: 100%; width: 0; flex: 1; object-fit: cover; opacity: .8; }

@@ -1,5 +1,6 @@
 // Media and persistence: registering files (thumbnails, waveforms, proxies, noise-reduced audio),
 // loading and autosaving the project, version history and project files, importing media.
+import { linkLegacy } from '../links';
 import { onMount } from 'svelte';
 import { migrateStyle } from '../render';
 import { registerFont, type SavedFont } from '../fonts';
@@ -124,6 +125,7 @@ export function createMedia(ed: Ed) {
       ed.clips = doc.clips ?? [];
       ed.audios = doc.audios ?? [];
       ed.overlays = doc.overlays ?? [];
+      relink();
       ed.clipVolume = doc.clipVolume ?? 1;
       ed.wordCache = doc.words ?? {};
       restoreDoc(doc);
@@ -134,6 +136,11 @@ export function createMedia(ed: Ed) {
     setTimeout(end, 4000); // opened and drawing: no longer "crashed while opening"
   });
 
+  // Video layers saved with their own sound get it as a linked audio item (links.ts).
+  function relink() {
+    const r = linkLegacy(ed.overlays, ed.audios, (id) => ed.durations.get(id) ?? 0);
+    if (r) ((ed.overlays = r.overlays), (ed.audios = r.audios));
+  }
   function restoreDoc(doc: ProjectDoc) {
     ed.name = doc.name ?? '';
     ed.speakers = doc.speakers ?? [];
@@ -193,6 +200,7 @@ export function createMedia(ed: Ed) {
     ed.clips = (d.clips ?? []).filter((c) => have.has(c.assetId));
     ed.audios = (d.audios ?? []).filter((a) => have.has(a.assetId));
     ed.overlays = (d.overlays ?? []).filter((o) => !o.assetId || have.has(o.assetId));
+    relink();
     ed.clipVolume = d.clipVolume ?? 1;
     restoreDoc({ ...d, assets: ed.assets } as ProjectDoc);
     ed.histDialog?.close();

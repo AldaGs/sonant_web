@@ -2,6 +2,7 @@
 import { type Style } from '../render';
 import { trim, outDuration, splitAt, toSource } from '../cuts';
 import { itemLen, type Asset, type AudioItem } from '../project';
+import { linkedAudio, unlink as unlinkPair } from '../links';
 import { rippleTrim, rippleDelete, rollEdit, slip, type Span, type Patch } from '../tools';
 import { moveToTrack, removeTrack, setFlag, trackOf, isLockedV, isLockedA, splitOverlay, splitAudio, byTrack, type TrackFlags } from '../tracks';
 import { type ChromaKey } from '../layerfx';
@@ -22,7 +23,26 @@ export function createLayers(ed: Ed) {
   function addOverlay(a: Asset, at = ed.outNow()) {
     const end = outDuration(ed.segments) || a.duration;
     const len = a.kind === 'video' ? Math.min(a.duration, Math.max(1, end - at)) : Math.min(5, Math.max(1, end - at));
-    pushOverlay(newMedia(a.kind === 'video' ? 'video' : 'image', a.id, at, len));
+    const o = newMedia(a.kind === 'video' ? 'video' : 'image', a.id, at, len);
+    if (a.kind !== 'video') return pushOverlay(o);
+    // Video layers bring their sound as a linked audio item on an A track (see links.ts).
+    o.link = crypto.randomUUID();
+    pushOverlay(o);
+    ed.audios = [...ed.audios, linkedAudio(o, ed.audios, (id) => ed.durations.get(id) ?? 0)];
+  }
+  // Give a video layer its own linked sound item (layers from older versions, or after unlinking and deleting it).
+  function detachSound(o: Overlay) {
+    if (o.kind !== 'video' || o.link) return;
+    ed.commit();
+    const x = { ...o, link: crypto.randomUUID(), volume: 0 };
+    ed.overlays = ed.overlays.map((y) => (y.id === o.id ? x : y));
+    ed.audios = [...ed.audios, linkedAudio(x, ed.audios, (id) => ed.durations.get(id) ?? 0, o.volume || 1)];
+  }
+  // Unlink a picture and its sound so they can be moved and trimmed apart.
+  function unlinkSound(link: string) {
+    ed.commit();
+    const r = unlinkPair(ed.overlays, ed.audios, link);
+    ((ed.overlays = r.overlays), (ed.audios = r.audios));
   }
   const addText = () => pushOverlay(newText(ed.outNow(), t('newText')));
   // Animated title: a text layer on top of the stack that animates in and out along an S curve.
@@ -169,6 +189,13 @@ export function createLayers(ed: Ed) {
       ed.commit();
       ed.audios = ed.audios.flatMap((x) => (x.id === id ? r : [x]));
     }
+    // A linked partner is cut at the same place, so both halves stay paired.
+    const link = (kind === 'v' ? ed.overlays : ed.audios).find((x) => x.id === id)?.link;
+    if (link) {
+      const po = kind === 'a' && ed.overlays.find((x) => x.link === link), pa = kind === 'v' && ed.audios.find((x) => x.link === link);
+      if (po) ed.overlays = byTrack(ed.overlays.flatMap((x) => (x === po ? splitOverlay(po, t, crypto.randomUUID()) ?? [x] : [x])));
+      if (pa) ed.audios = ed.audios.flatMap((x) => (x === pa ? splitAudio(pa, t, ed.durations.get(pa.assetId) ?? 0, crypto.randomUUID()) ?? [x] : [x]));
+    }
     return true;
   }
   // Ripple delete the selected layer or audio item: later items on its track close the gap.
@@ -216,5 +243,5 @@ export function createLayers(ed: Ed) {
     if (final) stripKeyEditing = false;
   }
 
-  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey };
+  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey };
 }

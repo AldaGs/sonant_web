@@ -10,7 +10,9 @@
   import type { Font } from './fonts';
 
   let { o, outTime, fonts, overlays, pickKey, doneEditing, closeLayer, setOverlay, setMotion, setTf,
-    jumpKey, toggleKey, punchIn, clearKeys, startPick, removeOverlay, restack, layerT, outNow }: {
+    jumpKey, toggleKey, punchIn, clearKeys, startPick, removeOverlay, restack, layerT, outNow, linkedSound, setAudio, detachSound, unlinkSound }: {
+    linkedSound?: import('./project').AudioItem; setAudio: (id: string, patch: Partial<import('./project').AudioItem>) => void;
+    detachSound: (o: Overlay) => void; unlinkSound: (link: string) => void;
     o: Overlay; outTime: number; fonts: Font[]; overlays: Overlay[]; pickKey: string | null;
     doneEditing: () => void; closeLayer: () => void;
     setOverlay: (id: string, patch: Partial<Overlay>, snapshot?: boolean) => void;
@@ -153,10 +155,17 @@
       {/if}
     </details>
   {/if}
-  {#if o.kind === 'video'}
+  {#if o.kind === 'video' && linkedSound}
+    <!-- The sound is its own item on an A track, linked to this layer. -->
+    <label class="vol">{t('volume')} <span class="mono small">{Math.round(linkedSound.volume * 100)}% · A{(linkedSound.track ?? 0) + 2}</span>
+      <input type="range" min="0" max="1" step="0.05" value={linkedSound.volume} oninput={(e) => setAudio(linkedSound.id, { volume: +e.currentTarget.value })} />
+    </label>
+    <div class="lrow"><button class="sm" onclick={() => unlinkSound(o.link!)} title={t('unlinkTip')}><Icon name="link_off" /> {t('unlink')}</button></div>
+  {:else if o.kind === 'video'}
     <label class="vol">{t('volume')} <span class="mono small">{Math.round((o.volume ?? 0) * 100)}%</span>
       <input type="range" min="0" max="1" step="0.05" value={o.volume ?? 0} oninput={(e) => setOverlay(o.id, { volume: +e.currentTarget.value })} />
     </label>
+    <div class="lrow"><button class="sm" onclick={() => detachSound(o)} title={t('detachTip')}><Icon name="link" /> {t('detachSound')}</button></div>
   {/if}
   <div class="lrow">
     <button class="sm" class:on={o.behind} aria-pressed={!!o.behind} title={t('layerBehind')}

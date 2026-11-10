@@ -86,12 +86,16 @@ import arrow_selector_tool from '@material-symbols/svg-400/rounded/arrow_selecto
 import arrow_range from '@material-symbols/svg-400/rounded/arrow_range.svg?raw';
 import keyboard_tab from '@material-symbols/svg-400/rounded/keyboard_tab.svg?raw';
 import swap_horiz from '@material-symbols/svg-400/rounded/swap_horiz.svg?raw';
+import link from '@material-symbols/svg-400/rounded/link.svg?raw';
+import link_off from '@material-symbols/svg-400/rounded/link_off.svg?raw';
 import magnet from 'lucide-static/icons/magnet.svg?raw';
 
 // Material paths have no fill; give them the text colour. Lucide icons are already stroke=currentColor.
 const m = (svg: string) => svg.replace('<svg', '<svg fill="currentColor" aria-hidden="true" focusable="false"');
 const l = (svg: string) => svg.replace(/<!--.*?-->/s, '').replace('<svg', '<svg aria-hidden="true" focusable="false"');
 export const ICONS = {
+  link: m(link),
+  link_off: m(link_off),
   arrow_selector_tool: m(arrow_selector_tool),
   arrow_range: m(arrow_range),
   keyboard_tab: m(keyboard_tab),

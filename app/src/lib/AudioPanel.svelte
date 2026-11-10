@@ -9,9 +9,10 @@
   import type { Asset, AudioItem } from './project';
   import type { Caption } from './captions';
 
-  let { selAudio, assets, names, hasClips, clipVolume = $bindable(), denoise = $bindable(), cleanPct, vfxBusy, beatBusy, silBusy, busy, hasMedia,
+  let { unlinkSound, selAudio, assets, names, hasClips, clipVolume = $bindable(), denoise = $bindable(), cleanPct, vfxBusy, beatBusy, silBusy, busy, hasMedia,
     setAudio, cutOnBeats, detectBeatsFor, setVoiceFx, renderItem, commit, removeAudioItem, cutAudioSilences,
     voCaps, selectedSet, language, addVoiceover }: {
+    unlinkSound: (link: string) => void;
     selAudio: AudioItem | undefined; assets: Asset[]; names: Map<string, string>; hasClips: boolean;
     clipVolume: number; denoise: number; cleanPct: number | null;
     vfxBusy: boolean; beatBusy: boolean; silBusy: boolean; busy: boolean; hasMedia: boolean;
@@ -28,7 +29,8 @@
   <section class="layer music" aria-label={t('musicH')}>
     <div class="lhead"><h3>{t('musicH')}</h3></div>
     <div class="lrow">
-      <span class="aname small selname"><Icon name="music_note" size={16} /> {names.get(selAudio.assetId)}</span>
+      <span class="aname small selname"><Icon name={selAudio.link ? 'link' : 'music_note'} size={16} /> {names.get(selAudio.assetId)}</span>
+      {#if selAudio.link}<button class="sm" onclick={() => unlinkSound(selAudio.link!)} title={t('unlinkTip')}><Icon name="link_off" /> {t('unlink')}</button>{/if}
       <label class="vol inline">{t('volume')}
         <input type="range" min="0" max="1" step="0.05" value={selAudio.volume}
           oninput={(e) => setAudio(selAudio.id, { volume: +e.currentTarget.value })} />
