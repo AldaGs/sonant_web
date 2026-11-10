@@ -88,6 +88,8 @@ export interface Ed {
   readonly outTime: number;
   overlays: Overlay[];
   tracks: import('../tracks').Tracks;
+  tool: import('../tools').Tool;
+  readonly rippleDeleteSel: () => boolean;
   readonly shownOverlays: Overlay[]; // overlays not on a hidden track
   readonly liveAudios: AudioItem[]; // audio items not on a muted track
   past: Snap[];

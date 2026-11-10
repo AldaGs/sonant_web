@@ -16,9 +16,12 @@
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
     pending = [], beats, out, zooms = [], onzoom,
     overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
-    onmovestrip = () => false,
+    onmovestrip = () => false, tool = 'select', ontool = () => {}, onrazor = () => {},
     tracks = NO_TRACKS, onretrack = () => {}, ontrack = () => {}, onaddtrack = () => {}, ondroptrack = () => false,
   }: {
+    tool?: import('./tools').Tool;
+    ontool?: (kind: 'v' | 'a', id: string, op: 'ripple' | 'roll' | 'slip', side: 'start' | 'end', d: number) => void; // live, from drag start
+    onrazor?: (kind: 'v' | 'a' | 's', id: string, out: number) => void; // cut a layer / audio item / V1 strip at output time
     onmovestrip?: (i: number, out: number) => boolean; // drop a V1 strip at another place (output time)
     tracks?: Tracks; // track switches (hide/mute, lock), V2… and A2…
     onretrack?: (kind: 'v' | 'a', id: string, track: number) => void; // move an item to another track, live
@@ -83,6 +86,7 @@
   function moveAudio(e: PointerEvent, item: AudioItem) {
     selectedAudio = item.id;
     if (isLocked('a', item)) return void e.stopPropagation();
+    if (toolBody(e, 'a', item.id)) return;
     const a = item.at, len = audLen(item), pts = outPoints(item.id), k0 = trackOf(item);
     drag(e, (d, on, dy) => {
       const cur = audios.find((x) => x.id === item.id) ?? item;
@@ -99,6 +103,7 @@
     const dur = durations.get(item.assetId) ?? 0, pts = outPoints(item.id);
     const x = side === 'start' ? item.at : item.at + audLen(item);
     if (isLocked('a', item)) return void e.stopPropagation();
+    if (toolEdge(e, 'a', item.id, side)) return;
     drag(e, (d, on) => {
       const p = { ...item, ...trimAudio(item, dur, side, d + nearest([x + d], pts, on, idOut)) };
       if (fits(audios, audLen, item.id, trackOf(item), p.at, audLen(p))) onaudio(item.id, p);
@@ -109,6 +114,7 @@
   function moveOverlay(e: PointerEvent, o: Overlay) {
     if (isLocked('v', o)) return void e.stopPropagation();
     selectedOverlay = o.id;
+    if (toolBody(e, 'v', o.id)) return;
     const a = o.at, pts = outPoints(o.id), k0 = trackOf(o);
     drag(e, (d, on, dy) => {
       const cur = overlays.find((x) => x.id === o.id) ?? o;
@@ -124,15 +130,48 @@
     const dur = o.kind === 'video' ? durations.get(o.assetId ?? '') ?? Infinity : Infinity, pts = outPoints(o.id);
     const x = side === 'start' ? o.at : o.at + o.len;
     if (isLocked('v', o)) return void e.stopPropagation();
+    if (toolEdge(e, 'v', o.id, side)) return;
     drag(e, (d, on) => {
       const p = trimOverlay(o, side, d + nearest([x + d], pts, on, idOut), dur), n = { ...o, ...p };
       if (fits(overlays, ovLen, o.id, trackOf(o), n.at, n.len)) onoverlay(o.id, p);
     });
   }
+  // ---- Tools ----
+  const outAt = (e: PointerEvent) => {
+    const r = inner!.getBoundingClientRect();
+    return Math.max(0, Math.min(total, ((e.clientX - r.left) / r.width) * total));
+  };
+  // Pointer down on a layer / audio item body with a tool other than select. Returns true when handled.
+  function toolBody(e: PointerEvent, kind: 'v' | 'a', id: string): boolean {
+    if (tool === 'razor') {
+      e.stopPropagation();
+      eatNextClick();
+      onrazor(kind, id, outAt(e));
+      return true;
+    }
+    if (tool === 'slip') {
+      // Dragging right shows earlier footage (the file slides right under the item), like an NLE.
+      drag(e, (d) => ontool(kind, id, 'slip', 'end', -d));
+      return true;
+    }
+    return false;
+  }
+  // Edge drag with ripple / roll.
+  function toolEdge(e: PointerEvent, kind: 'v' | 'a', id: string, side: 'start' | 'end'): boolean {
+    if (tool !== 'ripple' && tool !== 'roll') return false;
+    const op = tool;
+    drag(e, (d) => ontool(kind, id, op, side, d));
+    return true;
+  }
   // Drag the selected V1 strip (mouse/pen, not its trim handles) to move it elsewhere in the sequence.
   // A marker shows where it will land; it's dropped at the nearest clip boundary.
   let stripDrop = $state<number | null>(null);
   function grabStrip(e: PointerEvent, i: number) {
+    if (tool === 'razor' && e.button === 0) {
+      e.stopPropagation();
+      eatNextClick();
+      return onrazor('s', '', outAt(e));
+    }
     if (i !== selected || e.button !== 0 || e.pointerType === 'touch' || (e.target as Element).closest('.handle')) return;
     e.stopPropagation();
     const el = e.currentTarget as HTMLElement, x0 = e.clientX;
@@ -545,7 +584,7 @@
   <div class="scroller" class:centered bind:this={scroller} bind:clientWidth={vw}>
     {#if centered}<div class="centerline" aria-hidden="true"></div>{/if}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="inner" style:--music="{aCount * A_ROW - 4}px" style:--ov="{vCount * V_ROW - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1} style:transform={centered ? `translateX(${shift}px)` : null}
+    <div class="inner" style:--music="{aCount * A_ROW - 4}px" style:--ov="{vCount * V_ROW - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1} class:t-razor={tool === 'razor'} class:t-slip={tool === 'slip'} style:transform={centered ? `translateX(${shift}px)` : null}
       role="slider" tabindex="0" aria-label={t('timeline')} aria-valuemin={0} aria-valuemax={total} aria-valuenow={playhead ?? 0}
       onclick={seekAt} onpointerdown={scrub}
       onkeydown={(e) => {
@@ -695,6 +734,8 @@
   .tick:first-child { transform: none; }
   .seg { position: absolute; top: 0; bottom: 0; overflow: hidden; border-radius: 6px; background: var(--surface); border: 2px solid var(--border-soft); }
   .seg.sel { border-color: var(--accent); cursor: grab; }
+  .t-razor .ov, .t-razor .aud, .t-razor .seg { cursor: crosshair; }
+  .t-slip .ov, .t-slip .aud { cursor: ew-resize; }
   .sdrop { position: absolute; top: 20px; bottom: 0; width: 3px; transform: translateX(-1px); background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; z-index: 4; }
   .thumbs { display: flex; height: 100%; overflow: hidden; pointer-events: none; }
   .thumbs img { height: 100%; width: 0; flex: 1; object-fit: cover; opacity: .8; }

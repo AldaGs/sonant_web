@@ -1,7 +1,8 @@
 // Layers over the video (text, titles, images, videos): adding, editing, keyframes, stacking, templates.
 import { type Style } from '../render';
 import { trim, outDuration, splitAt, toSource } from '../cuts';
-import { itemLen, type Asset } from '../project';
+import { itemLen, type Asset, type AudioItem } from '../project';
+import { rippleTrim, rippleDelete, rollEdit, slip, type Span, type Patch } from '../tools';
 import { moveToTrack, removeTrack, setFlag, trackOf, isLockedV, isLockedA, splitOverlay, splitAudio, byTrack, type TrackFlags } from '../tracks';
 import { type ChromaKey } from '../layerfx';
 import { placeLayers, fromProject, type Template } from '../templates';
@@ -131,6 +132,64 @@ export function createLayers(ed: Ed) {
     ((ed.overlays = byTrack(ovs)), (ed.audios = auds));
     return n;
   }
+  // ---- Timeline tools (ripple / roll / slip / razor) on layers ('v') and audio items ('a') ----
+  const ovSpan = (o: Overlay): Span => ({ id: o.id, track: trackOf(o), at: o.at, len: o.len,
+    offset: o.kind === 'video' ? o.offset ?? 0 : undefined, max: o.kind === 'video' ? ed.durations.get(o.assetId ?? '') ?? Infinity : Infinity });
+  const audSpan = (a: AudioItem): Span => {
+    const max = ed.durations.get(a.assetId) ?? 0;
+    return { id: a.id, track: trackOf(a), at: a.at, len: itemLen(a, max), offset: a.offset ?? 0, max };
+  };
+  // Live drags are measured from the state when the drag began (reset by toolDone at the next drag start).
+  let toolFrom: { overlays: Overlay[]; audios: AudioItem[] } | null = null;
+  const toolDone = () => (toolFrom = null);
+  function toolEdit(kind: 'v' | 'a', id: string, op: 'ripple' | 'roll' | 'slip', side: 'start' | 'end', d: number) {
+    toolFrom ??= $state.snapshot({ overlays: ed.overlays, audios: ed.audios }) as { overlays: Overlay[]; audios: AudioItem[] };
+    const spans = kind === 'v' ? toolFrom.overlays.map(ovSpan) : toolFrom.audios.map(audSpan);
+    const s = spans.find((x) => x.id === id);
+    if (!s || (kind === 'v' ? ed.tracks.v : ed.tracks.a)[s.track]?.locked) return;
+    let m: Map<string, Patch> | null;
+    if (op === 'slip') {
+      const p = slip(s, d);
+      m = p && new Map([[id, p]]);
+    } else m = op === 'ripple' ? rippleTrim(spans, id, side, d) : rollEdit(spans, id, side, d);
+    if (!m) return;
+    if (kind === 'v') ed.overlays = toolFrom.overlays.map((o) => (m.has(o.id) ? { ...o, ...m.get(o.id) } : o));
+    else ed.audios = toolFrom.audios.map((a) => (m.has(a.id) ? { ...a, ...m.get(a.id) } : a));
+  }
+  // Razor: cut one layer / audio item at output time t.
+  function razor(kind: 'v' | 'a', id: string, t: number) {
+    if (kind === 'v') {
+      const o = ed.overlays.find((x) => x.id === id), r = o && !isLockedV(ed.tracks, o) && splitOverlay(o, t, crypto.randomUUID());
+      if (!r) return false;
+      ed.commit();
+      ed.overlays = byTrack(ed.overlays.flatMap((x) => (x.id === id ? r : [x])));
+    } else {
+      const a = ed.audios.find((x) => x.id === id), r = a && !isLockedA(ed.tracks, a) && splitAudio(a, t, ed.durations.get(a.assetId) ?? 0, crypto.randomUUID());
+      if (!r) return false;
+      ed.commit();
+      ed.audios = ed.audios.flatMap((x) => (x.id === id ? r : [x]));
+    }
+    return true;
+  }
+  // Ripple delete the selected layer or audio item: later items on its track close the gap.
+  function rippleDeleteSel(): boolean {
+    const o = ed.overlays.find((x) => x.id === ed.selectedOverlay), a = ed.audios.find((x) => x.id === ed.selectedAudio);
+    if (o && !isLockedV(ed.tracks, o)) {
+      const m = rippleDelete(ed.overlays.map(ovSpan), o.id);
+      ed.commit();
+      ed.overlays = ed.overlays.flatMap((x) => (x.id === o.id ? [] : [m.has(x.id) ? { ...x, ...m.get(x.id) } : x]));
+      ed.selectedOverlay = '';
+      return true;
+    }
+    if (a && !isLockedA(ed.tracks, a)) {
+      const m = rippleDelete(ed.audios.map(audSpan), a.id);
+      ed.commit();
+      ed.audios = ed.audios.flatMap((x) => (x.id === a.id ? [] : [m.has(x.id) ? { ...x, ...m.get(x.id) } : x]));
+      ed.selectedAudio = '';
+      return true;
+    }
+    return false;
+  }
   // Track header switches: hide (V) / mute (A) and lock.
   const setTrack = (kind: 'v' | 'a', track: number, patch: TrackFlags) => (ed.tracks = { ...ed.tracks, [kind]: setFlag(ed.tracks[kind], track, patch) });
   // An extra empty track on top, to drop things onto.
@@ -157,5 +216,5 @@ export function createLayers(ed: Ed) {
     if (final) stripKeyEditing = false;
   }
 
-  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, setTrack, addTrack, dropTrack, setStripKey };
+  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey };
 }

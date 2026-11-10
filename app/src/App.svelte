@@ -42,6 +42,7 @@
   import { createLayers } from './lib/editor/layers.svelte';
   import { createPreview } from './lib/editor/preview.svelte';
   import { createKeys } from './lib/editor/keys.svelte';
+  import { TOOLS, type Tool } from './lib/tools';
   import { assignTracks, byTrack, isHidden, isMuted, type Tracks } from './lib/tracks';
   import { itemLen as audItemLen } from './lib/project';
 
@@ -58,6 +59,8 @@
   let selectedOverlay = $state('');
   // Numbered tracks (V2… for layers, A2… for music & VO) and their hide / mute / lock switches.
   let tracks = $state<Tracks>({ v: [], a: [] });
+  const TOOL_ICON = { select: 'arrow_selector_tool', razor: 'content_cut', ripple: 'keyboard_tab', roll: 'arrow_range', slip: 'swap_horiz' } as const;
+  let tool = $state<Tool>('select'); // timeline tool (V select, C razor, B ripple, R roll, Y slip)
   const shownOverlays = $derived(overlays.filter((o) => !isHidden(tracks, o)));
   const liveAudios = $derived(audios.filter((a) => !isMuted(tracks, a)));
   // The player keeps every element in step (so nothing keeps playing after a toggle); muted/hidden ones are silent.
@@ -436,6 +439,8 @@
     get outTime() { return outTime; },
     get overlays() { return overlays; }, set overlays(v) { overlays = v; },
     get tracks() { return tracks; }, set tracks(v) { tracks = v; },
+    get tool() { return tool; }, set tool(v) { tool = v; },
+    get rippleDeleteSel() { return rippleDeleteSel; },
     get shownOverlays() { return shownOverlays; },
     get liveAudios() { return liveAudios; },
     get past() { return past; }, set past(v) { past = v; },
@@ -514,7 +519,7 @@
   const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline } = createEdit(ed);
   const { previewUrl, buildProxy, dropProxy, register, openHistory, restoreVersion, ago, saveToFile, importMedia, addVoiceover } = createMedia(ed);
   const { aimZooms, stabilize, reverseStrip, renderItem, setVoiceFx, detectSpeakers, findClips, setHlLen, makeAllShorts, previewClip, makeShort, run, cutAudioSilences, autoReframe, autoReframeAll, colorToAll, translateAll, detectBeatsFor, cutOnBeats } = createJobs(ed);
-  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
+  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
   const { leave, pointer, nudge, startPick, endPick } = createPreview(ed);
   const { step, keys } = createKeys(ed);
 </script>
@@ -728,6 +733,12 @@
         <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}><Icon name="content_cut" /> {t('splitAt')}</button>
         <button class="sm" onclick={cutAll} title={t('splitAllTip')}><Icon name="content_cut" /> {t('splitAll')}</button>
+        <span class="tools" role="radiogroup" aria-label={t('tlTools')}>
+          {#each TOOLS as k}
+            <button class="sm icon" class:on={tool === k} role="radio" aria-checked={tool === k} onclick={() => (tool = k)}
+              title={t('tool.' + k)} aria-label={t('tool.' + k)}><Icon name={TOOL_ICON[k]} /></button>
+          {/each}
+        </span>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
         <button class="sm icon" class:on={snapOn} aria-pressed={snapOn} title={t('snapTip')} aria-label={t('snap')}
           onclick={() => (snapOn = !snapOn)}><Icon name="magnet" /></button>
@@ -748,7 +759,8 @@
       {overlays} bind:selectedOverlay {tracks}
       onretrack={(k, id, n) => retrack(k, id, n, false)} ontrack={setTrack} onaddtrack={addTrack} ondroptrack={dropTrack}
       onoverlay={(id, patch) => setOverlay(id, patch, false)}
-      oncommit={() => (trimDone(), commit())}
+      oncommit={() => (trimDone(), toolDone(), commit())}
+      {tool} ontool={toolEdit} onrazor={(k, id, t0) => (k === 's' ? setSegs(splitAt(segments, toSource(segments, t0))) : razor(k, id, t0))}
       ontrim={trimStrip} onmovestrip={moveStrip}
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
       onaudio={(id, patch) => setAudio(id, patch)} />
@@ -758,7 +770,7 @@
     <button class="scrim" onclick={() => (sheet = null)} aria-label={t('ex.close')} tabindex="-1"></button>
   {/if}
 
-  <nav class="dock" aria-label={t('tools')}>
+  <nav class="dock" aria-label={t('tlTools')}>
     {#each [['media', 'video_library'], ['audio', 'music_note'], ['ai', 'auto_awesome_motion']] as const as [k, icon]}
       <button class:on={sheet === 'assets' && leftTab === k} onclick={() => openSheet('assets', k)}>
         <Icon name={icon} size={24} />
@@ -804,7 +816,7 @@
         <h3>{t('keysTitle')}</h3>
         <dl>
           {#each [['Space', 'k.play'], ['J / K / L', 'k.jkl'], ['← / →', 'k.frame'], ['Shift + ← / →', 'k.second'], ['Home / End', 'k.ends'],
-            ['S', 'k.split'], ['Shift + S', 'k.splitAll'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['Shift + Del', 'k.lift'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
+            ['V / C / B / R / Y', 'k.tools'], ['S', 'k.split'], ['Shift + S', 'k.splitAll'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['Shift + Del', 'k.lift'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
             ['A', 'k.auto'], ['T', 'k.text'], ['Ctrl/⌘ + Z', 'undo'], ['Ctrl/⌘ + Shift + Z', 'redo'], ['Ctrl/⌘ + S', 'k.save'], ['Esc', 'k.esc'], ['?', 'keysTitle']] as [k, d]}
             <dt><kbd>{k}</kbd></dt><dd>{t(d)}</dd>
           {/each}

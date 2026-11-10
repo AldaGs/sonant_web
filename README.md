@@ -59,6 +59,7 @@ Everything runs locally in the browser. No server, no account, and your media ne
   - Time ruler and zoom (wheel scrubs, pinch or Ctrl+wheel zooms; on phones, swipe to scrub under a fixed centre playhead).
   - Split, delete, trim and undo/redo; snapping to edges, the playhead and music beats.
   - **Clips with in/out points:** a clip on V1 can show any part of its file. Drag a strip's outer edge past the clip's end to bring back hidden footage (or drag it in to hide some); clips after it move along. The same file can be used several times.
+  - **Tools** (toolbar, or keys): **Select** (V) moves and trims. **Razor** (C) cuts the layer, audio item or V1 strip you click, at that point. **Ripple** (B) trims a layer or audio edge and moves everything after it on the track by the same amount, and Delete closes the gap. **Roll** (R) drags the cut between two touching items on a track: one grows as the other shrinks. **Slip** (Y) drags a video layer or audio item to change which part of its file plays, keeping its place and length. Locked tracks are left alone.
   - **Reorder strips:** select a strip on V1 and drag it (mouse or pen) to another place; a white marker shows where it lands. It becomes its own clip and drops in at the nearest clip boundary, and its words and captions move with it.
   - Keyboard and screen-reader friendly: focusable items with spoken labels.
   - Drag caption and audio blocks to move them, or drag their **edges** to retime captions and trim audio.

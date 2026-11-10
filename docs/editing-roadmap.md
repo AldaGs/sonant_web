@@ -17,13 +17,12 @@ Before, a V1 clip always spanned its whole file and strips were "kept ranges" in
 Done: `Clip.in` + `len`, `clipBases` (file time = sequence time − base) used by the player, export, thumbnails,
 waveform, transcription and AI jobs; `extendClip` (edge drag reveals/hides footage), `isolateStrip` +
 drag-to-reorder strips on V1; trims inside a clip no longer cross into the neighbouring clip.
-- Add `in`/`out` to `Clip` (source trim), so a clip can start mid-file without a deleted region.
-- `clipLen` = `out − in`; `clipAt` returns file time `in + local`. Migrate: absent = whole file.
-- Edge-drag on a clip's first/last strip extends back into hidden media (currently clamped).
-- Update `remapProject`, export (`export.ts`) and the player source mapping; tests in `project.test.ts`.
 
-## Phase 3 — Ripple, roll, slip, and a razor tool
-- Tool mode on the timeline toolbar: Select (V), Razor (C), Ripple (B), Roll (N→ move snap to another key), Slip (Y).
+## Phase 3 — Ripple, roll, slip, and a razor tool  ✅ done (layers & audio)
+Done: `tools.ts` (rippleTrim, rippleDelete, rollEdit, slip) with tests; tool switcher on the timeline
+toolbar with keys V / C / B / R / Y (N stays snap). Razor also cuts V1 strips.
+Still open: roll and slip on V1 strips (V1 trims already ripple, since the main sequence has no gaps).
+- Tool mode on the timeline toolbar: Select (V), Razor (C), Ripple (B), Roll (R), Slip (Y).
 - Razor tool: click an item to split it at the pointer (uses Phase 1 helpers).
 - Ripple trim: trimming a layer/audio edge shifts later items on the same track.
 - Ripple delete (Shift+Del on a gap/item for layers & audio; V1 already closes gaps).
