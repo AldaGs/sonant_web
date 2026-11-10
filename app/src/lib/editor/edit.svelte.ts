@@ -238,7 +238,8 @@ export function createEdit(ed: Ed) {
   }
   const setAudio = (id: string, patch: Partial<AudioItem>) => (ed.audios = ed.audios.map((a) => (a.id === id ? { ...a, ...patch } : a)));
 
-  // Drag an asset card onto the timeline (or drop files anywhere on it).
+  // Drag an asset card onto the timeline (or drop files anywhere on it). Drops the Timeline didn't place on a
+  // track (the header, empty space under the rows) go to the default place for their kind.
   function dropOnTimeline(e: DragEvent) {
     e.preventDefault();
     const id = e.dataTransfer?.getData('text/x-asset');
@@ -246,6 +247,18 @@ export function createEdit(ed: Ed) {
     if (a) addToTimeline(a);
     else ed.importMedia(e.dataTransfer?.files);
   }
+  // Put a clip into the main sequence at the clip boundary nearest output time `out` (insert edit).
+  function insertClip(assetId: string, out: number) {
+    const c: Clip = { id: crypto.randomUUID(), assetId, ...(ed.kindOf(assetId) === 'image' ? { len: STILL_LEN } : {}) };
+    const starts = clipStarts(ed.clips, ed.durations);
+    const bounds = [...starts, ed.duration].map((t) => {
+      const k = nextKept(ed.segments, t);
+      return k === null ? outDuration(ed.segments) : toOutput(ed.segments, k) ?? 0;
+    });
+    let k = 0;
+    bounds.forEach((p, j) => Math.abs(p - out) < Math.abs(bounds[k] - out) && (k = j));
+    setClips(ed.clips.toSpliced(k, 0, c));
+  }
 
-  return { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline };
+  return { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline, insertClip };
 }

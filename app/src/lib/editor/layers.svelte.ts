@@ -217,6 +217,21 @@ export function createLayers(ed: Ed) {
     }
     return false;
   }
+  // Media dropped on a track at output time `out` (from the media panel). zone: 'v' = a layer track,
+  // 'main' = the V1 sequence, 'a' = an audio track. If the spot on that track is taken, a new track opens there.
+  function dropAsset(a: Asset, zone: 'v' | 'main' | 'a', track: number, out: number) {
+    if (zone === 'main' && a.kind !== 'audio') return void ed.insertClip(a.id, out);
+    if (zone === 'a' || a.kind === 'audio') {
+      // Audio files, or the sound of a video dropped on an audio track.
+      if (a.kind === 'image') return void addOverlay(a, out);
+      ed.addAudio(a.id, out);
+      const id = ed.selectedAudio;
+      if (zone === 'a') retrack('a', id, track, false);
+      return;
+    }
+    addOverlay(a, out);
+    retrack('v', ed.selectedOverlay, track, false);
+  }
   // Track header switches: hide (V) / mute (A) and lock.
   const setTrack = (kind: 'v' | 'a', track: number, patch: TrackFlags) => (ed.tracks = { ...ed.tracks, [kind]: setFlag(ed.tracks[kind], track, patch) });
   // An extra empty track on top, to drop things onto.
@@ -243,5 +258,5 @@ export function createLayers(ed: Ed) {
     if (final) stripKeyEditing = false;
   }
 
-  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey };
+  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, dropAsset, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey };
 }

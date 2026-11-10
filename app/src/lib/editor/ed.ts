@@ -47,6 +47,7 @@ export interface Ed {
   clips: Clip[];
   readonly commit: () => void;
   readonly cutHere: () => void;
+  readonly insertClip: (assetId: string, out: number) => void;
   readonly cutAll: () => unknown;
   readonly cutRanges: (r: [number, number][]) => false | Segment[];
   readonly deleteSelected: () => boolean;

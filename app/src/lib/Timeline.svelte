@@ -17,9 +17,10 @@
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
     pending = [], beats, out, zooms = [], onzoom,
     overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
-    onmovestrip = () => false, tool = 'select', ontool = () => {}, onrazor = () => {},
+    ondropasset = () => {}, onmovestrip = () => false, tool = 'select', ontool = () => {}, onrazor = () => {},
     tracks = NO_TRACKS, onretrack = () => {}, ontrack = () => {}, onaddtrack = () => {}, ondroptrack = () => false,
   }: {
+    ondropasset?: (assetId: string, zone: 'v' | 'main' | 'a', track: number, out: number) => void; // media card dropped on a track
     tool?: import('./tools').Tool;
     ontool?: (kind: 'v' | 'a', id: string, op: 'ripple' | 'roll' | 'slip', side: 'start' | 'end', d: number) => void; // live, from drag start
     onrazor?: (kind: 'v' | 'a' | 's', id: string, out: number) => void; // cut a layer / audio item / V1 strip at output time
@@ -139,6 +140,40 @@
   }
   // The link of the selected item: its partner on the other track is outlined too.
   const selLink = $derived(overlays.find((o) => o.id === selectedOverlay)?.link ?? audios.find((a) => a.id === selectedAudio)?.link);
+  // ---- Dropping media cards on tracks ----
+  // Which track is under the pointer: a layer track (V2…; above the top one opens a new track), the main
+  // sequence (V1), or an audio track (A2…; below the last opens a new one). Null over other rows.
+  let dropAt = $state<{ zone: 'v' | 'main' | 'a'; track: number; out: number; top: number; h: number } | null>(null);
+  function dropTarget(e: DragEvent): typeof dropAt {
+    const rows = inner!.querySelectorAll<HTMLElement>(':scope > .row');
+    const ir = inner!.getBoundingClientRect(), y = e.clientY;
+    const out = Math.max(0, Math.min(total, ((e.clientX - ir.left) / ir.width) * total));
+    const lay = rows[0].getBoundingClientRect(), main = rows[1].getBoundingClientRect(), mus = inner!.querySelector<HTMLElement>('.row.music')!.getBoundingClientRect();
+    if (y < lay.bottom + 3) {
+      const k = Math.max(0, Math.min(vCount, vCount - 1 - Math.floor((y - lay.top) / V_ROW)));
+      return { zone: 'v', track: k, out, top: lay.top - ir.top + (vCount - 1 - k) * V_ROW, h: V_ROW - 4 };
+    }
+    if (y >= main.top - 3 && y <= main.bottom + 3) return { zone: 'main', track: 0, out, top: main.top - ir.top, h: main.height };
+    if (y >= mus.top - 3) {
+      const k = Math.max(0, Math.floor((y - mus.top) / A_ROW));
+      return { zone: 'a', track: k, out, top: mus.top - ir.top + Math.min(k, aCount) * A_ROW, h: A_ROW - 4 };
+    }
+    return null;
+  }
+  const isCard = (e: DragEvent) => !!e.dataTransfer?.types.includes('text/x-asset');
+  function dragOverTracks(e: DragEvent) {
+    if (!isCard(e)) return;
+    e.preventDefault();
+    dropAt = dropTarget(e);
+  }
+  function dropOnTracks(e: DragEvent) {
+    const at = isCard(e) ? dropTarget(e) : null, id = e.dataTransfer?.getData('text/x-asset');
+    dropAt = null;
+    if (!at || !id) return; // let the timeline area handle it (files from the computer, or the default place)
+    e.preventDefault();
+    e.stopPropagation();
+    ondropasset(id, at.zone, at.track, at.out);
+  }
   // ---- Volume line on audio items ----
   // The item's volume envelope (fades and points) as a line: top = 150%, bottom = silent.
   const ENV_N = 48;
@@ -613,7 +648,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="inner" style:--music="{aCount * A_ROW - 4}px" style:--ov="{vCount * V_ROW - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1} class:t-razor={tool === 'razor'} class:t-slip={tool === 'slip'} style:transform={centered ? `translateX(${shift}px)` : null}
       role="slider" tabindex="0" aria-label={t('timeline')} aria-valuemin={0} aria-valuemax={total} aria-valuenow={playhead ?? 0}
-      onclick={seekAt} onpointerdown={scrub}
+      onclick={seekAt} onpointerdown={scrub} ondragover={dragOverTracks} ondrop={dropOnTracks} ondragleave={(e) => !inner?.contains(e.relatedTarget as Node) && (dropAt = null)}
       onkeydown={(e) => {
         const d = (e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0) * (e.shiftKey ? 1 : 1 / 30);
         if (d) (e.preventDefault(), onseek(Math.max(0, (playhead ?? 0) + d)));
@@ -727,6 +762,7 @@
         {@const x = toOutput(segments, a)}
         {#if x !== null}<div class="pend" style:left={pct(x)} style:width={pct(Math.max(0.01, b - a))} aria-hidden="true"></div>{/if}
       {/each}
+      {#if dropAt}<div class="dropzone" style:top="{dropAt.top}px" style:height="{dropAt.h}px" aria-hidden="true"><span class="dropmark" style:left={pct(dropAt.out)}></span></div>{/if}
       {#if stripDrop !== null}<div class="sdrop" style:left={pct(stripDrop)} aria-hidden="true"></div>{/if}
       {#if guide !== null}<div class="guide" style:left={pct(guide)} aria-hidden="true"></div>{/if}
       {#if playhead !== null}
@@ -776,6 +812,8 @@
   .env { position: absolute; inset: 2px 0; width: 100%; height: calc(100% - 4px); overflow: visible; pointer-events: none; }
   .env polyline { fill: none; stroke: #ffd84d; stroke-width: 1.5; opacity: .85; }
   .vk { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #ffd84d; border: 1px solid #111; cursor: move; touch-action: none; z-index: 2; }
+  .dropzone { position: absolute; left: 0; right: 0; border-radius: 6px; background: rgb(200 245 96 / .12); outline: 1px dashed var(--accent); pointer-events: none; z-index: 4; }
+  .dropmark { position: absolute; top: -3px; bottom: -3px; width: 2px; transform: translateX(-1px); background: var(--accent); }
   .sdrop { position: absolute; top: 20px; bottom: 0; width: 3px; transform: translateX(-1px); background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; z-index: 4; }
   .thumbs { display: flex; height: 100%; overflow: hidden; pointer-events: none; }
   .thumbs img { height: 100%; width: 0; flex: 1; object-fit: cover; opacity: .8; }

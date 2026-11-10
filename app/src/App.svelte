@@ -406,6 +406,7 @@
     get commit() { return commit; },
     get cutHere() { return cutHere; },
     get cutAll() { return cutAll; },
+    get insertClip() { return insertClip; },
     get cutRanges() { return cutRanges; },
     get deleteSelected() { return deleteSelected; },
     get denoise() { return denoise; }, set denoise(v) { denoise = v; },
@@ -523,10 +524,10 @@
     get wordCache() { return wordCache; }, set wordCache(v) { wordCache = v; },
     get zooms() { return zooms; },
   };
-  const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline } = createEdit(ed);
+  const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline, insertClip } = createEdit(ed);
   const { previewUrl, buildProxy, dropProxy, register, openHistory, restoreVersion, ago, saveToFile, importMedia, addVoiceover } = createMedia(ed);
   const { aimZooms, stabilize, reverseStrip, renderItem, setVoiceFx, detectSpeakers, findClips, setHlLen, makeAllShorts, previewClip, makeShort, run, cutAudioSilences, autoReframe, autoReframeAll, colorToAll, translateAll, detectBeatsFor, cutOnBeats } = createJobs(ed);
-  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
+  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, dropAsset, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
   const { leave, pointer, nudge, startPick, endPick } = createPreview(ed);
   const { step, keys } = createKeys(ed);
 </script>
@@ -768,6 +769,7 @@
       onretrack={(k, id, n) => retrack(k, id, n, false)} ontrack={setTrack} onaddtrack={addTrack} ondroptrack={dropTrack}
       onoverlay={(id, patch) => setOverlay(id, patch, false)}
       oncommit={() => (trimDone(), toolDone(), commit())}
+      ondropasset={(id, zone, k, o) => { const a = assets.find((x) => x.id === id); if (a) dropAsset(a, zone, k, o); }}
       {tool} ontool={toolEdit} onrazor={(k, id, t0) => (k === 's' ? setSegs(splitAt(segments, toSource(segments, t0))) : razor(k, id, t0))}
       ontrim={trimStrip} onmovestrip={moveStrip}
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}

@@ -50,7 +50,15 @@ Still open: automatic cross-dissolve between touching items on a track (use fade
   click to add points, drag to move; fades in/out as handles at the corners. Player applies
   per-frame gain; export bakes the envelope into the mix.
 
-## Phase 6 — Drag media onto a track
+## Phase 6 — Drag media onto a track  ✅ done
+Done: the Timeline finds the zone and track under the pointer while a media card is dragged (highlight + time
+marker) and calls `dropAsset` (layers.svelte.ts) / `insertClip` (edit.svelte.ts). Files from the computer still
+import as before.
 - Media panel items become draggable; dropping on the timeline places video/image on the V track
   under the pointer (V1 = append/insert into the sequence) and audio on the A track, at the drop time.
 - Dropping over an occupied spot opens a new track at that position (`moveToTrack` already does this).
+
+## Next ideas
+- Roll and slip on V1 strips; automatic cross-dissolve between touching items on a track.
+- Alt+drag to edit one side of a linked pair; drag-to-reorder strips on touch screens.
+- Nested sequences, adjustment layers, audio effects per track, and keyframes for color and effects.
