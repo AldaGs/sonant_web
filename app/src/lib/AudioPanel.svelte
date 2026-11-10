@@ -8,10 +8,13 @@
   import { VOICE_FX, type VoiceFx } from './voicefx';
   import type { Asset, AudioItem } from './project';
   import type { Caption } from './captions';
+  import { envelopeAt, setVolKey } from './layertrans';
+  import { itemLen } from './project';
 
-  let { selAudio, assets, names, hasClips, clipVolume = $bindable(), denoise = $bindable(), cleanPct, vfxBusy, beatBusy, silBusy, busy, hasMedia,
+  let { unlinkSound, outNow, selAudio, assets, names, hasClips, clipVolume = $bindable(), denoise = $bindable(), cleanPct, vfxBusy, beatBusy, silBusy, busy, hasMedia,
     setAudio, cutOnBeats, detectBeatsFor, setVoiceFx, renderItem, commit, removeAudioItem, cutAudioSilences,
     voCaps, selectedSet, language, addVoiceover }: {
+    unlinkSound: (link: string) => void; outNow: () => number;
     selAudio: AudioItem | undefined; assets: Asset[]; names: Map<string, string>; hasClips: boolean;
     clipVolume: number; denoise: number; cleanPct: number | null;
     vfxBusy: boolean; beatBusy: boolean; silBusy: boolean; busy: boolean; hasMedia: boolean;
@@ -25,10 +28,13 @@
 
 {#if selAudio}
   {@const ba = assets.find((a) => a.id === selAudio.assetId)}
+  {@const len = itemLen(selAudio, ba?.duration ?? 0)}
+  {@const r = Math.max(0, Math.min(len, outNow() - selAudio.at))}
   <section class="layer music" aria-label={t('musicH')}>
     <div class="lhead"><h3>{t('musicH')}</h3></div>
     <div class="lrow">
-      <span class="aname small selname"><Icon name="music_note" size={16} /> {names.get(selAudio.assetId)}</span>
+      <span class="aname small selname"><Icon name={selAudio.link ? 'link' : 'music_note'} size={16} /> {names.get(selAudio.assetId)}</span>
+      {#if selAudio.link}<button class="sm" onclick={() => unlinkSound(selAudio.link!)} title={t('unlinkTip')}><Icon name="link_off" /> {t('unlink')}</button>{/if}
       <label class="vol inline">{t('volume')}
         <input type="range" min="0" max="1" step="0.05" value={selAudio.volume}
           oninput={(e) => setAudio(selAudio.id, { volume: +e.currentTarget.value })} />
@@ -55,6 +61,20 @@
       <label class="chk" title={t('duckTip')}><input type="checkbox" checked={!!selAudio.duck}
         onchange={(e) => (commit(), setAudio(selAudio.id, { duck: e.currentTarget.checked || undefined }))} /> {t('duck')}</label>
       <button class="sm" onclick={removeAudioItem}>{t('removeAudio')}</button>
+    </div>
+    <div class="lrow">
+      {#each [['fadeIn', 'fadeInL'], ['fadeOut', 'fadeOutL']] as const as [key, label]}
+        <label class="vol inline">{t(label)} <span class="mono small">{(selAudio[key] ?? 0).toFixed(1)}s</span>
+          <input type="range" min="0" max={Math.max(0.1, Math.min(10, len / 2))} step="0.1" value={selAudio[key] ?? 0}
+            onpointerdown={commit} onkeydown={commit} oninput={(e) => setAudio(selAudio.id, { [key]: +e.currentTarget.value || undefined })} />
+        </label>
+      {/each}
+      <!-- Volume points: add one at the playhead with the volume there, then drag it up/down on the timeline. -->
+      <button class="sm" title={t('volKeyTip')} onclick={() => (commit(), setAudio(selAudio.id, { volKf: setVolKey(selAudio.volKf, r, envelopeAt({ volKf: selAudio.volKf }, r, len)) }))}>
+        <Icon name="diamond" size={14} /> {t('volKey')}</button>
+      {#if selAudio.volKf?.length}
+        <button class="sm" onclick={() => (commit(), setAudio(selAudio.id, { volKf: undefined }))}>{t('volKeyClear', { n: selAudio.volKf.length })}</button>
+      {/if}
     </div>
   </section>
 {/if}

@@ -3,7 +3,7 @@
 import { transcribe } from '../transcribe';
 import { groupWords, captionText, split, replaceInRange } from '../captions';
 import { splitAt, toSource, outDuration, isCut, keptCaptions, type Segment } from '../cuts';
-import { itemLen, clipAt, clipLen, clipStarts, type Clip, type AudioItem } from '../project';
+import { itemLen, clipAt, clipLen, clipStarts, clipBases, type Clip, type AudioItem } from '../project';
 import { median } from '../reframe';
 import { subjectCenter } from '../segment';
 import { cleanup, cleanupRanges } from '../cleanup.svelte';
@@ -30,7 +30,7 @@ export function createJobs(ed: Ed) {
   async function aimZooms() {
     if (!ed.autoZoom) return;
     ed.aimBusy = true;
-    const starts = clipStarts(ed.clips, ed.durations), aim: Record<string, [number, number]> = { ...ed.autoZoom.aim };
+    const starts = clipBases(ed.clips, ed.durations), aim: Record<string, [number, number]> = { ...ed.autoZoom.aim };
     const els = new Map<string, HTMLVideoElement>();
     try {
       for (const m of ed.zooms) {
@@ -64,7 +64,7 @@ export function createJobs(ed: Ed) {
     const s = ed.segments[i];
     if (!s || s.fx?.hold) return;
     if (s.fx?.stab) return ed.setFx({ stab: undefined }); // toggle off
-    const starts = clipStarts(ed.clips, ed.durations), at = clipAt(ed.clips, ed.durations, (s.start + s.end) / 2);
+    const starts = clipBases(ed.clips, ed.durations), at = clipAt(ed.clips, ed.durations, (s.start + s.end) / 2);
     if (!at || ed.kindOf(ed.clips[at.index].assetId) !== 'video') return;
     const off = starts[at.index];
     ed.stabPct = 0;
@@ -105,7 +105,7 @@ export function createJobs(ed: Ed) {
     const s = ed.segments[i];
     if (!s || s.fx?.hold) return;
     if (s.fx?.rev) return ed.setFx({ rev: undefined }); // toggle off (the copy stays in the library)
-    const starts = clipStarts(ed.clips, ed.durations), at = clipAt(ed.clips, ed.durations, (s.start + s.end) / 2);
+    const starts = clipBases(ed.clips, ed.durations), at = clipAt(ed.clips, ed.durations, (s.start + s.end) / 2);
     const id = at && ed.clips[at.index].assetId, f = id && ed.files.get(id);
     if (!at || !f || ed.kindOf(id!) !== 'video') return;
     ed.revPct = 0;
@@ -165,7 +165,7 @@ export function createJobs(ed: Ed) {
     ed.spkMsg = ed.error = '';
     begin('speakers', { captions: ed.captions.length }, ed.projectId);
     try {
-      const starts = clipStarts(ed.clips, ed.durations), pcm = new Map<string, Float32Array | null>();
+      const starts = clipBases(ed.clips, ed.durations), pcm = new Map<string, Float32Array | null>();
       const ids: string[] = [], pieces: Float32Array[] = [], spans: number[] = [], used: Unit[] = [];
       ed.spkStatus = 'st.reading';
       // Whole captions, or ~1.2s pieces of them when lines may be split at speaker changes.
@@ -210,7 +210,7 @@ export function createJobs(ed: Ed) {
     if (!at) return null;
     const id = ed.clips[at.index].assetId, pk = ed.peaks[id], dur = ed.durations.get(id);
     if (!pk || !dur) return null;
-    const off = clipStarts(ed.clips, ed.durations)[at.index];
+    const off = clipBases(ed.clips, ed.durations)[at.index];
     const i0 = Math.max(0, Math.floor(((a - off) / dur) * pk.length)), i1 = Math.min(pk.length, Math.ceil(((b - off) / dur) * pk.length));
     let s = 0;
     for (let i = i0; i < i1; i++) s += pk[i];
@@ -266,13 +266,14 @@ export function createJobs(ed: Ed) {
           ed.wordCache[key] = []; // a silent clip just has no words
         }
       }
-      const starts = clipStarts(ed.clips, ed.durations);
-      // Whisper can hallucinate timestamps past the end of short or silent clips; keep words inside their clip.
+      const starts = clipStarts(ed.clips, ed.durations), bases = clipBases(ed.clips, ed.durations);
+      // Words are cached in file time. Keep those inside the part of the file the clip shows (this also drops
+      // timestamps Whisper hallucinates past the end of short or silent clips).
       const wordsOf = (c: Clip) => {
-        const i = ed.clips.indexOf(c), len = clipLen(ed.durations, c);
+        const i = ed.clips.indexOf(c), a = c.in ?? 0, b = a + clipLen(ed.durations, c);
         return (ed.wordCache[`${c.assetId}|${lang}`] ?? [])
-          .filter((w) => w.start < len)
-          .map((w) => ({ ...w, start: w.start + starts[i], end: Math.min(w.end, len) + starts[i] }));
+          .filter((w) => w.start >= a - 1e-6 && w.start < b)
+          .map((w) => ({ ...w, start: w.start + bases[i], end: Math.min(w.end, b) + bases[i] }));
       };
       const fresh = groupWords(chosen.flatMap(wordsOf));
       if (ed.targetClip) {
@@ -301,13 +302,13 @@ export function createJobs(ed: Ed) {
     ed.silBusy = true;
     ed.error = ed.notice = '';
     try {
-      const starts = clipStarts(ed.clips, ed.durations), byAsset = new Map<string, [number, number][]>();
+      const bases = clipBases(ed.clips, ed.durations), byAsset = new Map<string, [number, number][]>();
       const ranges: [number, number][] = [];
       for (let i = 0; i < ed.clips.length; i++) {
-        const id = ed.clips[i].assetId, f = ed.files.get(id), len = clipLen(ed.durations, ed.clips[i]);
+        const id = ed.clips[i].assetId, f = ed.files.get(id), lo = ed.clips[i].in ?? 0, hi = lo + clipLen(ed.durations, ed.clips[i]);
         if (!f || ed.kindOf(id) === 'image') continue;
         if (!byAsset.has(id)) byAsset.set(id, await fileSilences(f, cleanup.db, cleanup.min, cleanup.pad).catch(() => []));
-        for (const [a, b] of byAsset.get(id)!) if (a < len) ranges.push([starts[i] + a, starts[i] + Math.min(b, len)]);
+        for (const [a, b] of byAsset.get(id)!) if (a < hi && b > lo) ranges.push([bases[i] + Math.max(a, lo), bases[i] + Math.min(b, hi)]);
       }
       const fresh = ranges.filter(([a, b]) => !isCut(ed.segments, { start: a, end: b }));
       if (fresh.length) ed.cutRanges(fresh);
@@ -327,7 +328,7 @@ export function createJobs(ed: Ed) {
     await new Promise((r, j) => ((v.onloadeddata = r), (v.onerror = j)));
     const xs: number[] = [], ys: number[] = [];
     for (let k = 0; k < 5; k++) {
-      v.currentTime = s.start - starts[ci] + ((k + 0.5) / 5) * (s.end - s.start);
+      v.currentTime = s.start - starts[ci] + (ed.clips[ci].in ?? 0) + ((k + 0.5) / 5) * (s.end - s.start);
       await new Promise((r) => (v.onseeked = r));
       const c = await subjectCenter(v, v.videoWidth, v.videoHeight).catch(() => null);
       if (c) (xs.push(c.x), ys.push(c.y));

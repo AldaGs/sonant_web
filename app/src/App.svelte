@@ -42,6 +42,10 @@
   import { createLayers } from './lib/editor/layers.svelte';
   import { createPreview } from './lib/editor/preview.svelte';
   import { createKeys } from './lib/editor/keys.svelte';
+  import { TOOLS, type Tool } from './lib/tools';
+  import { reconcile } from './lib/links';
+  import { assignTracks, byTrack, isHidden, isMuted, type Tracks } from './lib/tracks';
+  import { itemLen as audItemLen } from './lib/project';
 
   // The editor works on one project at a time; the home page (#/) lists them all.
   let { projectId }: { projectId: string } = $props();
@@ -54,6 +58,29 @@
   let denoise = $state(0); // AI noise reduction on the clips' sound: wet mix, 0 = off
   let overlays = $state<Overlay[]>([]); // picture-in-picture video, images, text layers; output time, bottom first
   let selectedOverlay = $state('');
+  // Numbered tracks (V2… for layers, A2… for music & VO) and their hide / mute / lock switches.
+  let tracks = $state<Tracks>({ v: [], a: [] });
+  const TOOL_ICON = { select: 'arrow_selector_tool', razor: 'content_cut', ripple: 'keyboard_tab', roll: 'arrow_range', slip: 'swap_horiz' } as const;
+  let tool = $state<Tool>('select'); // timeline tool (V select, C razor, B ripple, R roll, Y slip)
+  const shownOverlays = $derived(overlays.filter((o) => !isHidden(tracks, o)));
+  const liveAudios = $derived(audios.filter((a) => !isMuted(tracks, a)));
+  // The player keeps every element in step (so nothing keeps playing after a toggle); muted/hidden ones are silent.
+  const playAudios = $derived(audios.map((a) => (isMuted(tracks, a) ? { ...a, volume: 0 } : a)));
+  const playOverlays = $derived(overlays.map((o) => (isHidden(tracks, o) ? { ...o, volume: 0 } : o)));
+  // Every layer and audio item sits on a track. Items added without one (and older projects) get the
+  // lowest free track above whatever they overlap, so new layers land on top like before.
+  $effect(() => {
+    if (overlays.some((o) => o.track === undefined)) overlays = byTrack(assignTracks(overlays, (o) => o.len));
+  });
+  // Linked picture + sound (links.ts): after any edit, the side that changed leads and its partner follows.
+  const linkMem = new Map<string, { at: number; len: number; offset: number }>();
+  $effect(() => {
+    const r = reconcile(overlays, audios, (id) => durations.get(id) ?? 0, linkMem);
+    if (r) ((overlays = r.overlays), (audios = r.audios));
+  });
+  $effect(() => {
+    if (audios.some((a) => a.track === undefined)) audios = assignTracks(audios, (a) => audItemLen(a, durations.get(a.assetId) ?? 0));
+  });
   // assetId → image decoded once and downscaled for the preview. Drawing a full-size photo (and uploading it
   // to the GPU for effects) every frame is what made stills slow; a ~1080p bitmap costs about as much as a video frame.
   const pics = new Map<string, { src: ImageBitmap; w: number; h: number }>();
@@ -109,7 +136,7 @@
   const selectedCap = $derived(selectedCapIndex >= 0 ? captions[selectedCapIndex] : null);
   const clearCapSelection = () => (selectedCapIds = []);
 
-  const player = new Player(() => ({ clips, audios, segments, durations, clipVolume, overlays, speech }));
+  const player = new Player(() => ({ clips, audios: playAudios, segments, durations, clipVolume, overlays: playOverlays, speech }));
 
   // Undo/redo: snapshots of the editable project.
   let past = $state<Snap[]>([]);
@@ -334,6 +361,8 @@
   const saveState = $derived(saving ? t('saving') : t('saved'));
 
   const cutHere = () => (setSegs(splitAt(segments, time)), announce(t('a11y.split', { t: tc(outTime) })));
+  // Shift+S: split every unlocked track at the playhead.
+  const cutAll = () => splitAll() && announce(t('a11y.split', { t: tc(outTime) }));
   // Effects of the selected strip (captions behind the person, background swap).
   const selFx = $derived(selected >= 0 && segments[selected] ? (segments[selected].fx ?? {}) : null);
   // Key colour eyedropper: keys are switched off in the preview, the next click samples the frame there.
@@ -376,6 +405,8 @@
     get clips() { return clips; }, set clips(v) { clips = v; },
     get commit() { return commit; },
     get cutHere() { return cutHere; },
+    get cutAll() { return cutAll; },
+    get insertClip() { return insertClip; },
     get cutRanges() { return cutRanges; },
     get deleteSelected() { return deleteSelected; },
     get denoise() { return denoise; }, set denoise(v) { denoise = v; },
@@ -415,6 +446,11 @@
     get outNow() { return outNow; },
     get outTime() { return outTime; },
     get overlays() { return overlays; }, set overlays(v) { overlays = v; },
+    get tracks() { return tracks; }, set tracks(v) { tracks = v; },
+    get tool() { return tool; }, set tool(v) { tool = v; },
+    get rippleDeleteSel() { return rippleDeleteSel; },
+    get shownOverlays() { return shownOverlays; },
+    get liveAudios() { return liveAudios; },
     get past() { return past; }, set past(v) { past = v; },
     get paused() { return paused; }, set paused(v) { paused = v; },
     get pct() { return pct; }, set pct(v) { pct = v; },
@@ -488,10 +524,10 @@
     get wordCache() { return wordCache; }, set wordCache(v) { wordCache = v; },
     get zooms() { return zooms; },
   };
-  const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline } = createEdit(ed);
+  const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline, insertClip } = createEdit(ed);
   const { previewUrl, buildProxy, dropProxy, register, openHistory, restoreVersion, ago, saveToFile, importMedia, addVoiceover } = createMedia(ed);
   const { aimZooms, stabilize, reverseStrip, renderItem, setVoiceFx, detectSpeakers, findClips, setHlLen, makeAllShorts, previewClip, makeShort, run, cutAudioSilences, autoReframe, autoReframeAll, colorToAll, translateAll, detectBeatsFor, cutOnBeats } = createJobs(ed);
-  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, setStripKey } = createLayers(ed);
+  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, dropAsset, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
   const { leave, pointer, nudge, startPick, endPick } = createPreview(ed);
   const { step, keys } = createKeys(ed);
 </script>
@@ -560,7 +596,7 @@
         <MediaPanel {assets} {used} {urls} {thumbs} {proxyPct} {clips} {names} {durations} {kindOf} {fmt}
           {importMedia} {addToTimeline} {addOverlay} {buildProxy} {dropProxy} {removeAsset} {setClips} {setClipLen} />
       {:else if leftTab === 'audio'}
-        <AudioPanel {selAudio} {assets} {names} hasClips={clips.length > 0} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
+        <AudioPanel {selAudio} {unlinkSound} outNow={() => outClock} {assets} {names} hasClips={clips.length > 0} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
           {setAudio} {cutOnBeats} {detectBeatsFor} {setVoiceFx} {renderItem} {commit} {removeAudioItem} {cutAudioSilences}
           voCaps={captionsForOutput(displayCaps, segments)} {selectedSet} {language} {addVoiceover} />
       {:else}
@@ -659,7 +695,8 @@
     {/if}
     {#if selOverlay}
       <LayerInspector o={selOverlay} {outTime} {fonts} {overlays} {pickKey} {doneEditing} {closeLayer} {setOverlay} {setMotion} {setTf}
-        {jumpKey} {toggleKey} {punchIn} {clearKeys} {startPick} {removeOverlay} {restack} {layerT} {outNow} />
+        {jumpKey} {toggleKey} {punchIn} {clearKeys} {startPick} {removeOverlay} {restack} {layerT} {outNow}
+        linkedSound={selOverlay.link ? audios.find((a) => a.link === selOverlay.link) : undefined} {setAudio} {detachSound} {unlinkSound} />
     {/if}
     {#if !selOverlay}
     <StylePanel
@@ -704,6 +741,13 @@
         <button class="sm" onclick={addTitle} disabled={!hasMedia} title={t('addTitleTip')}><Icon name="animation" /> {t('addTitle')}</button>
         <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}><Icon name="content_cut" /> {t('splitAt')}</button>
+        <button class="sm" onclick={cutAll} title={t('splitAllTip')}><Icon name="content_cut" /> {t('splitAll')}</button>
+        <span class="tools" role="radiogroup" aria-label={t('tlTools')}>
+          {#each TOOLS as k}
+            <button class="sm icon" class:on={tool === k} role="radio" aria-checked={tool === k} onclick={() => (tool = k)}
+              title={t('tool.' + k)} aria-label={t('tool.' + k)}><Icon name={TOOL_ICON[k]} /></button>
+          {/each}
+        </span>
         <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
         <button class="sm icon" class:on={snapOn} aria-pressed={snapOn} title={t('snapTip')} aria-label={t('snap')}
           onclick={() => (snapOn = !snapOn)}><Icon name="magnet" /></button>
@@ -721,10 +765,13 @@
       animLabel={t('allCaptions', { name: animName })}
       zooms={zooms} onzoom={(k, s) => autoZoom && (autoZoom.edits = { ...autoZoom.edits, [k]: s })}
       out={outClock} onseek={(o) => seekOut(o)} onseeksrc={seek} snap={snapOn} range={marks} pending={pendingCuts} beats={beatMap}
-      {overlays} bind:selectedOverlay
+      {overlays} bind:selectedOverlay {tracks}
+      onretrack={(k, id, n) => retrack(k, id, n, false)} ontrack={setTrack} onaddtrack={addTrack} ondroptrack={dropTrack}
       onoverlay={(id, patch) => setOverlay(id, patch, false)}
-      oncommit={commit}
-      ontrim={trimStrip}
+      oncommit={() => (trimDone(), toolDone(), commit())}
+      ondropasset={(id, zone, k, o) => { const a = assets.find((x) => x.id === id); if (a) dropAsset(a, zone, k, o); }}
+      {tool} ontool={toolEdit} onrazor={(k, id, t0) => (k === 's' ? setSegs(splitAt(segments, toSource(segments, t0))) : razor(k, id, t0))}
+      ontrim={trimStrip} onmovestrip={moveStrip}
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
       onaudio={(id, patch) => setAudio(id, patch)} />
   </section>
@@ -733,7 +780,7 @@
     <button class="scrim" onclick={() => (sheet = null)} aria-label={t('ex.close')} tabindex="-1"></button>
   {/if}
 
-  <nav class="dock" aria-label={t('tools')}>
+  <nav class="dock" aria-label={t('tlTools')}>
     {#each [['media', 'video_library'], ['audio', 'music_note'], ['ai', 'auto_awesome_motion']] as const as [k, icon]}
       <button class:on={sheet === 'assets' && leftTab === k} onclick={() => openSheet('assets', k)}>
         <Icon name={icon} size={24} />
@@ -779,7 +826,7 @@
         <h3>{t('keysTitle')}</h3>
         <dl>
           {#each [['Space', 'k.play'], ['J / K / L', 'k.jkl'], ['← / →', 'k.frame'], ['Shift + ← / →', 'k.second'], ['Home / End', 'k.ends'],
-            ['S', 'k.split'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['Shift + Del', 'k.lift'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
+            ['V / C / B / R / Y', 'k.tools'], ['S', 'k.split'], ['Shift + S', 'k.splitAll'], ['I / O', 'k.marks'], ['X', 'k.cutRange'], ['Del', 'k.del'], ['Shift + Del', 'k.lift'], ['N', 'k.snap'], ['Alt + drag', 'k.free'],
             ['A', 'k.auto'], ['T', 'k.text'], ['Ctrl/⌘ + Z', 'undo'], ['Ctrl/⌘ + Shift + Z', 'redo'], ['Ctrl/⌘ + S', 'k.save'], ['Esc', 'k.esc'], ['?', 'keysTitle']] as [k, d]}
             <dt><kbd>{k}</kbd></dt><dd>{t(d)}</dd>
           {/each}
@@ -789,7 +836,7 @@
     </div>
   {/if}
   <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} onsubtitles={captions.length ? download : undefined} {style} {srcW} {srcH} {canvasAspect}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume, zoomShake: !!autoZoom?.shake, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(liveAudios), overlays: $state.snapshot(shownOverlays), speech: $state.snapshot(speech), luts, clipVolume, zoomShake: !!autoZoom?.shake, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
 {/if}
 
 <style>

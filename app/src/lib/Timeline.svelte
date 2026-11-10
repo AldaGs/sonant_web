@@ -5,9 +5,11 @@
   import { startOf, endOf, type Caption } from './captions';
   import type { Thumb } from './thumbs';
   import { tickStep } from './waveform';
-  import { clipAt, clipStarts, itemLen, audioLanes, trimAudio, type AudioItem, type Clip } from './project';
+  import { clipAt, clipStarts, itemLen, trimAudio, type AudioItem, type Clip } from './project';
   import { t } from './i18n.svelte';
-  import { lanes as stackLanes, trimOverlay, type Overlay } from './overlay';
+  import { trimOverlay, type Overlay } from './overlay';
+  import { envelopeAt, hasEnvelope, type VolKey } from './layertrans';
+  import { fits, trackCount, trackOf, NO_TRACKS, type Tracks, type TrackFlags } from './tracks';
 
   let {
     segments, time, clips, durations, names, thumbs, peaks, duration, captions, audios, animLabel, zoom = $bindable(1),
@@ -15,7 +17,19 @@
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
     pending = [], beats, out, zooms = [], onzoom,
     overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
+    ondropasset = () => {}, onmovestrip = () => false, tool = 'select', ontool = () => {}, onrazor = () => {},
+    tracks = NO_TRACKS, onretrack = () => {}, ontrack = () => {}, onaddtrack = () => {}, ondroptrack = () => false,
   }: {
+    ondropasset?: (assetId: string, zone: 'v' | 'main' | 'a', track: number, out: number) => void; // media card dropped on a track
+    tool?: import('./tools').Tool;
+    ontool?: (kind: 'v' | 'a', id: string, op: 'ripple' | 'roll' | 'slip', side: 'start' | 'end', d: number) => void; // live, from drag start
+    onrazor?: (kind: 'v' | 'a' | 's', id: string, out: number) => void; // cut a layer / audio item / V1 strip at output time
+    onmovestrip?: (i: number, out: number) => boolean; // drop a V1 strip at another place (output time)
+    tracks?: Tracks; // track switches (hide/mute, lock), V2… and A2…
+    onretrack?: (kind: 'v' | 'a', id: string, track: number) => void; // move an item to another track, live
+    ontrack?: (kind: 'v' | 'a', track: number, patch: TrackFlags) => void;
+    onaddtrack?: (kind: 'v' | 'a') => void;
+    ondroptrack?: (kind: 'v' | 'a', track: number) => boolean; // delete an empty track
     out?: number; // output time of the playhead (from the player clock)
     zooms?: import('./autozoom').ZoomMoment[]; // auto-zoom moments, sequence time
     onzoom?: (key: string, start: number | null) => void; // move (sequence time) or remove (null) a zoom, live
@@ -55,7 +69,7 @@
   function segThumbs(s: Segment): Thumb[] {
     const at = clipAt(clips, durations, (s.start + s.end) / 2);
     if (!at) return [];
-    const off = starts[at.index];
+    const off = starts[at.index] - (clips[at.index].in ?? 0); // thumbnails are in file time
     return (thumbs[clips[at.index].assetId] ?? []).filter((th) => th.t >= s.start - off && th.t < s.end - off);
   }
   const clipName = (s: Segment) => {
@@ -69,12 +83,20 @@
     if (o === null || !onzoom || !z.key) return;
     drag(e, (d) => onzoom!(z.key!, toSource(segments, Math.max(0, Math.min(total - 0.05, o + d)))));
   }
+  // Drag sideways to move in time, up/down to change track. Nothing lands on top of another item:
+  // a move that would overlap on that track is skipped, so the item stops at its neighbour.
   function moveAudio(e: PointerEvent, item: AudioItem) {
-    selectedAudio = item.id;
-    const a = item.at, len = audLen(item), pts = outPoints(item.id);
-    drag(e, (d, on) => {
-      const at = a + d;
-      onaudio(item.id, { at: Math.max(0, Math.min(total - 0.1, at + nearest([at, at + len], pts, on, idOut))) });
+    ((selectedAudio = item.id), (selectedOverlay = ''), (selected = -1)); // one selection at a time, so Delete hits what you clicked
+    if (isLocked('a', item)) return void e.stopPropagation();
+    if (toolBody(e, 'a', item.id)) return;
+    const a = item.at, len = audLen(item), pts = outPoints(item.id), k0 = trackOf(item);
+    drag(e, (d, on, dy) => {
+      const cur = audios.find((x) => x.id === item.id) ?? item;
+      const want = Math.max(0, k0 + Math.round(dy / A_ROW));
+      if (want !== trackOf(cur) && !tracks.a[want]?.locked && (want >= aCount || fits(audios, audLen, item.id, want, cur.at, len))) onretrack('a', item.id, want);
+      const at0 = a + d, at = Math.max(0, Math.min(total - 0.1, at0 + nearest([at0, at0 + len], pts, on, idOut)));
+      const k = trackOf(audios.find((x) => x.id === item.id) ?? cur);
+      if (fits(audios, audLen, item.id, k, at, len)) onaudio(item.id, { at });
     });
   }
   // Drag an audio item's edge to trim it (the left edge also moves its start).
@@ -82,25 +104,219 @@
     selectedAudio = item.id;
     const dur = durations.get(item.assetId) ?? 0, pts = outPoints(item.id);
     const x = side === 'start' ? item.at : item.at + audLen(item);
-    drag(e, (d, on) => onaudio(item.id, trimAudio(item, dur, side, d + nearest([x + d], pts, on, idOut))));
+    if (isLocked('a', item)) return void e.stopPropagation();
+    if (toolEdge(e, 'a', item.id, side)) return;
+    drag(e, (d, on) => {
+      const p = { ...item, ...trimAudio(item, dur, side, d + nearest([x + d], pts, on, idOut)) };
+      if (fits(audios, audLen, item.id, trackOf(item), p.at, audLen(p))) onaudio(item.id, p);
+    });
   }
   // Layers: same gestures as audio items (drag to move, edges to trim), snapping in output time.
+  // Layers: drag sideways to move in time, up/down to change track (up = higher track = drawn on top).
   function moveOverlay(e: PointerEvent, o: Overlay) {
-    selectedOverlay = o.id;
-    const a = o.at, pts = outPoints(o.id);
-    drag(e, (d, on) => {
-      const at = a + d;
-      onoverlay(o.id, { at: Math.max(0, Math.min(total - 0.1, at + nearest([at, at + o.len], pts, on, idOut))) });
+    if (isLocked('v', o)) return void e.stopPropagation();
+    ((selectedOverlay = o.id), (selectedAudio = ''), (selected = -1));
+    if (toolBody(e, 'v', o.id)) return;
+    const a = o.at, pts = outPoints(o.id), k0 = trackOf(o);
+    drag(e, (d, on, dy) => {
+      const cur = overlays.find((x) => x.id === o.id) ?? o;
+      const want = Math.max(0, k0 - Math.round(dy / V_ROW));
+      if (want !== trackOf(cur) && !tracks.v[want]?.locked && (want >= vCount || fits(overlays, ovLen, o.id, want, cur.at, o.len))) onretrack('v', o.id, want);
+      const at0 = a + d, at = Math.max(0, Math.min(total - 0.1, at0 + nearest([at0, at0 + o.len], pts, on, idOut)));
+      const k = trackOf(overlays.find((x) => x.id === o.id) ?? cur);
+      if (fits(overlays, ovLen, o.id, k, at, o.len)) onoverlay(o.id, { at });
     });
   }
   function ovEdge(e: PointerEvent, o: Overlay, side: 'start' | 'end') {
     selectedOverlay = o.id;
     const dur = o.kind === 'video' ? durations.get(o.assetId ?? '') ?? Infinity : Infinity, pts = outPoints(o.id);
     const x = side === 'start' ? o.at : o.at + o.len;
-    drag(e, (d, on) => onoverlay(o.id, trimOverlay(o, side, d + nearest([x + d], pts, on, idOut), dur)));
+    if (isLocked('v', o)) return void e.stopPropagation();
+    if (toolEdge(e, 'v', o.id, side)) return;
+    drag(e, (d, on) => {
+      const p = trimOverlay(o, side, d + nearest([x + d], pts, on, idOut), dur), n = { ...o, ...p };
+      if (fits(overlays, ovLen, o.id, trackOf(o), n.at, n.len)) onoverlay(o.id, p);
+    });
   }
-  const ovLanes = $derived(stackLanes(overlays));
-  const ovCount = $derived(Math.max(1, ...[...ovLanes.values()].map((l) => l + 1)));
+  // The link of the selected item: its partner on the other track is outlined too.
+  const selLink = $derived(overlays.find((o) => o.id === selectedOverlay)?.link ?? audios.find((a) => a.id === selectedAudio)?.link);
+  // ---- Dropping media cards on tracks ----
+  // Which track is under the pointer: a layer track (V2…; above the top one opens a new track), the main
+  // sequence (V1), or an audio track (A2…; below the last opens a new one). Null over other rows.
+  let dropAt = $state<{ zone: 'v' | 'main' | 'a'; track: number; out: number; top: number; h: number } | null>(null);
+  function dropTarget(e: DragEvent): typeof dropAt {
+    const rows = inner!.querySelectorAll<HTMLElement>(':scope > .row');
+    const ir = inner!.getBoundingClientRect(), y = e.clientY;
+    const out = Math.max(0, Math.min(total, ((e.clientX - ir.left) / ir.width) * total));
+    const lay = rows[0].getBoundingClientRect(), main = rows[1].getBoundingClientRect(), mus = inner!.querySelector<HTMLElement>('.row.music')!.getBoundingClientRect();
+    if (y < lay.bottom + 3) {
+      const k = Math.max(0, Math.min(vCount, vCount - 1 - Math.floor((y - lay.top) / V_ROW)));
+      return { zone: 'v', track: k, out, top: lay.top - ir.top + (vCount - 1 - k) * V_ROW, h: V_ROW - 4 };
+    }
+    if (y >= main.top - 3 && y <= main.bottom + 3) return { zone: 'main', track: 0, out, top: main.top - ir.top, h: main.height };
+    if (y >= mus.top - 3) {
+      const k = Math.max(0, Math.floor((y - mus.top) / A_ROW));
+      return { zone: 'a', track: k, out, top: mus.top - ir.top + Math.min(k, aCount) * A_ROW, h: A_ROW - 4 };
+    }
+    return null;
+  }
+  const isCard = (e: DragEvent) => !!e.dataTransfer?.types.includes('text/x-asset');
+  function dragOverTracks(e: DragEvent) {
+    if (!isCard(e)) return;
+    e.preventDefault();
+    dropAt = dropTarget(e);
+  }
+  function dropOnTracks(e: DragEvent) {
+    const at = isCard(e) ? dropTarget(e) : null, id = e.dataTransfer?.getData('text/x-asset');
+    dropAt = null;
+    if (!at || !id) return; // let the timeline area handle it (files from the computer, or the default place)
+    e.preventDefault();
+    e.stopPropagation();
+    ondropasset(id, at.zone, at.track, at.out);
+  }
+  // ---- Volume line on audio items ----
+  // The item's volume envelope (fades and points) as a line: top = 150%, bottom = silent.
+  const ENV_N = 48;
+  const envPath = (a: AudioItem) => {
+    const len = audLen(a) || 1;
+    return Array.from({ length: ENV_N + 1 }, (_, i) => `${(i / ENV_N) * 100},${(1 - envelopeAt(a, (i / ENV_N) * len, len) / 1.5) * 100}`).join(' ');
+  };
+  // Drag a volume point up or down (and along, between its neighbours).
+  function dragVolKey(e: PointerEvent, a: AudioItem, k: number) {
+    e.stopPropagation();
+    if (isLocked('a', a)) return;
+    const el = e.currentTarget as HTMLElement, box = el.parentElement!.getBoundingClientRect();
+    const kf = a.volKf!, k0 = kf[k], x0 = e.clientX, y0 = e.clientY, len = audLen(a);
+    let moved = false;
+    el.setPointerCapture(e.pointerId);
+    el.onpointermove = (m) => {
+      if (!moved) ((moved = true), oncommit());
+      const lo = k > 0 ? kf[k - 1].t + 0.01 : 0, hi = k < kf.length - 1 ? kf[k + 1].t - 0.01 : len;
+      const t0 = Math.max(lo, Math.min(hi, k0.t + ((m.clientX - x0) / box.width) * len));
+      const v = Math.max(0, Math.min(1.5, k0.v - ((m.clientY - y0) / box.height) * 1.5));
+      onaudio(a.id, { volKf: kf.map((x, i): VolKey => (i === k ? { t: t0, v: Math.round(v * 100) / 100 } : x)) });
+    };
+    el.onpointerup = el.onpointercancel = () => (el.onpointermove = el.onpointerup = el.onpointercancel = null);
+  }
+  // Touch: a swipe on a strip still pans the timeline; a long press on the selected strip picks it up.
+  // While held, the finger moves the drop marker (the view scrolls near the edges); lifting drops it.
+  const HOLD_MS = 400, HOLD_SLOP = 8;
+  let holdId: number | null = null; // pointer that is carrying a strip (pan ignores it)
+  function holdStrip(e: PointerEvent, i: number) {
+    if (i !== selected || (e.target as Element).closest('.handle')) return; // unselected: pan / tap to select
+    const x0 = e.clientX, y0 = e.clientY;
+    let last = e, raf = 0;
+    const timer = setTimeout(() => {
+      holdId = e.pointerId;
+      navigator.vibrate?.(15);
+      stripDrop = outAt(last);
+      raf = requestAnimationFrame(edgeScroll);
+    }, HOLD_MS);
+    // Near the left/right edge of the timeline, keep scrolling so the strip can travel past what's on screen.
+    const edgeScroll = () => {
+      if (holdId === null || !scroller) return;
+      const r = scroller.getBoundingClientRect(), zone = 36;
+      const dir = last.clientX < r.left + zone ? -1 : last.clientX > r.right - zone ? 1 : 0;
+      if (dir) {
+        if (centered) onseek(Math.max(0, Math.min(total, view + dir * total / (zoom * 120))));
+        else scroller.scrollLeft += dir * 8;
+        stripDrop = outAt(last);
+      }
+      raf = requestAnimationFrame(edgeScroll);
+    };
+    const move = (m: PointerEvent) => {
+      if (m.pointerId !== e.pointerId) return;
+      last = m;
+      if (holdId === null) {
+        if (Math.hypot(m.clientX - x0, m.clientY - y0) > HOLD_SLOP) clearTimeout(timer); // it's a swipe
+        return;
+      }
+      m.preventDefault();
+      stripDrop = outAt(m);
+    };
+    const end = (u: PointerEvent) => {
+      if (u.pointerId !== e.pointerId) return;
+      clearTimeout(timer);
+      cancelAnimationFrame(raf);
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', end);
+      removeEventListener('pointercancel', end);
+      if (holdId === null) return;
+      holdId = null;
+      stripDrop = null;
+      if (u.type === 'pointerup') (eatNextClick(), onmovestrip(i, outAt(u)));
+    };
+    addEventListener('pointermove', move, { passive: false });
+    addEventListener('pointerup', end);
+    addEventListener('pointercancel', end);
+  }
+  // ---- Tools ----
+  const outAt = (e: PointerEvent) => {
+    const r = inner!.getBoundingClientRect();
+    return Math.max(0, Math.min(total, ((e.clientX - r.left) / r.width) * total));
+  };
+  // Pointer down on a layer / audio item body with a tool other than select. Returns true when handled.
+  function toolBody(e: PointerEvent, kind: 'v' | 'a', id: string): boolean {
+    if (tool === 'razor') {
+      e.stopPropagation();
+      eatNextClick();
+      onrazor(kind, id, outAt(e));
+      return true;
+    }
+    if (tool === 'slip') {
+      // Dragging right shows earlier footage (the file slides right under the item), like an NLE.
+      drag(e, (d) => ontool(kind, id, 'slip', 'end', -d));
+      return true;
+    }
+    return false;
+  }
+  // Edge drag with ripple / roll.
+  function toolEdge(e: PointerEvent, kind: 'v' | 'a', id: string, side: 'start' | 'end'): boolean {
+    if (tool !== 'ripple' && tool !== 'roll') return false;
+    const op = tool;
+    drag(e, (d) => ontool(kind, id, op, side, d));
+    return true;
+  }
+  // Drag the selected V1 strip (mouse/pen, not its trim handles) to move it elsewhere in the sequence.
+  // A marker shows where it will land; it's dropped at the nearest clip boundary.
+  let stripDrop = $state<number | null>(null);
+  function grabStrip(e: PointerEvent, i: number) {
+    if (tool === 'razor' && e.button === 0) {
+      e.stopPropagation();
+      eatNextClick();
+      return onrazor('s', '', outAt(e));
+    }
+    if (e.pointerType === 'touch') return holdStrip(e, i);
+    if (i !== selected || e.button !== 0 || (e.target as Element).closest('.handle')) return;
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement, x0 = e.clientX;
+    let moved = false;
+    const at = (m: PointerEvent) => {
+      const r = inner!.getBoundingClientRect();
+      return Math.max(0, Math.min(total, ((m.clientX - r.left) / r.width) * total));
+    };
+    el.setPointerCapture(e.pointerId);
+    el.onpointermove = (m) => {
+      if (!moved && Math.abs(m.clientX - x0) < 5) return;
+      moved = true;
+      stripDrop = at(m);
+    };
+    el.onpointerup = el.onpointercancel = (u) => {
+      el.onpointermove = el.onpointerup = el.onpointercancel = null;
+      stripDrop = null;
+      if (moved && u.type === 'pointerup') (eatNextClick(), onmovestrip(i, at(u)));
+    };
+  }
+  // ---- Tracks ----
+  // Layer tracks are drawn top-down from the highest (V3 above V2, like an NLE); audio tracks A2, A3… go down.
+  const V_ROW = 26, A_ROW = 28;
+  const ovLen = (o: Overlay) => o.len;
+  const vCount = $derived(trackCount(overlays, tracks.v));
+  const aCount = $derived(trackCount(audios, tracks.a));
+  const ovTop = (o: Overlay) => (vCount - 1 - trackOf(o)) * V_ROW;
+  const isLocked = (k: 'v' | 'a', x: { track?: number }) => !!tracks[k][trackOf(x)]?.locked;
+  const usedV = $derived(new Set(overlays.map(trackOf)));
+  const usedA = $derived(new Set(audios.map(trackOf)));
   const ovLabel = (o: Overlay) => (o.bar ? t('tpl.b-progress') : o.kind === 'text' ? o.text ?? '' : names.get(o.assetId ?? '') ?? '');
   const ovIcon = (o: Overlay) => (o.kind === 'text' ? 'title' : o.kind === 'image' ? 'image' : 'picture_in_picture_alt') as IconName;
 
@@ -120,8 +336,7 @@
   const fmtT = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
   const audLen = (a: AudioItem) => itemLen(a, durations.get(a.assetId) ?? 0);
   // Overlapping audio items stack into lanes; the Music & VO row grows to fit them.
-  const lanes = $derived(audioLanes(audios, (id) => durations.get(id) ?? 0));
-  const laneCount = $derived(Math.max(1, ...[...lanes.values()].map((l) => l + 1)));
+
 
   let scroller = $state<HTMLDivElement>();
   // Touch devices: the playhead stays fixed in the centre and the timeline scrolls under it
@@ -220,7 +435,7 @@
     let on = false, lx = x0, lt = performance.now(), vel = 0; // vel in px/ms
     const clampT = (v: number) => Math.max(0, Math.min(total, v));
     const move = (m: PointerEvent) => {
-      if (pinching || m.pointerId !== e.pointerId || (!on && Math.abs(m.clientX - x0) < 3)) return;
+      if (pinching || m.pointerId !== e.pointerId || m.pointerId === holdId || (!on && Math.abs(m.clientX - x0) < 3)) return;
       on = true;
       panAt = performance.now();
       if (!centered) { if (scroller) scroller.scrollLeft = sl0 - (m.clientX - x0); return; }
@@ -303,17 +518,17 @@
 
   // Generic horizontal drag: calls move(deltaSeconds, snapOn) live; a press without movement runs onclick.
   // On touch, only a selected item drags; an unselected one pans the timeline (tap still selects).
-  function drag(e: PointerEvent, move: (d: number, snapOn: boolean) => void, onclick?: () => void) {
+  function drag(e: PointerEvent, move: (d: number, snapOn: boolean, dy: number) => void, onclick?: () => void) {
     e.stopPropagation();
     if (e.pointerType === 'touch' && !(e.currentTarget as Element).closest('.sel')) return pan(e, onclick);
-    const x0 = e.clientX, perPx = total / inner!.clientWidth;
+    const x0 = e.clientX, y0 = e.clientY, perPx = total / inner!.clientWidth;
     const el = e.currentTarget as HTMLElement;
     let moved = false;
     el.setPointerCapture(e.pointerId);
     el.onpointermove = (m) => {
-      if (!moved && Math.abs(m.clientX - x0) < 3) return;
+      if (!moved && Math.abs(m.clientX - x0) < 3 && Math.abs(m.clientY - y0) < 6) return;
       if (!moved) ((moved = true), (held = live), oncommit());
-      move((m.clientX - x0) * perPx, snap && !m.altKey);
+      move((m.clientX - x0) * perPx, snap && !m.altKey, m.clientY - y0);
     };
     el.onpointerup = el.onpointercancel = (u) => {
       el.onpointermove = el.onpointerup = el.onpointercancel = null;
@@ -376,7 +591,7 @@
       if (!at) continue;
       const id = cl[at.index].assetId, p = pk[id], dur = durs.get(id) ?? 0;
       if (!p || !dur) continue;
-      const la = at.local, lb = Math.min(dur, at.local + Math.max(0, b - a));
+      const la = at.file, lb = Math.min(dur, at.file + Math.max(0, b - a));
       let m = 0;
       for (let i = Math.floor((la / dur) * p.length), end = Math.max(i + 1, Math.ceil((lb / dur) * p.length)); i < end && i < p.length; i++) m = Math.max(m, p[i]);
       const h = Math.max(dpr, m * (cv.height - 2 * dpr));
@@ -443,22 +658,50 @@
 </script>
 
 <div class="tl">
-  <div class="labels" aria-hidden="true" style:--music="{laneCount * 28 - 4}px" style:--ov="{ovCount * 26 - 4}px">
-    <span></span>
-    <span>{t('overlayTrack')}</span>
-    <span>{t('videoTrack')}</span>
-    <span>{t('audioTrack')}</span>
-    <span>{t('captions')}</span>
-    <span>{t('animTrack')}</span>
-    <span>{t('musicTrack')}</span>
+  <div class="labels" style:--music="{aCount * A_ROW - 4}px" style:--ov="{vCount * V_ROW - 4}px">
+    <span class="thead" aria-hidden="true">
+      <button class="tadd" onclick={() => onaddtrack('v')} title={t('addVTrack')} aria-label={t('addVTrack')}><Icon name="add" size={12} />V</button>
+      <button class="tadd" onclick={() => onaddtrack('a')} title={t('addATrack')} aria-label={t('addATrack')}><Icon name="add" size={12} />A</button>
+    </span>
+    <div class="tracks">
+      {#each Array.from({ length: vCount }, (_, i) => vCount - 1 - i) as k (k)}
+        {@render header('v', k, `V${k + 2}`, V_ROW)}
+      {/each}
+    </div>
+    <span aria-hidden="true" title={t('videoTrack')}>V1 · {t('videoTrack')}</span>
+    <span aria-hidden="true">A1 · {t('audioTrack')}</span>
+    <span aria-hidden="true">{t('captions')}</span>
+    <span aria-hidden="true">{t('animTrack')}</span>
+    <div class="tracks">
+      {#each Array.from({ length: aCount }, (_, i) => i) as k (k)}
+        {@render header('a', k, `A${k + 2}`, A_ROW)}
+      {/each}
+    </div>
   </div>
+  {#snippet header(kind: 'v' | 'a', k: number, name: string, h: number)}
+    {@const f = tracks[kind][k] ?? {}}
+    {@const off = kind === 'v' ? f.hidden : f.muted}
+    {@const empty = !(kind === 'v' ? usedV : usedA).has(k)}
+    <div class="th" class:off style:height="{h - 4}px" style:margin-bottom="4px">
+      <button class="tname mono" disabled={!empty || (kind === 'v' ? vCount : aCount) === 1} title={empty ? t('deleteTrack', { n: name }) : t('trackTip')}
+        ondblclick={() => ondroptrack(kind, k)} onkeydown={(e) => (e.key === 'Delete' || e.key === 'Backspace') && ondroptrack(kind, k)}>{name}</button>
+      <button class="tbtn" class:on={off} aria-pressed={!!off}
+        onclick={() => ontrack(kind, k, kind === 'v' ? { hidden: !f.hidden || undefined } : { muted: !f.muted || undefined })}
+        title={t(kind === 'v' ? (off ? 'showTrack' : 'hideTrack') : off ? 'unmuteTrack' : 'muteTrack', { n: name })}
+        aria-label={t(kind === 'v' ? (off ? 'showTrack' : 'hideTrack') : off ? 'unmuteTrack' : 'muteTrack', { n: name })}>
+        <Icon name={kind === 'v' ? (off ? 'visibility_off' : 'visibility') : off ? 'volume_off' : 'volume_up'} size={13} /></button>
+      <button class="tbtn" class:on={f.locked} aria-pressed={!!f.locked} onclick={() => ontrack(kind, k, { locked: !f.locked || undefined })}
+        title={t(f.locked ? 'unlockTrack' : 'lockTrack', { n: name })} aria-label={t(f.locked ? 'unlockTrack' : 'lockTrack', { n: name })}>
+        <Icon name={f.locked ? 'lock' : 'lock_open'} size={13} /></button>
+    </div>
+  {/snippet}
 
   <div class="scroller" class:centered bind:this={scroller} bind:clientWidth={vw}>
     {#if centered}<div class="centerline" aria-hidden="true"></div>{/if}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="inner" style:--music="{laneCount * 28 - 4}px" style:--ov="{ovCount * 26 - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1} style:transform={centered ? `translateX(${shift}px)` : null}
+    <div class="inner" style:--music="{aCount * A_ROW - 4}px" style:--ov="{vCount * V_ROW - 4}px" bind:this={inner} bind:clientWidth={width} style:width="{zoom * 100}%" class:zoomed={zoom !== 1} class:t-razor={tool === 'razor'} class:t-slip={tool === 'slip'} style:transform={centered ? `translateX(${shift}px)` : null}
       role="slider" tabindex="0" aria-label={t('timeline')} aria-valuemin={0} aria-valuemax={total} aria-valuenow={playhead ?? 0}
-      onclick={seekAt} onpointerdown={scrub}
+      onclick={seekAt} onpointerdown={scrub} ondragover={dragOverTracks} ondrop={dropOnTracks} ondragleave={(e) => !inner?.contains(e.relatedTarget as Node) && (dropAt = null)}
       onkeydown={(e) => {
         const d = (e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0) * (e.shiftKey ? 1 : 1 / 30);
         if (d) (e.preventDefault(), onseek(Math.max(0, (playhead ?? 0) + d)));
@@ -468,15 +711,16 @@
       </div>
 
       <div class="row layers">
+        {#each Array.from({ length: vCount }, (_, i) => i) as i}<div class="lane" style:top="{i * V_ROW}px" style:height="{V_ROW - 4}px" aria-hidden="true"></div>{/each}
         {#each overlays as o (o.id)}
-          <button class="ov" class:sel={o.id === selectedOverlay} class:txt={o.kind === 'text'} style:left={pct(o.at)}
-            style:top="{(ovLanes.get(o.id) ?? 0) * 26}px" style:width={pct(Math.max(0.05, Math.min(o.len, total - o.at)))}
+          <button class="ov" class:sel={o.id === selectedOverlay} class:pair={!!o.link && o.link === selLink} class:txt={o.kind === 'text'} class:locked={isLocked('v', o)} class:off={tracks.v[trackOf(o)]?.hidden} style:left={pct(o.at)}
+            style:top="{ovTop(o)}px" style:width={pct(Math.max(0.05, Math.min(o.len, total - o.at)))}
             title={ovLabel(o)} aria-pressed={o.id === selectedOverlay}
             onpointerdown={(e) => moveOverlay(e, o)} onclick={(e) => e.stopPropagation()}
-            onkeydown={(e) => keyMove(e, (d) => onoverlay(o.id, { at: Math.max(0, o.at + d) }))}
+            onkeydown={(e) => !isLocked('v', o) && keyMove(e, (d) => fits(overlays, ovLen, o.id, trackOf(o), Math.max(0, o.at + d), o.len) && onoverlay(o.id, { at: Math.max(0, o.at + d) }))}
             aria-label={t('a11y.item', { name: ovLabel(o), a: fmtT(o.at) })}>
             {#each o.kf ?? [] as k}<span class="kd" style:left="{(k.t / o.len) * 100}%" aria-hidden="true"><Icon name="diamond" size={10} /></span>{/each}
-            <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span><Icon name={ovIcon(o)} size={13} /> {ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
+            <span class="edge l" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'start')}></span><Icon name={ovIcon(o)} size={13} />{#if o.link}<Icon name="link" size={12} />{/if} {ovLabel(o)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => ovEdge(e, o, 'end')}></span></button>
         {/each}
       </div>
 
@@ -485,7 +729,7 @@
           <div class="seg" class:sel={i === selected} role="button" tabindex="0" aria-pressed={i === selected}
             aria-label={t('a11y.strip', { n: i + 1, name: clipName(s), a: fmtT(segPos[i].start), b: fmtT(segPos[i].start + segPos[i].len) })}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selected = i; selectedOverlay = ''; selectedAudio = ''; } }} class:lift={s.fx?.lift} style:left={pct(segPos[i].start)} style:width={pct(segPos[i].len)}
-            onclick={() => ((selected = i), (selectedOverlay = ''), (selectedAudio = ''))} title={clipName(s)}>
+            onclick={() => ((selected = i), (selectedOverlay = ''), (selectedAudio = ''))} onpointerdown={(e) => grabStrip(e, i)} oncontextmenu={(e) => i === selected && e.preventDefault()} title={clipName(s)}>
             <div class="thumbs">
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>
@@ -538,15 +782,25 @@
       </div>
 
       <div class="row music">
+        {#each Array.from({ length: aCount }, (_, i) => i) as i}<div class="lane" style:top="{i * A_ROW}px" style:height="{A_ROW - 4}px" aria-hidden="true"></div>{/each}
         {#each audios as item (item.id)}
-          <button class="aud" class:sel={item.id === selectedAudio} style:left={pct(item.at)}
-            style:top="{(lanes.get(item.id) ?? 0) * 28}px" style:width={pct(Math.min(audLen(item), total - item.at))}
+          <button class="aud" class:sel={item.id === selectedAudio} class:pair={!!item.link && item.link === selLink} class:locked={isLocked('a', item)} class:off={tracks.a[trackOf(item)]?.muted} style:left={pct(item.at)}
+            style:top="{trackOf(item) * A_ROW}px" style:width={pct(Math.min(audLen(item), total - item.at))}
             title={names.get(item.assetId)} aria-pressed={item.id === selectedAudio}
             onpointerdown={(e) => moveAudio(e, item)} onclick={(e) => e.stopPropagation()}
-            onkeydown={(e) => keyMove(e, (d) => onaudio(item.id, { at: Math.max(0, item.at + d) }))}
+            onkeydown={(e) => !isLocked('a', item) && keyMove(e, (d) => fits(audios, audLen, item.id, trackOf(item), Math.max(0, item.at + d), audLen(item)) && onaudio(item.id, { at: Math.max(0, item.at + d) }))}
             aria-label={t('a11y.item', { name: names.get(item.assetId) ?? '', a: fmtT(item.at) })}>
+            {#if hasEnvelope(item) || item.id === selectedAudio}
+              <svg class="env" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points={envPath(item)} vector-effect="non-scaling-stroke" />
+              </svg>
+              {#each item.volKf ?? [] as k, ki}
+                <span class="vk" style:left="{(k.t / (audLen(item) || 1)) * 100}%" style:top="calc(2px + {(1 - k.v / 1.5)} * (100% - 4px))"
+                  title="{Math.round(k.v * 100)}%" aria-hidden="true" onpointerdown={(e) => dragVolKey(e, item, ki)}></span>
+              {/each}
+            {/if}
             {#each beatsOf(item) as b}<span class="beat" style:left="{((b - item.at) / audLen(item)) * 100}%" aria-hidden="true"></span>{/each}
-            <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span><Icon name="music_note" size={13} /> {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
+            <span class="edge l" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'start')}></span><Icon name={item.link ? 'link' : 'music_note'} size={13} /> {names.get(item.assetId)}<span class="edge r" aria-hidden="true" onpointerdown={(e) => audEdge(e, item, 'end')}></span></button>
         {/each}
       </div>
 
@@ -561,6 +815,8 @@
         {@const x = toOutput(segments, a)}
         {#if x !== null}<div class="pend" style:left={pct(x)} style:width={pct(Math.max(0.01, b - a))} aria-hidden="true"></div>{/if}
       {/each}
+      {#if dropAt}<div class="dropzone" style:top="{dropAt.top}px" style:height="{dropAt.h}px" aria-hidden="true"><span class="dropmark" style:left={pct(dropAt.out)}></span></div>{/if}
+      {#if stripDrop !== null}<div class="sdrop" style:left={pct(stripDrop)} aria-hidden="true"></div>{/if}
       {#if guide !== null}<div class="guide" style:left={pct(guide)} aria-hidden="true"></div>{/if}
       {#if playhead !== null}
         <div class="playhead" style:left={pct(playhead)}>
@@ -573,12 +829,26 @@
 </div>
 
 <style>
-  .tl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; user-select: none; -webkit-user-select: none;
+  .tl { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 8px; user-select: none; -webkit-user-select: none;
     -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
   .labels, .inner { display: grid; grid-template-rows: 20px var(--ov, 22px) 48px 30px 22px 22px var(--music, 24px); row-gap: 6px; }
   /* Music & VO sits in its own area under a divider. */
-  .labels > span:last-child, .inner > .row.music { border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 2px; align-self: start; }
+  .inner > .row.music { border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 2px; align-self: start; }
   .labels { font-size: 12px; color: var(--muted); align-items: center; }
+  .labels > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .labels > .tracks { align-self: start; }
+  .labels > .tracks:last-child { border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 2px; }
+  .thead { display: flex; gap: 2px; }
+  .tadd, .tname, .tbtn { padding: 0 3px; min-height: 0; height: 18px; font-size: 11px; border-radius: 4px; background: none; border: none; color: var(--muted); }
+  .tadd { display: inline-flex; align-items: center; border: 1px solid var(--border-soft); }
+  .th { display: flex; align-items: center; gap: 1px; }
+  .tname { width: 24px; text-align: left; color: var(--text, inherit); }
+  .tname:disabled { opacity: 1; cursor: default; }
+  .tbtn.on { color: var(--accent); }
+  .th.off .tname { opacity: .5; }
+  .lane { position: absolute; left: 0; right: 0; border-radius: 6px; background: rgb(255 255 255 / .025); pointer-events: none; }
+  .ov.off, .aud.off { opacity: .35; }
+  .ov.locked, .aud.locked { cursor: not-allowed; background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgb(255 255 255 / .06) 5px 10px); }
   .scroller { overflow-x: auto; overflow-y: hidden; }
   /* Horizontal touch gestures are handled in JS: from a layer they pan, from empty space they scrub. */
   .inner { position: relative; min-width: 100%; cursor: pointer; touch-action: pan-y; }
@@ -588,7 +858,16 @@
   .tick { position: absolute; top: 0; font-size: 11px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
   .tick:first-child { transform: none; }
   .seg { position: absolute; top: 0; bottom: 0; overflow: hidden; border-radius: 6px; background: var(--surface); border: 2px solid var(--border-soft); }
-  .seg.sel { border-color: var(--accent); }
+  .seg.sel { border-color: var(--accent); cursor: grab; }
+  .t-razor .ov, .t-razor .aud, .t-razor .seg { cursor: crosshair; }
+  .t-slip .ov, .t-slip .aud { cursor: ew-resize; }
+  .ov.pair:not(.sel), .aud.pair:not(.sel) { box-shadow: 0 0 0 1px currentColor; }
+  .env { position: absolute; inset: 2px 0; width: 100%; height: calc(100% - 4px); overflow: visible; pointer-events: none; }
+  .env polyline { fill: none; stroke: #ffd84d; stroke-width: 1.5; opacity: .85; }
+  .vk { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #ffd84d; border: 1px solid #111; cursor: move; touch-action: none; z-index: 2; }
+  .dropzone { position: absolute; left: 0; right: 0; border-radius: 6px; background: rgb(200 245 96 / .12); outline: 1px dashed var(--accent); pointer-events: none; z-index: 4; }
+  .dropmark { position: absolute; top: -3px; bottom: -3px; width: 2px; transform: translateX(-1px); background: var(--accent); }
+  .sdrop { position: absolute; top: 20px; bottom: 0; width: 3px; transform: translateX(-1px); background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; z-index: 4; }
   .thumbs { display: flex; height: 100%; overflow: hidden; pointer-events: none; }
   .thumbs img { height: 100%; width: 0; flex: 1; object-fit: cover; opacity: .8; }
   .handle { position: absolute; top: 0; bottom: 0; width: 10px; background: var(--accent); cursor: ew-resize; touch-action: none; }
@@ -637,6 +916,8 @@
   /* Grab area around the playhead's head, wider than it looks so a finger can catch it. */
   .knob { position: absolute; top: -4px; left: -12px; width: 26px; height: 26px; pointer-events: auto; touch-action: none; cursor: ew-resize; z-index: 3; }
   /* On touch, unselected items pan (in JS) instead of dragging, so let vertical scroll through. */
+  /* A selected strip keeps the finger (long press picks it up), so the page doesn't scroll away under it. */
+  @media (pointer: coarse) { .seg.sel { touch-action: none; } }
   @media (pointer: coarse) { .cap:not(.sel), .aud:not(.sel), .ov:not(.sel), :not(.sel) > .edge { touch-action: pan-y; } }
   /* Centred playhead: half-width spacers let time 0 and the end both reach the centre line;
      swipes anywhere (tracks, ruler) scroll natively, and scroll position is the playhead time. */

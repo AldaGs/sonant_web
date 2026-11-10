@@ -1,4 +1,5 @@
 // Keyboard shortcuts for the editor.
+import { TOOL_KEYS } from '../tools';
 import { cutRange } from '../cuts';
 import { t } from '../i18n.svelte';
 import type { Ed } from './ed';
@@ -28,12 +29,12 @@ export function createKeys(ed: Ed) {
     else if (e.code === 'Space' && !(e.target as HTMLElement).closest?.('button')) (e.preventDefault(), ed.toggle());
     else if (e.key === '?') ed.showKeys = true;
     else if (e.altKey) return;
-    else if (e.key.toLowerCase() === 's') ed.cutHere();
+    else if (e.key.toLowerCase() === 's') e.shiftKey ? ed.cutAll() : ed.cutHere();
     else if (e.key === 'Escape' && ed.pickKey) ed.endPick();
     else if (e.key === 'Escape') (ed.deselect(), (ed.marks = [null, null]));
     else if ((e.key === 'Delete' || e.key === 'Backspace') && e.shiftKey && ed.selFx) ed.setFx({ lift: !ed.selFx.lift || undefined });
     else if (e.key === 'Delete' || e.key === 'Backspace')
-      cutMarks() || ed.removeOverlay() || (ed.tab === 'transcript' && ed.transcriptView?.toggleSelection()) || ed.removeAudioItem() || ed.deleteSelected();
+      cutMarks() || (ed.tool === 'ripple' && ed.rippleDeleteSel()) || ed.removeOverlay() || (ed.tab === 'transcript' && ed.transcriptView?.toggleSelection()) || ed.removeAudioItem() || ed.deleteSelected();
     // The timeline and the preview canvas handle their own arrows (seek / nudge caption).
     else if (e.key.startsWith('Arrow') && (e.target as HTMLElement).closest?.('.tl, canvas')) return;
     else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
@@ -49,6 +50,7 @@ export function createKeys(ed: Ed) {
     else if (e.key.toLowerCase() === 'n') ((ed.snapOn = !ed.snapOn), ed.announce(t(ed.snapOn ? 'a11y.on' : 'a11y.off', { what: t('snap') })));
     else if (e.key.toLowerCase() === 'a') ((ed.autoSelect = !ed.autoSelect), ed.announce(t(ed.autoSelect ? 'a11y.on' : 'a11y.off', { what: t('autoSelect') })));
     else if (e.key.toLowerCase() === 't') ed.addText();
+    else if (!e.shiftKey && TOOL_KEYS[e.key.toLowerCase()]) ((ed.tool = TOOL_KEYS[e.key.toLowerCase()]), ed.announce(t('tool.' + ed.tool)));
   }
 
   return { step, keys };

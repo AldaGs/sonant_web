@@ -8,9 +8,12 @@
   import { maskAt, setMaskKey, maskReveal } from './overlay';
   import { TITLE_PATHS, TITLE_STYLES, textStyle, tfAt, keyAt, type Overlay, type Transform, type Motion } from './overlay';
   import type { Font } from './fonts';
+  import { LAYER_TRANS, type LayerTrans } from './layertrans';
 
   let { o, outTime, fonts, overlays, pickKey, doneEditing, closeLayer, setOverlay, setMotion, setTf,
-    jumpKey, toggleKey, punchIn, clearKeys, startPick, removeOverlay, restack, layerT, outNow }: {
+    jumpKey, toggleKey, punchIn, clearKeys, startPick, removeOverlay, restack, layerT, outNow, linkedSound, setAudio, detachSound, unlinkSound }: {
+    linkedSound?: import('./project').AudioItem; setAudio: (id: string, patch: Partial<import('./project').AudioItem>) => void;
+    detachSound: (o: Overlay) => void; unlinkSound: (link: string) => void;
     o: Overlay; outTime: number; fonts: Font[]; overlays: Overlay[]; pickKey: string | null;
     doneEditing: () => void; closeLayer: () => void;
     setOverlay: (id: string, patch: Partial<Overlay>, snapshot?: boolean) => void;
@@ -122,6 +125,26 @@
       {#each BLENDS as b (b)}<option value={b}>{t('bl.' + b)}</option>{/each}
     </select>
   </label>
+  <details class="lfx" open={!!(o.trIn || o.trOut)}>
+    <summary>{t('layerTrans')}</summary>
+    {#each [['trIn', 'ltrIn'], ['trOut', 'ltrOut']] as const as [key, label]}
+      {@const tr = o[key] as LayerTrans | undefined}
+      <div class="lrow">
+        <label class="vol inline">{t(label)}
+          <select value={tr?.kind ?? ''} onchange={(e) => (setOverlay(o.id, { [key]: e.currentTarget.value ? { kind: e.currentTarget.value, d: tr?.d ?? Math.min(0.5, o.len / 2) } : undefined }), doneEditing())}>
+            <option value="">{t('trans.none')}</option>
+            {#each LAYER_TRANS as k}<option value={k}>{t('ltr.' + k)}</option>{/each}
+          </select>
+        </label>
+        {#if tr}
+          <label class="vol inline">{t('duration')} <span class="mono small">{tr.d.toFixed(1)}s</span>
+            <input type="range" min="0.1" max={Math.max(0.2, Math.min(3, o.len))} step="0.1" value={tr.d}
+              oninput={(e) => setOverlay(o.id, { [key]: { ...tr, d: +e.currentTarget.value } })} onchange={doneEditing} />
+          </label>
+        {/if}
+      </div>
+    {/each}
+  </details>
   {#if o.kind !== 'text'}
     <KeyControls key={o.key} picking={pickKey === o.id} onpick={() => startPick(o.id)}
       set={(k, final) => (setOverlay(o.id, { key: k }), final && doneEditing())} />
@@ -153,18 +176,26 @@
       {/if}
     </details>
   {/if}
-  {#if o.kind === 'video'}
+  {#if o.kind === 'video' && linkedSound}
+    <!-- The sound is its own item on an A track, linked to this layer. -->
+    <label class="vol">{t('volume')} <span class="mono small">{Math.round(linkedSound.volume * 100)}% · A{(linkedSound.track ?? 0) + 2}</span>
+      <input type="range" min="0" max="1" step="0.05" value={linkedSound.volume} oninput={(e) => setAudio(linkedSound.id, { volume: +e.currentTarget.value })} />
+    </label>
+    <div class="lrow"><button class="sm" onclick={() => unlinkSound(o.link!)} title={t('unlinkTip')}><Icon name="link_off" /> {t('unlink')}</button></div>
+  {:else if o.kind === 'video'}
     <label class="vol">{t('volume')} <span class="mono small">{Math.round((o.volume ?? 0) * 100)}%</span>
       <input type="range" min="0" max="1" step="0.05" value={o.volume ?? 0} oninput={(e) => setOverlay(o.id, { volume: +e.currentTarget.value })} />
     </label>
+    <div class="lrow"><button class="sm" onclick={() => detachSound(o)} title={t('detachTip')}><Icon name="link" /> {t('detachSound')}</button></div>
   {/if}
   <div class="lrow">
     <button class="sm" class:on={o.behind} aria-pressed={!!o.behind} title={t('layerBehind')}
       onclick={() => (setOverlay(o.id, { behind: !o.behind || undefined }), doneEditing())}><Icon name="person" /> {t('behindPerson')}</button>
     <button class="sm" class:on={o.tf.flipX} aria-pressed={!!o.tf.flipX} onclick={() => (setTf(o.id, { flipX: !o.tf.flipX }), doneEditing())}><Icon name="flip" /> {t('flip')}</button>
     <button class="sm" onclick={() => (setTf(o.id, { x: 0.5, y: 0.5, rotation: 0, crop: undefined, flipX: false, opacity: 1 }), doneEditing())}>{t('resetLayer')}</button>
-    <button class="sm icon" onclick={() => restack(1)} disabled={overlays.at(-1)?.id === o.id} title={t('bringForward')} aria-label={t('bringForward')}><Icon name="flip_to_front" /></button>
-    <button class="sm icon" onclick={() => restack(-1)} disabled={overlays[0]?.id === o.id} title={t('sendBackward')} aria-label={t('sendBackward')}><Icon name="flip_to_back" /></button>
+    <span class="muted small" title={t('trackTip')}>V{(o.track ?? 0) + 2}</span>
+    <button class="sm icon" onclick={() => restack(1)} title={t('bringForward')} aria-label={t('bringForward')}><Icon name="flip_to_front" /></button>
+    <button class="sm icon" onclick={() => restack(-1)} disabled={!o.track} title={t('sendBackward')} aria-label={t('sendBackward')}><Icon name="flip_to_back" /></button>
     <button class="sm" onclick={removeOverlay}>{t('del')}</button>
   </div>
 </section>

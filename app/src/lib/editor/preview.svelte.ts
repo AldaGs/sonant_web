@@ -1,4 +1,5 @@
 // The preview canvas: the draw loop, layer and caption handles, pointer dragging and the key-colour picker.
+import { isLockedV } from '../tracks';
 import { untrack } from 'svelte';
 import { startOf, endOf, type Caption } from '../captions';
 import { drawCaption, fontString, resolveStyle, inBox, type Box } from '../render';
@@ -58,7 +59,7 @@ export function createPreview(ed: Ed) {
       else if (f && fx?.color) f = ed.grader.apply(f, fw, fh, fx.color, ed.lutMap.get(fx.color.lut ?? ''), tNow);
       capBox = null;
       let below: Placed[] = [];
-      const anyBehind = overlaysAt(ed.overlays, ed.player.o).some((o) => o.behind);
+      const anyBehind = overlaysAt(ed.shownOverlays, ed.player.o).some((o) => o.behind);
       drawFrame(ctx, f, f ? fw : w, f ? fh : h, f ? shakePlace(autoZoomPlace(zoomPlace(stabPlace(coverPlace(w, h, fw, fh, fx?.focus), w, h, fx?.stab, tNow), w, h, fx, tNow - (strip?.start ?? 0)), w, h, ed.zooms, ed.autoZoom?.scale ?? 1, tNow), w, h, Math.max(fx?.shake ?? 0, ed.autoZoom?.shake ? zoomShake(ed.zooms, tNow) : 0), tNow) : [0, 0, w, h], fx, !!cap,
         () => {
           placed = [...below, ...drawLayers(ctx, tNow, false)];
@@ -107,7 +108,7 @@ export function createPreview(ed: Ed) {
     if (toOutput(ed.segments, t) === null) return [];
     const out = ed.player.o;
     const res: Placed[] = [];
-    for (const o of overlaysAt(ed.overlays, out)) {
+    for (const o of overlaysAt(ed.shownOverlays, out)) {
       if (!!o.behind !== behind) continue;
       let src: CanvasImageSource | null = null, sw = 0, sh = 0;
       if (o.kind === 'video') {
@@ -280,7 +281,7 @@ export function createPreview(ed: Ed) {
         return false;
       }
       const o = ed.overlays.find((v) => v.id === hit!.id);
-      if (!o) return false;
+      if (!o || isLockedV(ed.tracks, o)) return false; // locked tracks can't be picked or moved in the preview
       ed.selectedOverlay = o.id;
       layerDrag = { id: o.id, mode, x0: x, y0: y, tf: { ...tfAt(o, ed.outNow()) }, cx: hit.cx, cy: hit.cy,
         d0: Math.max(1, Math.hypot(x - hit.cx, y - hit.cy)), a0: Math.atan2(y - hit.cy, x - hit.cx), moved: false };

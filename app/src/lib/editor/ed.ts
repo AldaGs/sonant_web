@@ -47,6 +47,8 @@ export interface Ed {
   clips: Clip[];
   readonly commit: () => void;
   readonly cutHere: () => void;
+  readonly insertClip: (assetId: string, out: number) => void;
+  readonly cutAll: () => unknown;
   readonly cutRanges: (r: [number, number][]) => false | Segment[];
   readonly deleteSelected: () => boolean;
   denoise: number;
@@ -86,6 +88,11 @@ export interface Ed {
   readonly outNow: () => number;
   readonly outTime: number;
   overlays: Overlay[];
+  tracks: import('../tracks').Tracks;
+  tool: import('../tools').Tool;
+  readonly rippleDeleteSel: () => boolean;
+  readonly shownOverlays: Overlay[]; // overlays not on a hidden track
+  readonly liveAudios: AudioItem[]; // audio items not on a muted track
   past: Snap[];
   paused: boolean;
   pct: number;
