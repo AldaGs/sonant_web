@@ -1,7 +1,8 @@
 // Layers over the video (text, titles, images, videos): adding, editing, keyframes, stacking, templates.
 import { type Style } from '../render';
 import { trim, outDuration } from '../cuts';
-import { move, type Asset } from '../project';
+import { itemLen, type Asset } from '../project';
+import { moveToTrack, removeTrack, setFlag, trackOf, isLockedV, type TrackFlags } from '../tracks';
 import { type ChromaKey } from '../layerfx';
 import { placeLayers, fromProject, type Template } from '../templates';
 import { newText, newTitle, DEFAULT_MOTION, newMedia, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Transform, type Motion } from '../overlay';
@@ -85,18 +86,47 @@ export function createLayers(ed: Ed) {
     if (ed.sheet === 'style') ed.sheet = null;
   };
   function removeOverlay() {
-    if (!ed.selectedOverlay) return false;
+    const sel = ed.overlays.find((o) => o.id === ed.selectedOverlay);
+    if (!sel || isLockedV(ed.tracks, sel)) return false;
     ed.commit();
     ed.overlays = ed.overlays.filter((o) => o.id !== ed.selectedOverlay);
     ed.selectedOverlay = '';
     return true;
   }
-  // Stacking order: move the selected layer up (drawn later) or down.
+  // Stacking: higher tracks draw on top. Bring forward / send backward moves the layer one track up or down;
+  // if something is in the way there, a new track opens for it (see moveToTrack).
   function restack(dir: -1 | 1) {
-    const i = ed.overlays.findIndex((o) => o.id === ed.selectedOverlay);
-    if (i < 0) return;
+    const o = ed.overlays.find((x) => x.id === ed.selectedOverlay);
+    if (!o || isLockedV(ed.tracks, o) || (dir < 0 && trackOf(o) === 0)) return;
+    retrack('v', o.id, trackOf(o) + dir);
+  }
+  // Move a layer ('v') or audio item ('a') to another track, as one undo step.
+  function retrack(kind: 'v' | 'a', id: string, track: number, snapshot = true) {
+    if (snapshot) ed.commit();
+    if (kind === 'v') {
+      const r = moveToTrack(ed.overlays, (o) => o.len, id, track, ed.tracks.v);
+      ((ed.overlays = r.items), (ed.tracks = { ...ed.tracks, v: r.flags }));
+    } else {
+      const r = moveToTrack(ed.audios, (a) => itemLen(a, ed.durations.get(a.assetId) ?? 0), id, track, ed.tracks.a);
+      ((ed.audios = r.items), (ed.tracks = { ...ed.tracks, a: r.flags }));
+    }
+  }
+  // Track header switches: hide (V) / mute (A) and lock.
+  const setTrack = (kind: 'v' | 'a', track: number, patch: TrackFlags) => (ed.tracks = { ...ed.tracks, [kind]: setFlag(ed.tracks[kind], track, patch) });
+  // An extra empty track on top, to drop things onto.
+  const addTrack = (kind: 'v' | 'a') => {
+    const n = Math.max(ed.tracks[kind].length, ...(kind === 'v' ? ed.overlays : ed.audios).map((x) => trackOf(x) + 1));
+    setTrack(kind, n, {});
+  };
+  // Delete an empty track (the ones above move down).
+  function dropTrack(kind: 'v' | 'a', track: number) {
+    const r = removeTrack<{ track?: number }>(kind === 'v' ? ed.overlays : ed.audios, ed.tracks[kind], track);
+    if (!r) return false;
     ed.commit();
-    ed.overlays = move(ed.overlays, i, dir);
+    if (kind === 'v') ed.overlays = r.items as typeof ed.overlays;
+    else ed.audios = r.items as typeof ed.audios;
+    ed.tracks = { ...ed.tracks, [kind]: r.flags };
+    return true;
   }
   // Strip chroma key: live while dragging a slider, one undo step per gesture.
   let stripKeyEditing = false;
@@ -107,5 +137,5 @@ export function createLayers(ed: Ed) {
     if (final) stripKeyEditing = false;
   }
 
-  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, setStripKey };
+  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, setTrack, addTrack, dropTrack, setStripKey };
 }

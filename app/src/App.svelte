@@ -42,6 +42,8 @@
   import { createLayers } from './lib/editor/layers.svelte';
   import { createPreview } from './lib/editor/preview.svelte';
   import { createKeys } from './lib/editor/keys.svelte';
+  import { assignTracks, byTrack, isHidden, isMuted, type Tracks } from './lib/tracks';
+  import { itemLen as audItemLen } from './lib/project';
 
   // The editor works on one project at a time; the home page (#/) lists them all.
   let { projectId }: { projectId: string } = $props();
@@ -54,6 +56,21 @@
   let denoise = $state(0); // AI noise reduction on the clips' sound: wet mix, 0 = off
   let overlays = $state<Overlay[]>([]); // picture-in-picture video, images, text layers; output time, bottom first
   let selectedOverlay = $state('');
+  // Numbered tracks (V2… for layers, A2… for music & VO) and their hide / mute / lock switches.
+  let tracks = $state<Tracks>({ v: [], a: [] });
+  const shownOverlays = $derived(overlays.filter((o) => !isHidden(tracks, o)));
+  const liveAudios = $derived(audios.filter((a) => !isMuted(tracks, a)));
+  // The player keeps every element in step (so nothing keeps playing after a toggle); muted/hidden ones are silent.
+  const playAudios = $derived(audios.map((a) => (isMuted(tracks, a) ? { ...a, volume: 0 } : a)));
+  const playOverlays = $derived(overlays.map((o) => (isHidden(tracks, o) ? { ...o, volume: 0 } : o)));
+  // Every layer and audio item sits on a track. Items added without one (and older projects) get the
+  // lowest free track above whatever they overlap, so new layers land on top like before.
+  $effect(() => {
+    if (overlays.some((o) => o.track === undefined)) overlays = byTrack(assignTracks(overlays, (o) => o.len));
+  });
+  $effect(() => {
+    if (audios.some((a) => a.track === undefined)) audios = assignTracks(audios, (a) => audItemLen(a, durations.get(a.assetId) ?? 0));
+  });
   // assetId → image decoded once and downscaled for the preview. Drawing a full-size photo (and uploading it
   // to the GPU for effects) every frame is what made stills slow; a ~1080p bitmap costs about as much as a video frame.
   const pics = new Map<string, { src: ImageBitmap; w: number; h: number }>();
@@ -109,7 +126,7 @@
   const selectedCap = $derived(selectedCapIndex >= 0 ? captions[selectedCapIndex] : null);
   const clearCapSelection = () => (selectedCapIds = []);
 
-  const player = new Player(() => ({ clips, audios, segments, durations, clipVolume, overlays, speech }));
+  const player = new Player(() => ({ clips, audios: playAudios, segments, durations, clipVolume, overlays: playOverlays, speech }));
 
   // Undo/redo: snapshots of the editable project.
   let past = $state<Snap[]>([]);
@@ -415,6 +432,9 @@
     get outNow() { return outNow; },
     get outTime() { return outTime; },
     get overlays() { return overlays; }, set overlays(v) { overlays = v; },
+    get tracks() { return tracks; }, set tracks(v) { tracks = v; },
+    get shownOverlays() { return shownOverlays; },
+    get liveAudios() { return liveAudios; },
     get past() { return past; }, set past(v) { past = v; },
     get paused() { return paused; }, set paused(v) { paused = v; },
     get pct() { return pct; }, set pct(v) { pct = v; },
@@ -491,7 +511,7 @@
   const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline } = createEdit(ed);
   const { previewUrl, buildProxy, dropProxy, register, openHistory, restoreVersion, ago, saveToFile, importMedia, addVoiceover } = createMedia(ed);
   const { aimZooms, stabilize, reverseStrip, renderItem, setVoiceFx, detectSpeakers, findClips, setHlLen, makeAllShorts, previewClip, makeShort, run, cutAudioSilences, autoReframe, autoReframeAll, colorToAll, translateAll, detectBeatsFor, cutOnBeats } = createJobs(ed);
-  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, setStripKey } = createLayers(ed);
+  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
   const { leave, pointer, nudge, startPick, endPick } = createPreview(ed);
   const { step, keys } = createKeys(ed);
 </script>
@@ -721,7 +741,8 @@
       animLabel={t('allCaptions', { name: animName })}
       zooms={zooms} onzoom={(k, s) => autoZoom && (autoZoom.edits = { ...autoZoom.edits, [k]: s })}
       out={outClock} onseek={(o) => seekOut(o)} onseeksrc={seek} snap={snapOn} range={marks} pending={pendingCuts} beats={beatMap}
-      {overlays} bind:selectedOverlay
+      {overlays} bind:selectedOverlay {tracks}
+      onretrack={(k, id, n) => retrack(k, id, n, false)} ontrack={setTrack} onaddtrack={addTrack} ondroptrack={dropTrack}
       onoverlay={(id, patch) => setOverlay(id, patch, false)}
       oncommit={commit}
       ontrim={trimStrip}
@@ -789,7 +810,7 @@
     </div>
   {/if}
   <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} onsubtitles={captions.length ? download : undefined} {style} {srcW} {srcH} {canvasAspect}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(audios), overlays: $state.snapshot(overlays), speech: $state.snapshot(speech), luts, clipVolume, zoomShake: !!autoZoom?.shake, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
+    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(liveAudios), overlays: $state.snapshot(shownOverlays), speech: $state.snapshot(speech), luts, clipVolume, zoomShake: !!autoZoom?.shake, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
 {/if}
 
 <style>

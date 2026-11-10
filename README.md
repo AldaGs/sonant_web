@@ -49,12 +49,13 @@ Everything runs locally in the browser. No server, no account, and your media ne
   - Drag the caption box (or its round handle) to move it. Touch gets a larger grab area.
   - Arrow keys nudge it; Shift moves it further.
 - **Animated titles:** **Animated title** in the toolbar adds a text layer on top of the stack that animates in and out while travelling along a path, each letter bending to follow the curve. Paths: S curve, Wave, Arc, Loop-the-loop, Zigzag, or none. In & out styles: Pop, Drop & bounce, Spin, Swing, Stretch, Flip. In the layer inspector, set the in and out times, how far it travels and how deep the curve bends. The path is shown as a dashed guide in the preview; drag the layer to move the whole path. While a layer is selected, the Style panel shows only that layer's settings.
+- **Tracks:** a multi-track timeline. The main sequence is V1 with its sound on A1; layers go on V2, V3, … (higher tracks draw on top) and music and voiceover on A2, A3, …. Drag items sideways to move them in time and up or down to change track; items on one track never overlap. Each track has a hide (V) or mute (A) switch and a lock. **+V / +A** add an empty track; double-click an empty track's name to delete it. Bring forward / send backward on a layer moves it up or down a track, opening a new track if the spot is taken. Hidden and muted tracks are left out of the export too.
 - **Layers:** picture-in-picture video, images and text over the main video, with move/scale/rotate handles, crop, flip, opacity and **keyframes** (position, size, rotation, opacity). Punch-in presets for layers and strips.
 - **Clip tools (per strip):** speed 0.25×–4× (pitch preserved), freeze frame, transitions (fade, dip to black/white, zoom, whip, slide), lift to leave a gap, color (brightness, contrast, saturation, temperature, presets, `.cube` LUTs) and background removal / captions behind the person.
 - **Canvas shape:** Original, 9:16, 1:1, 4:5 or 16:9, with a focus point per strip and auto-reframe that follows the person.
 - **Fonts:** bundled free OFL fonts, plus your own fonts from your PC (Chrome/Edge) or uploaded files.
 - **Timeline:**
-  - Rows for video thumbnails, clip waveform, caption blocks, text animation, and Music & VO lanes. Overlapping audio stacks into lanes.
+  - Rows for layer tracks, video thumbnails, clip waveform, caption blocks, text animation, and audio tracks.
   - Time ruler and zoom (wheel scrubs, pinch or Ctrl+wheel zooms; on phones, swipe to scrub under a fixed centre playhead).
   - Split, delete, trim and undo/redo; snapping to edges, the playhead and music beats.
   - Keyboard and screen-reader friendly: focusable items with spoken labels.

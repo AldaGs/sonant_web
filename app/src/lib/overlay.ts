@@ -33,6 +33,7 @@ export type Overlay = {
   mask?: Mask; // media only: shape mask
   maskKf?: MaskKey[]; // mask animation: size / angle / position / feather keyed over the layer's time (sorted by t)
   bar?: ProgressBar; // text layer drawn as a progress bar instead of text
+  track?: number; // 0 = V2 (just above the main video); higher tracks draw on top. See tracks.ts
 };
 // A bar that fills across the frame over the layer's time. h: thickness, fraction of frame height.
 export type ProgressBar = { color: string; track: string; h: number; top?: boolean };

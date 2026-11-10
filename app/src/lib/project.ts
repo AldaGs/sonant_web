@@ -14,7 +14,8 @@ export const STILL_LEN = 5; // default seconds for an image clip
 // duck: lower this item's volume while someone is speaking (see DUCK_LEVEL).
 // vfx: voice changer applied (assetId then points at the rendered copy, src at the original file).
 export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number; duck?: boolean;
-  vfx?: import('./voicefx').VoiceFx; dn?: number /* noise reduction level */; src?: string };
+  vfx?: import('./voicefx').VoiceFx; dn?: number /* noise reduction level */; src?: string;
+  track?: number /* 0 = A2, the first track under the clips' own sound; see tracks.ts */ };
 export const DUCK_LEVEL = 0.25; // ≈ −12 dB under speech
 
 // How long an audio item plays (its trimmed length, or the rest of the file).

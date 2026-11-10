@@ -86,6 +86,9 @@ export interface Ed {
   readonly outNow: () => number;
   readonly outTime: number;
   overlays: Overlay[];
+  tracks: import('../tracks').Tracks;
+  readonly shownOverlays: Overlay[]; // overlays not on a hidden track
+  readonly liveAudios: AudioItem[]; // audio items not on a muted track
   past: Snap[];
   paused: boolean;
   pct: number;

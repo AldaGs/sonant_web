@@ -10,7 +10,7 @@ import type { Overlay } from './overlay';
 
 export type ProjectDoc = {
   name: string; captions: Caption[]; segments: Segment[]; style: Style; language: 'english' | 'spanish' | null;
-  speakers?: string[]; assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; overlays?: Overlay[]; showTr?: boolean; denoise?: number; /* AI noise reduction mix for the clips' sound, 0 = off */ autoZoom?: import('./autozoom').AutoZoom | null; luts?: { id: string; name: string }[]; aspect?: import('./export').Aspect; words?: Record<string, Word[]>;
+  speakers?: string[]; assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; overlays?: Overlay[]; showTr?: boolean; denoise?: number; /* AI noise reduction mix for the clips' sound, 0 = off */ autoZoom?: import('./autozoom').AutoZoom | null; luts?: { id: string; name: string }[]; aspect?: import('./export').Aspect; words?: Record<string, Word[]>; tracks?: import('./tracks').Tracks;
 };
 export type ProjectMeta = { id: string; name: string; created: number; updated: number; duration: number; clips: number; thumb?: string };
 

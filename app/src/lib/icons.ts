@@ -76,12 +76,24 @@ import format_align_right from '@material-symbols/svg-400/rounded/format_align_r
 import ios_share from '@material-symbols/svg-400/rounded/ios_share.svg?raw';
 import save from '@material-symbols/svg-400/rounded/save.svg?raw';
 import upload from '@material-symbols/svg-400/rounded/upload.svg?raw';
+import visibility from '@material-symbols/svg-400/rounded/visibility.svg?raw';
+import visibility_off from '@material-symbols/svg-400/rounded/visibility_off.svg?raw';
+import lock from '@material-symbols/svg-400/rounded/lock.svg?raw';
+import lock_open from '@material-symbols/svg-400/rounded/lock_open.svg?raw';
+import volume_up from '@material-symbols/svg-400/rounded/volume_up.svg?raw';
+import volume_off from '@material-symbols/svg-400/rounded/volume_off.svg?raw';
 import magnet from 'lucide-static/icons/magnet.svg?raw';
 
 // Material paths have no fill; give them the text colour. Lucide icons are already stroke=currentColor.
 const m = (svg: string) => svg.replace('<svg', '<svg fill="currentColor" aria-hidden="true" focusable="false"');
 const l = (svg: string) => svg.replace(/<!--.*?-->/s, '').replace('<svg', '<svg aria-hidden="true" focusable="false"');
 export const ICONS = {
+  visibility: m(visibility),
+  visibility_off: m(visibility_off),
+  lock: m(lock),
+  lock_open: m(lock_open),
+  volume_up: m(volume_up),
+  volume_off: m(volume_off),
   close: m(close),
   chevron_left: m(chevron_left),
   chevron_right: m(chevron_right),

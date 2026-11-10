@@ -144,6 +144,7 @@ export function createMedia(ed: Ed) {
     ed.showTr = doc.showTr ?? false;
     ed.autoZoom = doc.autoZoom ?? null;
     ed.denoise = doc.denoise ?? 0;
+    ed.tracks = doc.tracks ?? { v: [], a: [] };
     ed.canvasAspect = doc.aspect ?? 'source';
     Promise.all((doc.luts ?? []).map((l) => store.get<Lut>('lut:' + l.id))).then((r) => (ed.luts = r.filter((x): x is Lut => !!x)));
     // A local (installed) font isn't in the list until "Use my fonts" runs again; keep it selectable.
@@ -161,7 +162,7 @@ export function createMedia(ed: Ed) {
 
 
   async function saveNow() {
-    const doc: ProjectDoc = { ...$state.snapshot({ name: ed.name, captions: ed.captions, segments: ed.segments, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise }), luts: ed.luts.map((l) => ({ id: l.id, name: l.name })), aspect: ed.canvasAspect, words: ed.wordCache };
+    const doc: ProjectDoc = { ...$state.snapshot({ name: ed.name, captions: ed.captions, segments: ed.segments, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks }), luts: ed.luts.map((l) => ({ id: l.id, name: l.name })), aspect: ed.canvasAspect, words: ed.wordCache };
     const meta: Partial<ProjectMeta> = { duration: outDuration(ed.segments), clips: ed.clips.length };
     if (Date.now() - lastThumb > 10000) {
       const th = thumbnail();
@@ -171,7 +172,7 @@ export function createMedia(ed: Ed) {
     addVersion(ed.projectId, doc).catch(() => {}); // a snapshot every ~2 minutes of editing
   }
   $effect(() => {
-    $state.snapshot({ name: ed.name, captions: ed.captions, segments: ed.segments, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise });
+    $state.snapshot({ name: ed.name, captions: ed.captions, segments: ed.segments, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks });
     void ed.luts.length, ed.canvasAspect;
     void (ed.clips.length && ed.thumbs[ed.clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
     if (!ready) return;
@@ -185,7 +186,7 @@ export function createMedia(ed: Ed) {
   }
   async function restoreVersion(v: Version) {
     // Keep the current state as a version first, so restoring can itself be undone from here.
-    await addVersion(ed.projectId, { ...$state.snapshot({ name: ed.name, captions: ed.captions, segments: ed.segments, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise }), aspect: ed.canvasAspect } as ProjectDoc, { force: true, label: t('beforeRestore') });
+    await addVersion(ed.projectId, { ...$state.snapshot({ name: ed.name, captions: ed.captions, segments: ed.segments, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks }), aspect: ed.canvasAspect } as ProjectDoc, { force: true, label: t('beforeRestore') });
     ed.commit();
     const d = v.doc;
     const have = new Set(ed.assets.map((a) => a.id)); // media deleted since then can't come back

@@ -163,8 +163,9 @@
       onclick={() => (setOverlay(o.id, { behind: !o.behind || undefined }), doneEditing())}><Icon name="person" /> {t('behindPerson')}</button>
     <button class="sm" class:on={o.tf.flipX} aria-pressed={!!o.tf.flipX} onclick={() => (setTf(o.id, { flipX: !o.tf.flipX }), doneEditing())}><Icon name="flip" /> {t('flip')}</button>
     <button class="sm" onclick={() => (setTf(o.id, { x: 0.5, y: 0.5, rotation: 0, crop: undefined, flipX: false, opacity: 1 }), doneEditing())}>{t('resetLayer')}</button>
-    <button class="sm icon" onclick={() => restack(1)} disabled={overlays.at(-1)?.id === o.id} title={t('bringForward')} aria-label={t('bringForward')}><Icon name="flip_to_front" /></button>
-    <button class="sm icon" onclick={() => restack(-1)} disabled={overlays[0]?.id === o.id} title={t('sendBackward')} aria-label={t('sendBackward')}><Icon name="flip_to_back" /></button>
+    <span class="muted small" title={t('trackTip')}>V{(o.track ?? 0) + 2}</span>
+    <button class="sm icon" onclick={() => restack(1)} title={t('bringForward')} aria-label={t('bringForward')}><Icon name="flip_to_front" /></button>
+    <button class="sm icon" onclick={() => restack(-1)} disabled={!o.track} title={t('sendBackward')} aria-label={t('sendBackward')}><Icon name="flip_to_back" /></button>
     <button class="sm" onclick={removeOverlay}>{t('del')}</button>
   </div>
 </section>
