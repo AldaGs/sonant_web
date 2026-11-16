@@ -58,6 +58,16 @@ import as before.
   under the pointer (V1 = append/insert into the sequence) and audio on the A track, at the drop time.
 - Dropping over an occupied spot opens a new track at that position (`moveToTrack` already does this).
 
+## Phase 7 — Media bin and gaps on V1  ✅ done
+Done: importing only adds to the Media panel (drop files anywhere in the editor); nothing is auto-placed. Media is dragged
+onto any track; layers are full frame by default (`fitMedia`), PiP only from the panel's PiP button. V1 can hold gaps:
+`gaps.ts` (gap clips with `assetId: ''`, `placeClip`, `tidyGaps`) with tests. A gap is one lifted strip, so the player,
+preview, captions and export need no special case. Dropping/moving a V1 clip into empty time keeps it there; moving one
+leaves a gap; deleting a gap closes it. A trailing gap pads V1 to the end of the last layer/audio item, so a timeline of
+only layers plays and exports.
+Still open: text and layers placed on V1 itself, and dragging a clip between V1 and V2+ (V1 stays the transcript-driven
+main sequence).
+
 ## Next ideas
 - Roll and slip on V1 strips; automatic cross-dissolve between touching items on a track.
 - Alt+drag to edit one side of a linked pair. (Touch reordering is done: long-press the selected strip.)

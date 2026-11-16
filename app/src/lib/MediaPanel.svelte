@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Media tab: the asset library (import, filter, add to timeline) and the clip sequence.
+  // Media tab: the asset library (import, filter, drag onto a track) and the V1 clip sequence (gaps included).
   import Icon from './Icon.svelte';
   import { t } from './i18n.svelte';
   import { clipLen, move, type Asset, type Clip } from './project';
@@ -63,8 +63,8 @@
     {#each clips as c, i (c.id)}
       <li>
         <span class="mono muted small">{i + 1}</span>
-        <span class="aname" title={names.get(c.assetId)}>{names.get(c.assetId)}</span>
-        {#if kindOf(c.assetId) === 'image'}
+        <span class="aname" class:muted={!c.assetId} title={names.get(c.assetId)}>{c.assetId ? names.get(c.assetId) : t('gapN', { n: clipLen(durations, c).toFixed(1) })}</span>
+        {#if kindOf(c.assetId) === 'image' || !c.assetId}
           <input class="clen mono" type="number" min="0.5" max="600" step="0.5" value={clipLen(durations, c)}
             aria-label={t('clipDuration')} title={t('clipDuration')} onchange={(e) => setClipLen(i, +e.currentTarget.value)} /><span class="muted small">s</span>
         {/if}

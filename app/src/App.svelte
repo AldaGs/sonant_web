@@ -45,7 +45,8 @@
   import { TOOLS, type Tool } from './lib/tools';
   import { reconcile } from './lib/links';
   import { assignTracks, byTrack, isHidden, isMuted, type Tracks } from './lib/tracks';
-  import { itemLen as audItemLen } from './lib/project';
+  import { itemLen as audItemLen, STILL_LEN } from './lib/project';
+  import { tidyGaps } from './lib/gaps';
 
   // The editor works on one project at a time; the home page (#/) lists them all.
   let { projectId }: { projectId: string } = $props();
@@ -94,8 +95,16 @@
   const durations = $derived(new Map(assets.map((a) => [a.id, a.duration])));
   const names = $derived(new Map(assets.map((a) => [a.id, a.name])));
   const duration = $derived(seqDuration(clips, durations)); // whole sequence, before cuts
-  const hasMedia = $derived(clips.length > 0);
-  const firstVideo = $derived(clips.map((c) => assets.find((a) => a.id === c.assetId)).find((a) => a?.width));
+  const hasMedia = $derived(clips.length > 0); // anything on the timeline (V1 is padded with a gap under layers and audio)
+  // Frame size: the first video or picture on V1, else on any layer.
+  const firstVideo = $derived([...clips.map((c) => c.assetId), ...overlays.map((o) => o.assetId)].map((id) => id && assets.find((a) => a.id === id)).find((a) => a && a.width) || undefined);
+  // Where the last layer or audio item ends (output time). V1 lasts at least this long: a gap fills the rest.
+  const layersEnd = $derived(Math.max(0, ...overlays.map((o) => o.at + o.len), ...audios.map((a) => a.at + audItemLen(a, durations.get(a.assetId) ?? 0))));
+  // Gaps on V1 (lib/gaps.ts): after any edit each gap is one black strip, and V1 is padded to the last layer.
+  $effect(() => {
+    const r = tidyGaps(clips, durations, segments, captions, layersEnd);
+    if (r) ((clips = r.clips), (segments = r.segments), (captions = r.captions));
+  });
   const srcW = $derived(firstVideo?.width || 1280);
   const srcH = $derived(firstVideo?.height || 720);
   // Canvas shape for the whole project (Original, 9:16, 1:1, 4:5, 16:9); videos cover it around each strip's focus.
@@ -107,7 +116,7 @@
   // ---- Editing state ----
   let time = $state(0); // sequence time
   let paused = $state(true);
-  let dragging = $state(false);
+  let fileDrag = $state(false); // files from the computer are being dragged over the editor
   let language = $state<'english' | 'spanish' | null>(null);
   let busy = $state(false);
   let status = $state('');
@@ -122,7 +131,7 @@
   let fontError = $state('');
   let segments = $state<Segment[]>([]);
   // Hidden <video> per clip file, plus reversed copies of reversed strips.
-  const videoIds = $derived([...new Set([...clips.map((c) => c.assetId), ...segments.flatMap((s) => (s.fx?.rev ? [s.fx.rev.assetId] : []))])]);
+  const videoIds = $derived([...new Set([...clips.flatMap((c) => (c.assetId ? [c.assetId] : [])), ...segments.flatMap((s) => (s.fx?.rev ? [s.fx.rev.assetId] : []))])]);
   let selected = $state(-1);
   // Selected captions for per-caption styling. The last one clicked is the "primary": the style panel shows its look.
   let selectedCapIds = $state<string[]>([]);
@@ -426,6 +435,7 @@
     get grader() { return grader; },
     get hasMedia() { return hasMedia; },
     get hasVideoClip() { return hasVideoClip; },
+    get layersEnd() { return layersEnd; },
     get highlights() { return highlights; }, set highlights(v) { highlights = v; },
     get histDialog() { return histDialog; },
     get hlBusy() { return hlBusy; }, set hlBusy(v) { hlBusy = v; },
@@ -528,14 +538,36 @@
   const { previewUrl, buildProxy, dropProxy, register, openHistory, restoreVersion, ago, saveToFile, importMedia, addVoiceover } = createMedia(ed);
   const { aimZooms, stabilize, reverseStrip, renderItem, setVoiceFx, detectSpeakers, findClips, setHlLen, makeAllShorts, previewClip, makeShort, run, cutAudioSilences, autoReframe, autoReframeAll, colorToAll, translateAll, detectBeatsFor, cutOnBeats } = createJobs(ed);
   const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, dropAsset, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
+  // ---- Importing by drag and drop ----
+  const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files');
+  // Import into the Media panel only; nothing is put on the timeline until it's dragged there.
+  async function importToBin(list: FileList | File[] | undefined | null) {
+    const added = await importMedia(list);
+    if (added.length) ((leftTab = 'media'), announce(t('imported', { n: added.length })));
+  }
+  // Files dropped on a timeline track: imported, then placed one after another from the drop point.
+  async function dropFiles(list: FileList, zone: 'v' | 'main' | 'a', track: number, out: number) {
+    let at = out;
+    for (const a of await importMedia(list)) {
+      dropAsset(a, zone, track, at);
+      at += a.kind === 'image' ? STILL_LEN : a.duration;
+    }
+  }
   const { leave, pointer, nudge, startPick, endPick } = createPreview(ed);
   const { step, keys } = createKeys(ed);
 </script>
 
 <svelte:window onkeydown={keys} />
 
-<div class="app" class:hide-text={!textOpen} class:hide-style={!styleOpen} class:sheet-open={sheet !== null}
-  style:--cols={gridCols} style:--areas={gridAreas}>
+<!-- Files dropped anywhere in the editor are imported into the Media panel (a drop on a timeline track also places them there). -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="app" class:file-drag={fileDrag} class:hide-text={!textOpen} class:hide-style={!styleOpen} class:sheet-open={sheet !== null}
+  style:--cols={gridCols} style:--areas={gridAreas}
+  ondragover={(e) => { if (hasFiles(e)) (e.preventDefault(), (fileDrag = true)); }}
+  ondragleave={(e) => { if (!e.relatedTarget || !(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) fileDrag = false; }}
+  ondropcapture={() => (fileDrag = false)}
+  ondrop={(e) => { if (e.defaultPrevented || !hasFiles(e)) return; e.preventDefault(); importToBin(e.dataTransfer?.files); }}>
+  {#if fileDrag}<div class="dropnote" aria-hidden="true"><Icon name="upload" size={28} /> {t('dropImport')}</div>{/if}
   <header class="top">
     <div class="brand">
       <!-- Sonant sound-ring mark (icon/sonant-mark.svg) -->
@@ -577,7 +609,7 @@
         <Icon name="tune" />
         {t('inspector')}
       </button>
-      <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length || !firstVideo}><Icon name="ios_share" size={16} /> {t('ex.title')}</button>
+      <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length}><Icon name="ios_share" size={16} /> {t('ex.title')}</button>
     </div>
   </header>
 
@@ -594,7 +626,7 @@
       </div>
       {#if leftTab === 'media'}
         <MediaPanel {assets} {used} {urls} {thumbs} {proxyPct} {clips} {names} {durations} {kindOf} {fmt}
-          {importMedia} {addToTimeline} {addOverlay} {buildProxy} {dropProxy} {removeAsset} {setClips} {setClipLen} />
+          importMedia={importToBin} {addToTimeline} addOverlay={(a: Asset) => addOverlay(a, undefined, true)} {buildProxy} {dropProxy} {removeAsset} {setClips} {setClipLen} />
       {:else if leftTab === 'audio'}
         <AudioPanel {selAudio} {unlinkSound} outNow={() => outClock} {assets} {names} hasClips={clips.length > 0} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
           {setAudio} {cutOnBeats} {detectBeatsFor} {setVoiceFx} {renderItem} {commit} {removeAudioItem} {cutAudioSilences}
@@ -630,13 +662,9 @@
     {/each}
     <div
       class="stage"
-      class:dragging
       class:zoomed={zoom !== 1}
       aria-label={t('preview')}
       role="region"
-      ondragover={(e) => { e.preventDefault(); dragging = true; }}
-      ondragleave={() => (dragging = false)}
-      ondrop={(e) => { e.preventDefault(); dragging = false; importMedia(e.dataTransfer?.files); }}
     >
       {#if hasMedia}
         <!-- .frame is the visible stage box; .fit is the largest box with the video's aspect ratio inside it (× zoom). -->
@@ -651,8 +679,8 @@
         </div>
       {:else}
         <label class="empty">
-          <span>{t('drop')}</span>
-          <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importMedia(e.currentTarget.files)} />
+          <span>{assets.length ? t('emptyTimeline') : t('drop')}</span>
+          <input type="file" accept="video/*,audio/*,image/*" multiple hidden onchange={(e) => importToBin(e.currentTarget.files)} />
         </label>
       {/if}
     </div>
@@ -737,8 +765,8 @@
     <div class="thead">
       <h2>{t('timelineH')}</h2>
       <div class="row">
-        <button class="sm" onclick={addText} disabled={!hasMedia} title={t('addTextTip')}><Icon name="title" /> {t('addText')}</button>
-        <button class="sm" onclick={addTitle} disabled={!hasMedia} title={t('addTitleTip')}><Icon name="animation" /> {t('addTitle')}</button>
+        <button class="sm" onclick={addText} title={t('addTextTip')}><Icon name="title" /> {t('addText')}</button>
+        <button class="sm" onclick={addTitle} title={t('addTitleTip')}><Icon name="animation" /> {t('addTitle')}</button>
         <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
         <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}><Icon name="content_cut" /> {t('splitAt')}</button>
         <button class="sm" onclick={cutAll} title={t('splitAllTip')}><Icon name="content_cut" /> {t('splitAll')}</button>
@@ -770,6 +798,7 @@
       onoverlay={(id, patch) => setOverlay(id, patch, false)}
       oncommit={() => (trimDone(), toolDone(), commit())}
       ondropasset={(id, zone, k, o) => { const a = assets.find((x) => x.id === id); if (a) dropAsset(a, zone, k, o); }}
+      ondropfiles={dropFiles}
       {tool} ontool={toolEdit} onrazor={(k, id, t0) => (k === 's' ? setSegs(splitAt(segments, toSource(segments, t0))) : razor(k, id, t0))}
       ontrim={trimStrip} onmovestrip={moveStrip}
       onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
@@ -872,7 +901,9 @@
   .row select { flex: 1; height: 36px; padding: 0 8px; }
   .center { grid-area: center; display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; }
   .stage { position: relative; min-height: 0; border: 2px dashed transparent; }
-  .stage.dragging { border-color: var(--accent); }
+  .app.file-drag { outline: 2px dashed var(--accent); outline-offset: -4px; }
+  .dropnote { position: fixed; z-index: 50; left: 50%; top: 16px; translate: -50% 0; pointer-events: none; display: flex; align-items: center; gap: 8px;
+    padding: 10px 16px; border-radius: 10px; background: var(--card); border: 1px solid var(--accent); box-shadow: 0 6px 24px rgb(0 0 0 / .4); }
   .frame { position: absolute; inset: 16px; container-type: size; display: grid; place-items: safe center; overflow: auto; }
   .fit { position: relative; aspect-ratio: var(--ar); width: calc(min(100cqw, 100cqh * var(--ar)) * var(--z)); }
   canvas { display: block; width: 100%; height: 100%; border-radius: 12px; background: #000; cursor: pointer; touch-action: none; }

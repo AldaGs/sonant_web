@@ -179,9 +179,9 @@ export async function exportVideo(
 
   const assets = new Map(src.assets.map((a) => [a.id, a]));
   const durations = new Map(src.assets.map((a) => [a.id, a.duration]));
-  const first = src.clips.map((c) => assets.get(c.assetId)).find((a) => a?.width);
-  if (!first) throw new Error('err.noVideo');
-  const { width, height } = outputSize(first.width!, first.height!, opts.res, opts.aspect);
+  // Frame size from the first video or picture on V1, else on a layer (a timeline of only text: 1080p).
+  const first = [...src.clips.map((c) => c.assetId), ...(src.overlays ?? []).map((o) => o.assetId)].map((id) => id && assets.get(id)).find((a) => a && a.width) || undefined;
+  const { width, height } = outputSize(first?.width ?? 1920, first?.height ?? 1080, opts.res, opts.aspect);
   if (!(await canEncodeVideo('avc', { width, height })))
     throw new Error('err.noH264');
   const aCodec = await audioCodec();

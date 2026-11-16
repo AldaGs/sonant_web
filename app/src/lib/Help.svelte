@@ -39,10 +39,11 @@
         'Templates save a caption look plus text layers to reuse in other projects.',
       ] },
       { id: 'timeline', title: 'Timeline and clips', items: [
-        'Videos play back to back. Reorder or remove them in the Sequence list.',
+        'Imported media goes to the Media panel. Drag it onto any track: V1 (the main video), V2 and up (layers) or an audio track. Drop files anywhere in the editor to import them.',
+        'Clips on V1 can have gaps between them: drop or drag a clip into empty time and it stays there. Select a gap and press Delete to close it.',
         'Split at the playhead (S), trim by dragging edges, and delete strips. Snapping (N) lines things up; hold Alt to drag freely.',
         'Per strip: speed, freeze frame, transitions, color and LUTs, punch-in zoom and focus point for reframing.',
-        'Layers: picture-in-picture video, images, text and animated titles, with keyframes for position, size, rotation and opacity.',
+        'Layers: video, images, text and animated titles on V2 and up, full frame by default, with keyframes for position, size, rotation and opacity.',
         'Scroll the wheel to scrub, pinch or Ctrl+wheel to zoom. On a phone, swipe the timeline to scrub.',
       ] },
       { id: 'audio', title: 'Music and voiceover', items: [
@@ -104,10 +105,11 @@
         'Las plantillas guardan un estilo de subtítulos y capas de texto para usarlos en otros proyectos.',
       ] },
       { id: 'timeline', title: 'Línea de tiempo y clips', items: [
-        'Los videos se reproducen uno tras otro. Reordénalos o quítalos en la lista Secuencia.',
+        'Los medios importados van al panel Medios. Arrástralos a cualquier pista: V1 (el video principal), V2 en adelante (capas) o una pista de audio. Suelta archivos en cualquier parte del editor para importarlos.',
+        'Los clips de V1 pueden tener huecos entre ellos: suelta o arrastra un clip a un espacio vacío y se queda ahí. Selecciona un hueco y pulsa Supr para cerrarlo.',
         'Divide en el cabezal (S), recorta arrastrando los bordes y borra tramos. El ajuste (N) alinea elementos; mantén Alt para arrastrar libremente.',
         'Por tramo: velocidad, congelar imagen, transiciones, color y LUT, zoom de acercamiento y punto de enfoque para reencuadrar.',
-        'Capas: video en ventana, imágenes, texto y títulos animados, con fotogramas clave de posición, tamaño, rotación y opacidad.',
+        'Capas: video, imágenes, texto y títulos animados en V2 y superiores, a pantalla completa por defecto, con fotogramas clave de posición, tamaño, rotación y opacidad.',
         'Usa la rueda para desplazarte, pellizca o Ctrl+rueda para hacer zoom. En el teléfono, desliza la línea de tiempo.',
       ] },
       { id: 'audio', title: 'Música y voz en off', items: [

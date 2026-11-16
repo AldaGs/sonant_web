@@ -17,14 +17,15 @@
     onseek, onseeksrc, ontrim, oncommit, onmovecap, onaudio, snap = true, range = null,
     pending = [], beats, out, zooms = [], onzoom,
     overlays = [], selectedOverlay = $bindable(''), onoverlay = () => {},
-    ondropasset = () => {}, onmovestrip = () => false, tool = 'select', ontool = () => {}, onrazor = () => {},
+    ondropasset = () => {}, ondropfiles = () => {}, onmovestrip = () => false, tool = 'select', ontool = () => {}, onrazor = () => {},
     tracks = NO_TRACKS, onretrack = () => {}, ontrack = () => {}, onaddtrack = () => {}, ondroptrack = () => false,
   }: {
     ondropasset?: (assetId: string, zone: 'v' | 'main' | 'a', track: number, out: number) => void; // media card dropped on a track
     tool?: import('./tools').Tool;
     ontool?: (kind: 'v' | 'a', id: string, op: 'ripple' | 'roll' | 'slip', side: 'start' | 'end', d: number) => void; // live, from drag start
     onrazor?: (kind: 'v' | 'a' | 's', id: string, out: number) => void; // cut a layer / audio item / V1 strip at output time
-    onmovestrip?: (i: number, out: number) => boolean; // drop a V1 strip at another place (output time)
+    onmovestrip?: (i: number, out: number) => boolean; // move a V1 strip so it starts at output time `out`
+    ondropfiles?: (files: FileList, zone: 'v' | 'main' | 'a', track: number, out: number) => void; // files from the computer dropped on a track
     tracks?: Tracks; // track switches (hide/mute, lock), V2… and A2…
     onretrack?: (kind: 'v' | 'a', id: string, track: number) => void; // move an item to another track, live
     ontrack?: (kind: 'v' | 'a', track: number, patch: TrackFlags) => void;
@@ -161,18 +162,20 @@
     return null;
   }
   const isCard = (e: DragEvent) => !!e.dataTransfer?.types.includes('text/x-asset');
+  const isFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files');
   function dragOverTracks(e: DragEvent) {
-    if (!isCard(e)) return;
+    if (!isCard(e) && !isFiles(e)) return;
     e.preventDefault();
     dropAt = dropTarget(e);
   }
   function dropOnTracks(e: DragEvent) {
-    const at = isCard(e) ? dropTarget(e) : null, id = e.dataTransfer?.getData('text/x-asset');
+    const at = isCard(e) || isFiles(e) ? dropTarget(e) : null, id = e.dataTransfer?.getData('text/x-asset');
     dropAt = null;
-    if (!at || !id) return; // let the timeline area handle it (files from the computer, or the default place)
+    if (!at) return; // let the timeline area handle it (the default place, or import only)
     e.preventDefault();
     e.stopPropagation();
-    ondropasset(id, at.zone, at.track, at.out);
+    if (id) ondropasset(id, at.zone, at.track, at.out);
+    else if (e.dataTransfer?.files.length) ondropfiles(e.dataTransfer.files, at.zone, at.track, at.out); // imported, then placed here
   }
   // ---- Volume line on audio items ----
   // The item's volume envelope (fades and points) as a line: top = 150%, bottom = silent.
@@ -204,12 +207,13 @@
   let holdId: number | null = null; // pointer that is carrying a strip (pan ignores it)
   function holdStrip(e: PointerEvent, i: number) {
     if (i !== selected || (e.target as Element).closest('.handle')) return; // unselected: pan / tap to select
-    const x0 = e.clientX, y0 = e.clientY;
+    const x0 = e.clientX, y0 = e.clientY, p0 = outAt(e), s0 = segPos[i].start;
+    const startAt = (m: PointerEvent) => Math.max(0, s0 + outAt(m) - p0); // the strip keeps its place under the finger
     let last = e, raf = 0;
     const timer = setTimeout(() => {
       holdId = e.pointerId;
       navigator.vibrate?.(15);
-      stripDrop = outAt(last);
+      stripDrop = startAt(last);
       raf = requestAnimationFrame(edgeScroll);
     }, HOLD_MS);
     // Near the left/right edge of the timeline, keep scrolling so the strip can travel past what's on screen.
@@ -220,7 +224,7 @@
       if (dir) {
         if (centered) onseek(Math.max(0, Math.min(total, view + dir * total / (zoom * 120))));
         else scroller.scrollLeft += dir * 8;
-        stripDrop = outAt(last);
+        stripDrop = startAt(last);
       }
       raf = requestAnimationFrame(edgeScroll);
     };
@@ -232,7 +236,7 @@
         return;
       }
       m.preventDefault();
-      stripDrop = outAt(m);
+      stripDrop = startAt(m);
     };
     const end = (u: PointerEvent) => {
       if (u.pointerId !== e.pointerId) return;
@@ -244,7 +248,7 @@
       if (holdId === null) return;
       holdId = null;
       stripDrop = null;
-      if (u.type === 'pointerup') (eatNextClick(), onmovestrip(i, outAt(u)));
+      if (u.type === 'pointerup') (eatNextClick(), onmovestrip(i, startAt(u)));
     };
     addEventListener('pointermove', move, { passive: false });
     addEventListener('pointerup', end);
@@ -277,34 +281,44 @@
     drag(e, (d) => ontool(kind, id, op, side, d));
     return true;
   }
-  // Drag the selected V1 strip (mouse/pen, not its trim handles) to move it elsewhere in the sequence.
-  // A marker shows where it will land; it's dropped at the nearest clip boundary.
+  // Drag the selected V1 strip (mouse/pen, not its trim handles) to move it elsewhere on V1, like an NLE:
+  // a ghost shows where it will start (snapping to edges and the playhead). Dropped in empty time it lands
+  // right there; over another clip it's inserted at that clip's nearest edge. It leaves a gap where it was.
   let stripDrop = $state<number | null>(null);
+  let stripLen = $state(0);
+  let v1Row = $state<HTMLDivElement>(), v1Top = $state(0), v1H = $state(0);
+  const markV1 = () => ((v1Top = v1Row?.offsetTop ?? 0), (v1H = v1Row?.offsetHeight ?? 0));
   function grabStrip(e: PointerEvent, i: number) {
     if (tool === 'razor' && e.button === 0) {
       e.stopPropagation();
       eatNextClick();
       return onrazor('s', '', outAt(e));
     }
-    if (e.pointerType === 'touch') return holdStrip(e, i);
+    markV1();
+    if (e.pointerType === 'touch') return (stripLen = segPos[i]?.len ?? 0), holdStrip(e, i);
     if (i !== selected || e.button !== 0 || (e.target as Element).closest('.handle')) return;
     e.stopPropagation();
-    const el = e.currentTarget as HTMLElement, x0 = e.clientX;
+    const el = e.currentTarget as HTMLElement, x0 = e.clientX, p0 = outAt(e), s0 = segPos[i].start, len = segPos[i].len;
+    const pts = outPoints().filter((p) => Math.abs(p - s0) > 1e-6 && Math.abs(p - (s0 + len)) > 1e-6); // not its own edges
     let moved = false;
-    const at = (m: PointerEvent) => {
-      const r = inner!.getBoundingClientRect();
-      return Math.max(0, Math.min(total, ((m.clientX - r.left) / r.width) * total));
+    const startAt = (m: PointerEvent) => {
+      const v = Math.max(0, s0 + outAt(m) - p0);
+      return Math.max(0, v + nearest([v, v + len], pts, snap && !m.altKey, idOut));
     };
     el.setPointerCapture(e.pointerId);
     el.onpointermove = (m) => {
       if (!moved && Math.abs(m.clientX - x0) < 5) return;
-      moved = true;
-      stripDrop = at(m);
+      if (!moved) ((moved = true), (held = total));
+      stripLen = len;
+      stripDrop = startAt(m);
     };
     el.onpointerup = el.onpointercancel = (u) => {
       el.onpointermove = el.onpointerup = el.onpointercancel = null;
+      const to = stripDrop;
       stripDrop = null;
-      if (moved && u.type === 'pointerup') (eatNextClick(), onmovestrip(i, at(u)));
+      guide = null;
+      held = null;
+      if (moved && to !== null && u.type === 'pointerup') (eatNextClick(), onmovestrip(i, to));
     };
   }
   // ---- Tracks ----
@@ -361,7 +375,9 @@
   // being dragged stays under the pointer instead of the whole timeline rescaling.
   let held = $state<number | null>(null);
   const live = $derived(outDuration(segments) || 1);
-  const total = $derived(held === null ? live : Math.max(held, live));
+  // Empty room after the end, so clips and layers can be dropped or dragged past it (the timeline then grows).
+  const roomy = (x: number) => Math.max(10, x * 1.25 + 2);
+  const total = $derived(held === null ? roomy(live) : Math.max(held, roomy(live)));
   const playhead = $derived(out ?? toOutput(segments, time));
   const view = $derived(swipeT ?? playhead ?? 0);
   const shift = $derived(vw / 2 - (view / total) * width);
@@ -527,7 +543,7 @@
     el.setPointerCapture(e.pointerId);
     el.onpointermove = (m) => {
       if (!moved && Math.abs(m.clientX - x0) < 3 && Math.abs(m.clientY - y0) < 6) return;
-      if (!moved) ((moved = true), (held = live), oncommit());
+      if (!moved) ((moved = true), (held = total), oncommit());
       move((m.clientX - x0) * perPx, snap && !m.altKey, m.clientY - y0);
     };
     el.onpointerup = el.onpointercancel = (u) => {
@@ -724,7 +740,7 @@
         {/each}
       </div>
 
-      <div class="row">
+      <div class="row" bind:this={v1Row}>
         {#each segments as s, i}
           <div class="seg" class:sel={i === selected} role="button" tabindex="0" aria-pressed={i === selected}
             aria-label={t('a11y.strip', { n: i + 1, name: clipName(s), a: fmtT(segPos[i].start), b: fmtT(segPos[i].start + segPos[i].len) })}
@@ -816,7 +832,7 @@
         {#if x !== null}<div class="pend" style:left={pct(x)} style:width={pct(Math.max(0.01, b - a))} aria-hidden="true"></div>{/if}
       {/each}
       {#if dropAt}<div class="dropzone" style:top="{dropAt.top}px" style:height="{dropAt.h}px" aria-hidden="true"><span class="dropmark" style:left={pct(dropAt.out)}></span></div>{/if}
-      {#if stripDrop !== null}<div class="sdrop" style:left={pct(stripDrop)} aria-hidden="true"></div>{/if}
+      {#if stripDrop !== null}<div class="sdrop" style:left={pct(stripDrop)} style:width={pct(stripLen)} style:top="{v1Top}px" style:height="{v1H}px" aria-hidden="true"></div>{/if}
       {#if guide !== null}<div class="guide" style:left={pct(guide)} aria-hidden="true"></div>{/if}
       {#if playhead !== null}
         <div class="playhead" style:left={pct(playhead)}>
@@ -867,7 +883,8 @@
   .vk { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #ffd84d; border: 1px solid #111; cursor: move; touch-action: none; z-index: 2; }
   .dropzone { position: absolute; left: 0; right: 0; border-radius: 6px; background: rgb(200 245 96 / .12); outline: 1px dashed var(--accent); pointer-events: none; z-index: 4; }
   .dropmark { position: absolute; top: -3px; bottom: -3px; width: 2px; transform: translateX(-1px); background: var(--accent); }
-  .sdrop { position: absolute; top: 20px; bottom: 0; width: 3px; transform: translateX(-1px); background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none; z-index: 4; }
+  .sdrop { position: absolute; min-width: 3px; box-sizing: border-box; border: 2px solid #fff; border-radius: 6px; background: rgb(255 255 255 / .18);
+    box-shadow: 0 0 6px #fff; pointer-events: none; z-index: 4; }
   .thumbs { display: flex; height: 100%; overflow: hidden; pointer-events: none; }
   .thumbs img { height: 100%; width: 0; flex: 1; object-fit: cover; opacity: .8; }
   .handle { position: absolute; top: 0; bottom: 0; width: 10px; background: var(--accent); cursor: ew-resize; touch-action: none; }
