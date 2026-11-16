@@ -1,14 +1,14 @@
 // Auto-clips: find 15–60s highlights in a long video's transcript and turn one into its own short project.
 // Scoring uses the transcript only (sentences, hooks, questions, numbers, emphasis, pace), so it is instant
-// and works offline. Times are sequence time, like captions.
+// and works offline. Times are whatever the captions passed in use (the editor passes them on the timeline).
 import type { Caption, Word } from './captions.ts';
 import { normalize, isFiller } from './transcript.ts';
-import { toOutput, outLen, type Segment } from './cuts.ts';
+import { srcToOut, fileAt, type Piece } from './model.ts';
 import type { Overlay } from './overlay.ts';
 import type { AudioItem } from './project.ts';
 
 export type Sentence = { start: number; end: number; text: string; words: Word[]; score: number; hook: number; loud?: number };
-// Loudness of a time range (sequence time), any scale; null when unknown. Louder-than-usual delivery scores higher.
+// Loudness of a time range, any scale; null when unknown. Louder-than-usual delivery scores higher.
 export type LoudFn = (a: number, b: number) => number | null;
 export type Highlight = { start: number; end: number; score: number; title: string; reasons: string[] };
 export type HighlightOpts = { min: number; max: number; count: number };
@@ -109,40 +109,36 @@ export function findHighlights(caps: Caption[], o: HighlightOpts = DEFAULT_HL, l
 }
 
 // ---- Turning a highlight into its own project ----
-// Kept segments limited to [a, b) (sequence time); strip effects stay.
-export function clipSegments(segs: Segment[], a: number, b: number): Segment[] {
-  return segs.flatMap((s) => {
-    const start = Math.max(s.start, a), end = Math.min(s.end, b);
-    return end - start > 0.02 ? [{ ...s, start, end }] : [];
-  });
-}
-
-// Items placed in output time (music, voiceover, layers) moved to the short's timeline [A, B) and trimmed to it.
-export function shiftTimed<T extends { at: number; offset?: number }>(items: T[], len: (x: T) => number, A: number, B: number, setLen: (x: T, l: number) => T): T[] {
+// Items placed in output time moved to the short's timeline [A, B) and trimmed to it (media keep their place in
+// their file, at their speed).
+export function shiftTimed<T extends { at: number; offset?: number; fx?: import('./cuts.ts').Fx }>(items: T[], len: (x: T) => number, A: number, B: number, setLen: (x: T, l: number) => T): T[] {
   return items.flatMap((x) => {
     const s = Math.max(x.at, A), e = Math.min(x.at + len(x), B);
     if (e - s < 0.05) return [];
     const cut = s - x.at;
-    const y = { ...x, at: s - A, ...(x.offset !== undefined || cut ? { offset: (x.offset ?? 0) + cut } : {}) };
+    const off = cut ? fileAt({ at: x.at, len: len(x), offset: x.offset ?? 0, fx: x.fx }, s) : x.offset;
+    const y = { ...x, at: s - A, ...(off !== undefined && { offset: off }) };
     return [setLen(y, e - s)];
   });
 }
-
-// The parts of a project that change for a short of [a, b) (sequence time).
-export function shortOf(p: { segments: Segment[]; overlays: Overlay[]; audios: AudioItem[]; captions: Caption[] }, a: number, b: number, itemLen: (x: AudioItem) => number) {
-  const A = toOutput(p.segments, a) ?? 0;
-  const segments = clipSegments(p.segments, a, b);
-  const B = A + segments.reduce((t, s) => t + outLen(s), 0);
-  // Only the words inside the clip, so the short's transcript isn't the whole long video struck out.
-  const inside = (w: Word) => (w.start + w.end) / 2 >= a && (w.start + w.end) / 2 < b;
+// The parts of a project that change for a short of output range [A, B).
+export function shortOf(p: { overlays: Overlay[]; audios: AudioItem[]; captions: Caption[] }, pieces: Piece[], A: number, B: number, itemLen: (x: AudioItem) => number) {
+  // Only the words played inside the clip, so the short's transcript isn't the whole long video struck out.
+  const inside = (w: Word) => {
+    const o = srcToOut(pieces, (w.start + w.end) / 2);
+    return o !== null && o >= A && o < B;
+  };
   const captions = p.captions.flatMap((c) => {
+    if ((c as { free?: boolean }).free) {
+      const words = c.words.filter((w) => w.start >= A && w.start < B).map((w) => ({ ...w, start: w.start - A, end: w.end - A }));
+      return words.length ? [{ ...c, words }] : [];
+    }
     const words = c.words.filter(inside);
     return words.length ? [words.length === c.words.length ? c : { ...c, words }] : [];
   });
   return {
-    segments,
     captions,
-    // Text layers have no offset: trimming the start shortens them instead.
+    // Text and pictures have no file offset: trimming the start shortens them instead.
     overlays: shiftTimed(p.overlays, (o) => o.len, A, B, (o, len) => ({ ...o, len, ...(o.kind !== 'video' && { offset: undefined }) })),
     audios: shiftTimed(p.audios, itemLen, A, B, (x, len) => ({ ...x, len })),
   };

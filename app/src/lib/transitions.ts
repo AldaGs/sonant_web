@@ -1,5 +1,5 @@
-// Transitions into a strip, drawn over the finished frame (video, layers, captions).
-// The outgoing side is the last frame of the previous strip, held while the transition runs.
+// Transitions into an item on the bottom track, drawn over the finished frame (video, layers, captions).
+// The outgoing side is the last frame of the item before it, held while the transition runs.
 export type Trans = 'fade' | 'black' | 'white' | 'zoom' | 'whip' | 'slide';
 export const TRANSITIONS: Trans[] = ['fade', 'black', 'white', 'zoom', 'whip', 'slide'];
 export const TRANS_DUR = 0.4; // seconds
@@ -10,18 +10,19 @@ const smooth = (u: number) => u * u * (3 - 2 * u);
 const makeCanvas = (w: number, h: number): Canvas =>
   typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
 
-// Keeps the last finished frame of each strip, and blends it into the next strip's start.
+// Keeps the last finished frame, and blends it into the start of the next item on the bottom track.
 export class Transitioner {
   private last: Canvas | null = null;
-  private lastIdx = -2;
+  private lastKey: string | null = null;
   private tmp: Canvas | null = null;
 
-  // Call once per frame after everything is drawn. i = strip index, into = output seconds into the strip.
-  apply(ctx: Ctx, kind: Trans | undefined, i: number, into: number, dur = TRANS_DUR) {
+  // Call once per frame after everything is drawn. key = the item at the bottom ('' for none), prev = the item
+  // right before it on its track (null when it doesn't follow one), into = output seconds into it.
+  apply(ctx: Ctx, kind: Trans | undefined, key: string, prev: string | null, into: number, dur = TRANS_DUR) {
     const W = ctx.canvas.width, H = ctx.canvas.height;
-    if (kind && i > 0 && into < dur) {
-      const prev = this.lastIdx === i - 1 && this.last ? this.last : null; // after a seek there's no outgoing frame
-      draw(ctx, kind, smooth(Math.max(0, into) / dur), prev, W, H, () => {
+    if (kind && prev && into < dur) {
+      const prevC = this.lastKey === prev && this.last ? this.last : null; // after a seek there's no outgoing frame
+      draw(ctx, kind, smooth(Math.max(0, into) / dur), prevC, W, H, () => {
         if (!this.tmp || this.tmp.width !== W || this.tmp.height !== H) this.tmp = makeCanvas(W, H);
         return this.tmp;
       });
@@ -30,10 +31,10 @@ export class Transitioner {
     if (!this.last || this.last.width !== W || this.last.height !== H) this.last = makeCanvas(W, H);
     const l = this.last.getContext('2d') as Ctx;
     l.drawImage(ctx.canvas, 0, 0);
-    this.lastIdx = i;
+    this.lastKey = key;
   }
   reset() {
-    this.lastIdx = -2;
+    this.lastKey = null;
   }
 }
 

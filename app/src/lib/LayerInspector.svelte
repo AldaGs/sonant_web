@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Inspector for a selected layer (text, title, image, video or progress bar): content, title motion,
-  // keyframes, transform, crop, blend, keying, mask and stacking.
+  // Inspector for a selected item (text, title, image, video or progress bar): content, fill or free placement,
+  // title motion, keyframes, transform, crop, blend, keying, mask, sound and stacking.
   import Icon from './Icon.svelte';
   import KeyControls from './KeyControls.svelte';
   import { t } from './i18n.svelte';
@@ -11,7 +11,7 @@
   import { LAYER_TRANS, type LayerTrans } from './layertrans';
 
   let { o, outTime, fonts, overlays, pickKey, doneEditing, closeLayer, setOverlay, setMotion, setTf,
-    jumpKey, toggleKey, punchIn, clearKeys, startPick, removeOverlay, restack, layerT, outNow, linkedSound, setAudio, detachSound, unlinkSound }: {
+    jumpKey, toggleKey, punchIn, clearKeys, startPick, removeOverlay, restack, layerT, outNow, linkedSound, setAudio, detachSound, unlinkSound, fitOf }: {
     linkedSound?: import('./project').AudioItem; setAudio: (id: string, patch: Partial<import('./project').AudioItem>) => void;
     detachSound: (o: Overlay) => void; unlinkSound: (link: string) => void;
     o: Overlay; outTime: number; fonts: Font[]; overlays: Overlay[]; pickKey: string | null;
@@ -22,7 +22,9 @@
     jumpKey: (o: Overlay, dir: -1 | 1) => void; toggleKey: (o: Overlay) => void; punchIn: (o: Overlay) => void; clearKeys: (o: Overlay) => void;
     startPick: (target: string) => void; removeOverlay: () => void; restack: (dir: -1 | 1) => void;
     layerT: (o: Overlay) => number; outNow: () => number;
+    fitOf: (o: Overlay) => number; // size (fraction of frame width) at which this media fits inside the frame
   } = $props();
+  const free = $derived(o.kind === 'text' || !o.fill); // placed by its transform (not filling the frame)
   const cur = $derived(tfAt(o, outTime));
   const onKey = $derived(!!keyAt(o.kf, outTime - o.at));
 </script>
@@ -33,6 +35,11 @@
     <h3>{o.motion ? t('addTitle') : o.kind === 'text' ? t('textLayer') : o.kind === 'image' ? t('imageLayer') : t('videoLayer')}</h3>
     <button class="sm icon" onclick={closeLayer} aria-label={t('ex.close')}><Icon name="close" /></button>
   </div>
+  {#if o.kind !== 'text'}
+    <!-- Fill: cover the frame like a main video (cropped around its focus point); off: placed, sized and animated freely. -->
+    <label class="chk" title={t('fillTip')}><input type="checkbox" checked={!!o.fill}
+      onchange={(e) => (setOverlay(o.id, e.currentTarget.checked ? { fill: true, kf: undefined } : { fill: undefined, tf: { ...o.tf, x: 0.5, y: 0.5, rotation: 0, scale: fitOf(o) } }), doneEditing())} /> {t('fillFrame')}</label>
+  {/if}
   {#if o.bar}
     {@const b = o.bar}
     <div class="lrow">
@@ -91,6 +98,7 @@
       {/if}
     {/if}
   {/if}
+  {#if free}
   <div class="keyrow" role="group" aria-label={t('keyframes')}>
     <button class="sm icon" onclick={() => jumpKey(o, -1)} disabled={!o.kf?.length} title={t('prevKey')} aria-label={t('prevKey')}><Icon name="chevron_left" /></button>
     <button class="sm key" class:on={onKey} aria-pressed={onKey} onclick={() => toggleKey(o)}
@@ -106,10 +114,11 @@
   <label class="vol">{t('rotation')} <span class="mono small">{Math.round(cur.rotation)}°</span>
     <input type="range" min="-180" max="180" step="1" value={cur.rotation} oninput={(e) => setTf(o.id, { rotation: +e.currentTarget.value })} />
   </label>
+  {/if}
   <label class="vol">{t('opacity')} <span class="mono small">{Math.round(cur.opacity * 100)}%</span>
     <input type="range" min="0" max="1" step="0.01" value={cur.opacity} oninput={(e) => setTf(o.id, { opacity: +e.currentTarget.value })} />
   </label>
-  {#if o.kind !== 'text'}
+  {#if free && o.kind !== 'text'}
     {@const c = o.tf.crop ?? [0, 0, 0, 0]}
     <div class="crop">
       {#each [['cropL', 0], ['cropT', 1], ['cropR', 2], ['cropB', 3]] as [label, i]}
@@ -145,7 +154,7 @@
       </div>
     {/each}
   </details>
-  {#if o.kind !== 'text'}
+  {#if free && o.kind !== 'text'}
     <KeyControls key={o.key} picking={pickKey === o.id} onpick={() => startPick(o.id)}
       set={(k, final) => (setOverlay(o.id, { key: k }), final && doneEditing())} />
     <details class="lfx" open={!!o.mask}>
@@ -178,7 +187,7 @@
   {/if}
   {#if o.kind === 'video' && linkedSound}
     <!-- The sound is its own item on an A track, linked to this layer. -->
-    <label class="vol">{t('volume')} <span class="mono small">{Math.round(linkedSound.volume * 100)}% · A{(linkedSound.track ?? 0) + 2}</span>
+    <label class="vol">{t('volume')} <span class="mono small">{Math.round(linkedSound.volume * 100)}% · A{(linkedSound.track ?? 0) + 1}</span>
       <input type="range" min="0" max="1" step="0.05" value={linkedSound.volume} oninput={(e) => setAudio(linkedSound.id, { volume: +e.currentTarget.value })} />
     </label>
     <div class="lrow"><button class="sm" onclick={() => unlinkSound(o.link!)} title={t('unlinkTip')}><Icon name="link_off" /> {t('unlink')}</button></div>
@@ -189,11 +198,11 @@
     <div class="lrow"><button class="sm" onclick={() => detachSound(o)} title={t('detachTip')}><Icon name="link" /> {t('detachSound')}</button></div>
   {/if}
   <div class="lrow">
-    <button class="sm" class:on={o.behind} aria-pressed={!!o.behind} title={t('layerBehind')}
-      onclick={() => (setOverlay(o.id, { behind: !o.behind || undefined }), doneEditing())}><Icon name="person" /> {t('behindPerson')}</button>
+    {#if free}<button class="sm" class:on={o.behind} aria-pressed={!!o.behind} title={t('layerBehind')}
+      onclick={() => (setOverlay(o.id, { behind: !o.behind || undefined }), doneEditing())}><Icon name="person" /> {t('behindPerson')}</button>{/if}
     <button class="sm" class:on={o.tf.flipX} aria-pressed={!!o.tf.flipX} onclick={() => (setTf(o.id, { flipX: !o.tf.flipX }), doneEditing())}><Icon name="flip" /> {t('flip')}</button>
     <button class="sm" onclick={() => (setTf(o.id, { x: 0.5, y: 0.5, rotation: 0, crop: undefined, flipX: false, opacity: 1 }), doneEditing())}>{t('resetLayer')}</button>
-    <span class="muted small" title={t('trackTip')}>V{(o.track ?? 0) + 2}</span>
+    <span class="muted small" title={t('trackTip')}>V{(o.track ?? 0) + 1}</span>
     <button class="sm icon" onclick={() => restack(1)} title={t('bringForward')} aria-label={t('bringForward')}><Icon name="flip_to_front" /></button>
     <button class="sm icon" onclick={() => restack(-1)} disabled={!o.track} title={t('sendBackward')} aria-label={t('sendBackward')}><Icon name="flip_to_back" /></button>
     <button class="sm" onclick={removeOverlay}>{t('del')}</button>

@@ -1,6 +1,6 @@
 // Run: node src/lib/highlights.test.ts
 import assert from 'node:assert/strict';
-import { sentences, scoreSentence, findHighlights, clipSegments, shortOf } from './highlights.ts';
+import { sentences, scoreSentence, findHighlights, shortOf } from './highlights.ts';
 import type { Word } from './captions.ts';
 
 // Words from a script: one word every 0.4s, sentences as written.
@@ -44,19 +44,19 @@ assert.equal(hl2[0].start, second);
 assert.ok(hl2[0].reasons.includes('energy'));
 assert.notEqual(findHighlights([{ id: 'l', words: twice }], { min: 15, max: 30, count: 1 })[0].reasons.includes('energy'), true);
 
-// clipping a project to [a, b)
-const segs = [{ start: 0, end: 10 }, { start: 12, end: 20, fx: { speed: 2 } }];
-assert.deepEqual(clipSegments(segs, 5, 15), [{ start: 5, end: 10 }, { start: 12, end: 15, fx: { speed: 2 } }]);
-// output time: [5,10) → out 5..10, [12,15) at 2× → out 10..11.5; short covers out 5..11.5
+// A short of output range [5, 11.5): a video item (2× from file 10) plays source 10..23 at output 5..11.5.
+const vid = { id: 'v', kind: 'video' as const, assetId: 'a', at: 5, len: 6.5, offset: 10, fx: { speed: 2 }, tf: { x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1 } };
 const music = { id: 'm', assetId: 'a', at: 2, volume: 1 }; // plays 2..32 (30s file)
 const late = { id: 'l', assetId: 'a', at: 40, volume: 1 };
 const title = { id: 't', kind: 'text' as const, at: 9, len: 5, text: 'Hi', tf: { x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1 } };
-const capsIn = [{ id: 'a', words: [{ text: 'x', start: 1, end: 2 }] }, { id: 'b', words: [{ text: 'y', start: 4, end: 4.8 }, { text: 'z', start: 6, end: 7 }] }];
-const r = shortOf({ segments: segs, overlays: [title], audios: [music, late], captions: capsIn }, 5, 15, () => 30);
+const capsIn = [{ id: 'a', words: [{ text: 'x', start: 1, end: 2 }] }, { id: 'b', words: [{ text: 'y', start: 4, end: 4.8 }, { text: 'z', start: 12, end: 13 }] }];
+const pieces = [{ start: 10, end: 23, at: 5, fx: { speed: 2 }, id: 'v', track: 0, audio: false }];
+const r = shortOf({ overlays: [vid, title], audios: [music, late], captions: capsIn }, pieces, 5, 11.5, () => 30);
 assert.deepEqual(r.captions.map((c) => [c.id, c.words.map((w) => w.text)]), [['b', ['z']]]);
 assert.deepEqual(r.audios, [{ ...music, at: 0, offset: 3, len: 6.5 }]);
-assert.equal(r.overlays.length, 1);
-assert.equal(r.overlays[0].at, 4);
-assert.ok(Math.abs(r.overlays[0].len - 2.5) < 1e-9);
-assert.equal(r.overlays[0].offset, undefined);
+assert.equal(r.overlays.length, 2);
+assert.deepEqual([r.overlays[0].at, r.overlays[0].offset, r.overlays[0].len], [0, 10, 6.5]);
+assert.equal(r.overlays[1].at, 4);
+assert.ok(Math.abs(r.overlays[1].len - 2.5) < 1e-9);
+assert.equal(r.overlays[1].offset, undefined);
 console.log('highlights ok');

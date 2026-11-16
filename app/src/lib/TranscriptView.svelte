@@ -1,14 +1,16 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import type { Caption, Word } from './captions';
-  import { isCut, type Segment } from './cuts';
+  import { isCutW, type Piece } from './model';
   import { isFiller, search } from './transcript';
   import { cleanup, cleanupRanges, total } from './cleanup.svelte';
   import { t } from './i18n.svelte';
 
   type Range = [number, number];
-  let { captions, segments, time, duration, speakers, onseek, oncut, onkeep, onspeaker, onrename, onemphasis }: {
-    captions: Caption[]; segments: Segment[]; time: number; duration: number;
+  let { captions, pieces, time, speakers, onseek, oncut, onkeep, onspeaker, onrename, onemphasis }: {
+    captions: Caption[]; // in transcript order (as they play), source time
+    pieces: Piece[]; // what plays each moment of each file: words nothing plays are struck out
+    time: number; // the playhead in source time
     speakers: string[]; // names; '' = default "Speaker N"
     onseek: (t: number) => void; oncut: (r: Range[]) => void; onkeep: (r: Range[]) => void;
     onspeaker: (captionIds: string[], k: number | undefined) => void; // k = speakers.length adds a new speaker
@@ -18,7 +20,7 @@
 
   const words = $derived(captions.flatMap((c) => c.words));
   const capOf = $derived(captions.flatMap((c, ci) => c.words.map(() => ci))); // word index → caption index
-  const cut = $derived(words.map((w) => isCut(segments, w)));
+  const cut = $derived(words.map((w) => isCutW(pieces, w)));
   const spk = (i: number) => captions[capOf[i]]?.speaker;
 
   // Paragraphs: break on pauses of 1s+, after ~30 words, or when the speaker changes. Holds word indices.
@@ -95,7 +97,7 @@
   }
 
   // Fillers and silences still in the video, with the current clean-up settings.
-  const plan = $derived(cleanupRanges(words, duration, segments));
+  const plan = $derived(cleanupRanges(words, pieces));
   const fillers = $derived(plan.fillers);
   const silences = $derived(plan.silences);
   const saved = $derived(total(fillers) + total(silences));

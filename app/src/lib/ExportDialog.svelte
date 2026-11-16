@@ -3,13 +3,12 @@
   import { begin, end, logError } from './crash';
   import { exportVideo, outputSize, type Aspect, type Res, type Quality, type ExportSource } from './export';
   import type { Caption } from './captions';
-  import { outLen, type Segment } from './cuts';
   import type { Style } from './render';
   import { t } from './i18n.svelte';
 
-  let { source, name, segments, captions, style, srcW, srcH, canvasAspect = 'source', onsubtitles }: {
+  let { source, name, duration, captions, style, srcW, srcH, canvasAspect = 'source', onsubtitles }: {
     onsubtitles?: (ext: 'srt' | 'vtt') => void; // caption files, offered once there are captions
-    source: () => ExportSource; name: string; segments: Segment[]; captions: Caption[]; style: Style; srcW: number; srcH: number;
+    source: () => ExportSource; name: string; duration: number; captions: Caption[]; /* output time */ style: Style; srcW: number; srcH: number;
     canvasAspect?: Aspect; // the project's canvas shape: the default output shape
   } = $props();
 
@@ -85,11 +84,11 @@
     const t0 = performance.now();
     // A note in case the tab runs out of memory and dies: the next load says what was being exported.
     const src0 = source();
-    begin('export', { res, aspect, fps, quality, length: `${Math.round(segments.reduce((a, s) => a + outLen(s), 0))}s`,
-      clips: src0.clips.length, layers: src0.overlays?.length ?? 0, loudness, voice });
+    begin('export', { res, aspect, fps, quality, length: `${Math.round(duration)}s`,
+      clips: src0.overlays.filter((o) => o.kind !== 'text').length, layers: src0.overlays.length, loudness, voice });
     try {
       // Snapshot so edits during export don't change what's being rendered.
-      const blob = await exportVideo(src0, $state.snapshot(segments), $state.snapshot(captions), $state.snapshot(style),
+      const blob = await exportVideo(src0, $state.snapshot(captions), $state.snapshot(style),
         { res, aspect, fps, quality, loudness, voice }, (p) => (progress = p), abort.signal);
       result = {
         url: URL.createObjectURL(blob),

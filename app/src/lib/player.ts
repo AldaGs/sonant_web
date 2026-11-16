@@ -1,222 +1,230 @@
-import { DUCK_LEVEL, clipAt, clipLen, clipStarts, clipBases, itemLen, type AudioItem, type Clip } from './project';
+import { DUCK_LEVEL, itemLen, type AudioItem } from './project';
 import { envelopeAt, hasEnvelope } from './layertrans';
-import { nextKept, rateAt, toOutput, toSource, outDuration, segAt, type Segment } from './cuts';
+import { rateAt } from './cuts';
+import { fileAt, segOf, timelineEnd } from './model';
 import type { Overlay } from './overlay';
 import { duckGain } from './audio';
 import { setVolume, unlockAudio } from './mediavol.ts';
 
 export type PlayerState = {
-  clips: Clip[];
-  audios: AudioItem[];
-  segments: Segment[];
+  overlays: Overlay[]; // every video track; output time
+  audios: AudioItem[]; // every audio track (muted tracks come with volume 0)
   durations: Map<string, number>;
-  clipVolume: number;
-  overlays: Overlay[];
+  clipVolume: number; // extra volume for the sound of videos (linked audio items)
   speech: [number, number][]; // output time, for ducking
+  videoUrl: (assetId: string) => string | undefined; // what <video> plays (a proxy when there is one)
+  audioUrl: (assetId: string, linked: boolean) => string | undefined; // what <audio> plays (noise-reduced copy when there is one)
 };
 
-// One clock in sequence time that drives a <video> per video asset and an <audio> per audio item.
-// While a clip's video is playing it is the clock (keeps lips in sync); otherwise wall time is.
+type Slot = { el: HTMLMediaElement; key: string; url: string; item: string | null; hold?: HTMLCanvasElement; held?: boolean };
+type Need = { id: string; key: string; url: string; file: number; active: boolean; rate: number; vol: number; frozen: boolean; video: boolean };
+
+const PRE = 0.6; // seconds ahead an upcoming item gets its element ready (seeked to its first frame)
+const KEEP = 3; // spare elements kept per file
+
+// One clock in output time drives every track. Media elements are pooled per file: an item borrows one while
+// it plays (or is about to), so a talk cut into hundreds of pieces still uses a couple of elements. Where one
+// piece carries straight on from the previous one in the file, it keeps the same element (no seek, no gap).
+// The sound is the clock while it plays (keeps lips in sync); pictures follow it, nudging their speed to
+// catch up and seeking only when far off. Without sound, wall time is the clock.
 export class Player {
-  videos = new Map<string, HTMLVideoElement>(); // assetId → element
-  audios = new Map<string, HTMLAudioElement>(); // audio item id → element
-  overlays = new Map<string, HTMLVideoElement>(); // video overlay id → element
-  clean = new Map<string, HTMLAudioElement>(); // assetId → noise-reduced copy of its sound, played instead of the video's
-  private ovClean = new Map<string, HTMLAudioElement>(); // video layer id → its own player of the cleaned sound
-  t = 0; // sequence (source) time: what's on screen
-  o = 0; // output time: the master clock while a freeze frame holds (t stands still then)
+  host: HTMLElement | null = null; // hidden box the elements live in (some browsers only decode attached video)
+  o = 0; // output time
   playing = false;
   private last = 0;
-  // While a <video> is still seeking, newer targets wait here so a fast scrub doesn't queue
-  // dozens of seeks; only the latest one runs once the current seek lands.
-  private pending = new Map<HTMLVideoElement, number>();
-
-  private seekTo(el: HTMLVideoElement, local: number) {
-    if (el.seeking) {
-      if (!this.pending.has(el))
-        el.addEventListener('seeked', () => {
-          const t = this.pending.get(el);
-          this.pending.delete(el);
-          if (t !== undefined && Math.abs(el.currentTime - t) > 0.01) this.seekTo(el, t);
-        }, { once: true });
-      this.pending.set(el, local);
-      return;
-    }
-    el.currentTime = local;
-  }
+  private slots: Slot[] = [];
+  private bound = new Map<string, Slot>(); // item id → its element
+  private pending = new Map<HTMLMediaElement, number>();
 
   constructor(private state: () => PlayerState) {}
 
-  play() {
+  get end() {
     const s = this.state();
-    if (!s.clips.length) return;
+    return timelineEnd(s, (id) => s.durations.get(id) ?? 0);
+  }
+
+  // While an element is still seeking, newer targets wait so a fast scrub doesn't queue dozens of seeks.
+  private seekTo(el: HTMLMediaElement, t: number) {
+    if (el.seeking) {
+      if (!this.pending.has(el))
+        el.addEventListener('seeked', () => {
+          const x = this.pending.get(el);
+          this.pending.delete(el);
+          if (x !== undefined && Math.abs(el.currentTime - x) > 0.01) this.seekTo(el, x);
+        }, { once: true });
+      this.pending.set(el, t);
+      return;
+    }
+    el.currentTime = Math.max(0, t);
+  }
+
+  play() {
+    if (this.end <= 0) return;
     unlockAudio();
-    if (nextKept(s.segments, this.t) === null || this.o >= outDuration(s.segments) - 1e-3) this.seek(s.segments[0]?.start ?? 0); // at the end: restart
+    if (this.o >= this.end - 1e-3) this.o = 0; // at the end: restart
     this.playing = true;
     this.last = performance.now();
-    this.sync();
+    this.sync(true);
   }
-
   pause() {
     this.playing = false;
-    this.sync();
+    this.sync(true);
   }
-
-  seek(t: number) {
-    const s = this.state();
-    this.t = Math.max(0, t);
-    const k = nextKept(s.segments, this.t);
-    this.o = toOutput(s.segments, k ?? this.t) ?? outDuration(s.segments);
+  seek(o: number) {
+    this.o = Math.max(0, Math.min(o, this.end));
     this.sync(true);
   }
 
-  // Advance the clock; call every frame (and on media timeupdate). Returns sequence time.
+  // Advance the clock; call every frame. Returns output time.
   tick(): number {
-    const s = this.state();
     const now = performance.now();
-    if (this.playing && s.clips.length) {
-      const segs = s.segments, dt = (now - this.last) / 1000, total = outDuration(segs);
-      const starts = clipBases(s.clips, s.durations); // file time 0 of each clip, in sequence time
-      const at = clipAt(s.clips, s.durations, this.t);
-      const seg = segAt(segs, this.t), rev = seg?.fx?.rev;
-      // A reversed strip plays its reversed copy forwards: copy time 0 = the strip's start.
-      const el = rev ? this.videos.get(rev.assetId) : at && this.videos.get(s.clips[at.index].assetId);
-      const hold = !!seg?.fx?.hold;
-      if (!hold && at && el && !el.paused && !el.seeking && el.readyState >= 2) {
-        // The playing video is the clock (keeps lips in sync; its playbackRate carries the strip's speed).
-        const base = rev ? rev.start : starts[at.index];
-        this.t = base + el.currentTime;
-        const len = rev ? rev.end - rev.start : (s.clips[at.index].in ?? 0) + clipLen(s.durations, s.clips[at.index]); // file time the clip ends
-        if (rev && this.t >= seg!.end - 0.02) this.t = seg!.end; // reversed strip done: next strip
-        else if (el.currentTime >= len - 0.04 || el.ended) this.t = Math.max(this.t, base + len); // clip done: next one
-        const k = nextKept(segs, this.t);
-        if (k === null) this.o = total;
-        else ((this.t = k), (this.o = toOutput(segs, k) ?? this.o));
-      } else {
-        // Wall clock in output time: freeze frames, or media not ready yet.
-        this.o += dt;
-        this.t = toSource(segs, Math.min(this.o, total - 1e-6));
-      }
-      if (this.o >= total - 1e-6) {
-        this.playing = false;
-        this.o = total;
-        this.t = segs.at(-1)?.end ?? this.t;
-      }
+    if (this.playing) {
+      const wall = this.o + (now - this.last) / 1000;
+      const m = this.masterTime();
+      this.o = m !== null && Math.abs(m - wall) < 0.15 ? m : wall;
+      const end = this.end;
+      if (this.o >= end) ((this.playing = false), (this.o = end));
     }
     this.last = now;
     this.sync();
-    return this.t;
+    return this.o;
   }
 
-  // True when the clock is inside a video clip (vs. an empty sequence).
-  clipsAt(): boolean {
+  // Output time according to the sound that is playing on the lowest audio track (null when there is none).
+  private masterTime(): number | null {
     const s = this.state();
-    return !!clipAt(s.clips, s.durations, this.t);
+    let best: AudioItem | null = null;
+    for (const a of s.audios) {
+      if (a.fx?.speedEnd !== undefined || a.fx?.hold || a.fx?.rev || !(this.o >= a.at && this.o < a.at + (a.len ?? Infinity))) continue;
+      const slot = this.bound.get(a.id);
+      if (!slot || slot.el.paused || slot.el.seeking || slot.el.readyState < 3) continue;
+      if (!best || (a.track ?? 0) < (best.track ?? 0)) best = a;
+    }
+    if (!best) return null;
+    const el = this.bound.get(best.id)!.el;
+    return best.at + (el.currentTime - (best.offset ?? 0)) / (best.fx?.speed ?? 1);
   }
 
-  // The video element showing the current frame, if it has one.
-  frame(): HTMLVideoElement | null {
-    const s = this.state();
-    const at = clipAt(s.clips, s.durations, this.t);
-    const rev = segAt(s.segments, this.t)?.fx?.rev;
-    const el = rev ? this.videos.get(rev.assetId) : at ? this.videos.get(s.clips[at.index].assetId) : undefined;
-    return el && el.readyState >= 2 ? el : null;
+  /** The video element showing item `id` right now, if it has a frame (a held copy while it seeks). */
+  frame(id: string): { src: CanvasImageSource; w: number; h: number } | null {
+    const slot = this.bound.get(id);
+    if (!slot || !(slot.el instanceof HTMLVideoElement)) return null;
+    const v = slot.el;
+    if (v.readyState >= 2 && v.videoWidth && !v.seeking) {
+      // Keep a small copy of the last good frame, shown while the element seeks instead of black.
+      const k = Math.min(1, 720 / Math.max(v.videoWidth, v.videoHeight)), w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
+      slot.hold ??= document.createElement('canvas');
+      if (slot.hold.width !== w || slot.hold.height !== h) ((slot.hold.width = w), (slot.hold.height = h));
+      slot.hold.getContext('2d')!.drawImage(v, 0, 0, w, h);
+      slot.held = true;
+      return { src: v, w: v.videoWidth, h: v.videoHeight };
+    }
+    return slot.held && slot.hold ? { src: slot.hold, w: slot.hold.width, h: slot.hold.height } : null;
   }
 
-  // A video overlay's element, if it has a frame to show.
-  overlayFrame(id: string): HTMLVideoElement | null {
-    const el = this.overlays.get(id);
-    return el && el.readyState >= 2 && el.videoWidth ? el : null;
+  // What every item on the timeline needs from its element right now.
+  private needs(): Need[] {
+    const s = this.state(), o = this.o, out: Need[] = [];
+    const want = (id: string, at: number, len: number) => {
+      const into = o - at;
+      if (into >= 0 && into < len) return 'active';
+      if (this.playing && into < 0 && -into <= PRE) return 'pre';
+      return null;
+    };
+    for (const v of s.overlays) {
+      if (v.kind !== 'video' || !v.assetId) continue;
+      const w = want(v.id, v.at, v.len);
+      if (!w) continue;
+      const src = v.fx?.rev ? v.fx.rev.assetId : v.assetId, url = s.videoUrl(src);
+      if (!url) continue;
+      const f = fileAt(v, Math.max(o, v.at)) - (v.fx?.rev ? v.fx.rev.start : 0);
+      out.push({ id: v.id, key: 'v:' + src, url, file: f, active: w === 'active', rate: v.fx?.hold ? 1 : rateAt(segOf(v), fileAt(v, o)), vol: 0, frozen: !!v.fx?.hold, video: true });
+    }
+    for (const a of s.audios) {
+      const len = itemLen(a, s.durations.get(a.assetId) ?? 0), w = want(a.id, a.at, len);
+      if (!w || a.fx?.hold) continue;
+      const src = a.fx?.rev ? a.fx.rev.assetId : a.assetId, url = s.audioUrl(src, !!a.link);
+      if (!url) continue;
+      const m = { ...a, len }, into = o - a.at;
+      const duck = a.duck ? duckGain(s.speech, o, DUCK_LEVEL) : 1;
+      const env = hasEnvelope(a) ? envelopeAt(a, into, len) : 1;
+      out.push({ id: a.id, key: 'a:' + src, url, file: fileAt(m, Math.max(o, a.at)) - (a.fx?.rev ? a.fx.rev.start : 0), active: w === 'active',
+        rate: rateAt(segOf(m), fileAt(m, o)), vol: a.volume * (a.link ? s.clipVolume : 1) * duck * env, frozen: false, video: false });
+    }
+    return out;
   }
 
-  // Put every element where the clock says it should be.
+  private make(key: string, url: string): Slot {
+    const el = document.createElement(key[0] === 'v' ? 'video' : 'audio');
+    el.preload = 'auto';
+    el.src = url;
+    if (el instanceof HTMLVideoElement) ((el.muted = true), (el.playsInline = true));
+    el.hidden = true;
+    this.host?.append(el);
+    const slot: Slot = { el, key, url, item: null };
+    this.slots.push(slot);
+    return slot;
+  }
+
+  // Lend elements to the items that need them and put each one where the clock says.
   private sync(exact = false) {
-    const s = this.state();
-    const at0 = clipAt(s.clips, s.durations, this.t);
-    const rev = segAt(s.segments, this.t)?.fx?.rev;
-    // In a reversed strip the reversed copy is the active video, at copy time t − rev.start.
-    const at = at0 && rev ? { ...at0, file: this.t - rev.start } : at0;
-    const activeId = rev && at0 ? rev.assetId : at0 ? s.clips[at0.index].assetId : null;
-    for (const [id, el] of this.videos) {
-      if (id !== activeId) {
-        if (!el.paused) el.pause();
-        continue;
-      }
-      const lifted = s.segments.some((g) => g.fx?.lift && this.t >= g.start && this.t < g.end); // a gap plays silent
-      const vol = lifted ? 0 : Math.min(1, Math.max(0, s.clipVolume * (segAt(s.segments, this.t)?.fx?.vol ?? 1)));
-      const clean = this.clean.get(id);
-      setVolume(el, vol);
-      el.muted = !!clean; // the cleaned copy plays the sound instead
-      const seg = segAt(s.segments, this.t);
-      const rate = seg ? rateAt(seg, this.t) : 1; // re-read every frame, so ramps glide
-      if (el.playbackRate !== rate) el.playbackRate = rate; // pitch is preserved by the browser
-      const frozen = !!seg?.fx?.hold;
-      const target = this.pending.get(el) ?? el.currentTime;
-      const drift = Math.abs(target - at!.file);
-      if (drift > (this.playing && !exact ? 0.3 : 0.01)) this.seekTo(el, at!.file);
-      if (this.playing && !frozen && el.paused) el.play().catch(() => {});
-      if ((!this.playing || frozen) && !el.paused) el.pause();
-      if (clean) {
-        // Follow the video (the clock): same rate, re-sync when it drifts more than ~2 frames.
-        setVolume(clean, vol);
-        if (clean.playbackRate !== rate) clean.playbackRate = rate;
-        const run = this.playing && !frozen && !el.paused && !el.seeking;
-        if (Math.abs(clean.currentTime - el.currentTime) > (run ? 0.08 : 0.01)) clean.currentTime = el.currentTime;
-        if (run && clean.paused) clean.play().catch(() => {});
-        if (!run && !clean.paused) clean.pause();
-      }
+    const needs = this.needs().sort((a, b) => Number(b.active) - Number(a.active)); // playing items choose first
+    const wanted = new Set(needs.map((n) => n.id));
+    // Free elements whose item no longer needs them (or now needs another file).
+    for (const [id, slot] of this.bound) {
+      const n = needs.find((x) => x.id === id);
+      if (!n || n.key !== slot.key || n.url !== slot.url) (this.bound.delete(id), (slot.item = null));
     }
-    for (const [id, c] of this.clean) if (id !== activeId && !c.paused) c.pause();
-    for (const [id, el] of this.videos) if (id !== activeId && !this.clean.has(id)) el.muted = false;
+    for (const n of needs) {
+      let slot = this.bound.get(n.id);
+      // An item that just started on a pre-rolled (paused) element moves to a free one already playing at
+      // its file time: that's the previous piece of the same take, carrying straight on.
+      if (slot && n.active && this.playing && slot.el.paused) {
+        const go = this.slots.find((x) => x.item === null && x.key === n.key && x.url === n.url && !x.el.paused && Math.abs(x.el.currentTime - n.file) < 0.12);
+        if (go) ((slot.item = null), (slot = undefined), this.bound.delete(n.id), this.bind(go, n.id));
+      }
+      if (!slot) {
+        const free = this.slots.filter((x) => x.item === null && x.key === n.key && x.url === n.url && !(x.item && wanted.has(x.item)));
+        free.sort((p, q) => Math.abs(p.el.currentTime - n.file) - Math.abs(q.el.currentTime - n.file));
+        slot = this.bind(free[0] ?? this.make(n.key, n.url), n.id);
+      }
+      this.place(slot.el, n, exact);
+    }
+    // Idle elements stop; extra ones per file go.
+    const spare = new Map<string, number>();
+    this.slots = this.slots.filter((x) => {
+      if (x.item !== null) return true;
+      if (!x.el.paused) x.el.pause();
+      const k = (spare.get(x.key) ?? 0) + 1;
+      spare.set(x.key, k);
+      if (k <= KEEP) return true;
+      x.el.pause();
+      x.el.removeAttribute('src');
+      x.el.remove();
+      return false;
+    });
+  }
+  private bind(slot: Slot, id: string) {
+    slot.item = id;
+    this.bound.set(id, slot);
+    return slot;
+  }
 
-    const out: number | null = toOutput(s.segments, this.t) === null ? null : this.o;
-    // Video overlays run in output time, like audio items. Shown one frame early so they're ready.
-    for (const o of s.overlays) {
-      const el = this.overlays.get(o.id);
-      if (!el || o.kind !== 'video') continue;
-      const into = out === null ? -1 : out - o.at;
-      const inside = into >= 0 && into < o.len;
-      const local = Math.min(o.len, Math.max(0, into)) + (o.offset ?? 0);
-      const ovVol = Math.min(1, Math.max(0, o.volume ?? 0));
-      setVolume(el, ovVol);
-      // Noise-reduced sound for layers too: the layer's video plays muted and a cleaned copy follows it.
-      const cleanSrc = o.volume ? this.clean.get(o.assetId ?? '')?.src : undefined;
-      let ca = this.ovClean.get(o.id);
-      if (cleanSrc && (!ca || ca.src !== cleanSrc)) (ca?.pause(), (ca = new Audio(cleanSrc)), this.ovClean.set(o.id, ca));
-      if (!cleanSrc && ca) (ca.pause(), this.ovClean.delete(o.id), (ca = undefined));
-      el.muted = !o.volume || !!ca;
-      if (ca) {
-        setVolume(ca, ovVol);
-        const run = this.playing && inside && !el.paused && !el.seeking;
-        if (Math.abs(ca.currentTime - el.currentTime) > (run ? 0.08 : 0.01)) ca.currentTime = el.currentTime;
-        if (run && ca.paused) ca.play().catch(() => {});
-        if (!run && !ca.paused) ca.pause();
-      }
-      if (this.playing && inside) {
-        if (Math.abs(el.currentTime - local) > 0.3) this.seekTo(el, local);
-        if (el.paused) el.play().catch(() => {});
-      } else {
-        if (!el.paused) el.pause();
-        if (Math.abs((this.pending.get(el) ?? el.currentTime) - local) > 0.01 && (exact || !inside)) this.seekTo(el, local);
-      }
-    }
-    for (const item of s.audios) {
-      const el = this.audios.get(item.id);
-      if (!el) continue;
-      // Trimmed items play [offset, offset + len) of their file.
-      const into = out === null ? -1 : out - item.at;
-      const inside = into >= 0 && into < itemLen(item, s.durations.get(item.assetId) ?? 0);
-      const local = into + (item.offset ?? 0);
-      const duck = item.duck && out !== null ? duckGain(s.speech, out, DUCK_LEVEL) : 1;
-      const env = hasEnvelope(item) ? envelopeAt(item, into, itemLen(item, s.durations.get(item.assetId) ?? 0)) : 1;
-      setVolume(el, item.volume * duck * env);
-      if (this.playing && inside) {
-        if (Math.abs(el.currentTime - local) > 0.3) el.currentTime = local;
-        if (el.paused) el.play().catch(() => {});
-      } else {
-        if (!el.paused) el.pause();
-        if (inside && exact) el.currentTime = local;
-      }
+  private place(el: HTMLMediaElement, n: Need, exact: boolean) {
+    if (!n.video) setVolume(el, n.vol);
+    const run = this.playing && n.active && !n.frozen;
+    const target = this.pending.get(el) ?? el.currentTime;
+    const drift = n.file - target;
+    if (run) {
+      if (Math.abs(drift) > 0.3) this.seekTo(el, n.file);
+      // Small drift: catch up by playing up to 5% faster or slower instead of seeking (no visible jump).
+      const rate = n.rate * (Math.abs(drift) > 0.03 ? 1 + Math.max(-0.05, Math.min(0.05, drift * 0.5)) : 1);
+      if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate;
+      if (el.paused) el.play().catch(() => {});
+    } else {
+      if (!el.paused) el.pause();
+      if (el.playbackRate !== n.rate && n.rate > 0) el.playbackRate = n.rate;
+      if (Math.abs(drift) > (exact || !n.active ? 0.01 : 0.04)) this.seekTo(el, n.file);
     }
   }
 }

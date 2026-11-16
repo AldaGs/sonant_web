@@ -1,9 +1,11 @@
 // Long-running analysis and rendering jobs: auto-zoom aim, stabilize, reverse, voice effects, speakers,
 // highlights/shorts, transcription, silence cuts, auto-reframe, translation and beat detection.
 import { transcribe } from '../transcribe';
-import { groupWords, captionText, split, replaceInRange } from '../captions';
-import { splitAt, toSource, outDuration, isCut, keptCaptions, type Segment } from '../cuts';
-import { itemLen, clipAt, clipLen, clipStarts, clipBases, type Clip, type AudioItem } from '../project';
+import { groupWords, captionText, replaceInRange, type Word } from '../captions';
+import { itemLen, type AudioItem } from '../project';
+import { assetAtSrc, captionsOut, keptCaps, fileAt, srcLen, srcToOut, isCutW } from '../model';
+import { trackOf } from '../tracks';
+import type { Overlay } from '../overlay';
 import { median } from '../reframe';
 import { subjectCenter } from '../segment';
 import { cleanup, cleanupRanges } from '../cleanup.svelte';
@@ -24,19 +26,24 @@ import { importFile } from '../assets';
 import { t } from '../i18n.svelte';
 import { begin, end, logError } from '../crash';
 import { createProject, saveDoc, type ProjectDoc } from '../projects';
+import { DOC_VERSION } from '../migrate';
 import type { Ed } from './ed';
 
 export function createJobs(ed: Ed) {
+  // The video showing at output time t: the lowest one on a visible track.
+  const videoAt = (t: number) => ed.shownOverlays.filter((o) => o.kind === 'video' && !o.fx?.hold && t >= o.at && t < o.at + o.len)
+    .sort((a, b) => trackOf(a) - trackOf(b))[0] ?? null;
+  const item = (id: string) => ed.overlays.find((o) => o.id === id && o.kind === 'video');
   async function aimZooms() {
     if (!ed.autoZoom) return;
     ed.aimBusy = true;
-    const starts = clipBases(ed.clips, ed.durations), aim: Record<string, [number, number]> = { ...ed.autoZoom.aim };
+    const aim: Record<string, [number, number]> = { ...ed.autoZoom.aim };
     const els = new Map<string, HTMLVideoElement>();
     try {
       for (const m of ed.zooms) {
-        const at = clipAt(ed.clips, ed.durations, m.start + 0.2);
-        if (!at || !m.key || ed.kindOf(ed.clips[at.index].assetId) !== 'video') continue;
-        const id = ed.clips[at.index].assetId;
+        const o = videoAt(m.start + 0.2);
+        if (!o || !m.key) continue;
+        const id = o.assetId!;
         let v = els.get(id);
         if (!v) {
           v = document.createElement('video');
@@ -45,7 +52,7 @@ export function createJobs(ed: Ed) {
           await new Promise((r, j) => ((v!.onloadeddata = r), (v!.onerror = j)));
           els.set(id, v);
         }
-        v.currentTime = m.start + 0.2 - starts[at.index];
+        v.currentTime = fileAt(o, m.start + 0.2);
         await new Promise((r) => (v!.onseeked = r));
         const c = await subjectCenter(v, v.videoWidth, v.videoHeight).catch(() => null);
         // Aim a little above the body's centre: that's where the face is.
@@ -60,38 +67,37 @@ export function createJobs(ed: Ed) {
       ed.aimBusy = false;
     }
   }
-  async function stabilize(i: number) {
-    const s = ed.segments[i];
-    if (!s || s.fx?.hold) return;
-    if (s.fx?.stab) return ed.setFx({ stab: undefined }); // toggle off
-    const starts = clipBases(ed.clips, ed.durations), at = clipAt(ed.clips, ed.durations, (s.start + s.end) / 2);
-    if (!at || ed.kindOf(ed.clips[at.index].assetId) !== 'video') return;
-    const off = starts[at.index];
+  // Stabilize a video item: measure the camera's shake over the part of the file it plays (file time).
+  async function stabilize(id: string) {
+    const o = item(id);
+    if (!o || o.fx?.hold) return;
+    if (o.fx?.stab) return void ed.setFx({ stab: undefined }); // toggle off
+    const a = o.offset ?? 0, b = a + srcLen(o);
     ed.stabPct = 0;
     ed.error = '';
-    begin('stabilize', { secs: +(s.end - s.start).toFixed(1) }, ed.projectId);
+    begin('stabilize', { secs: +(b - a).toFixed(1) }, ed.projectId);
     const v = document.createElement('video');
     v.muted = true;
-    v.src = ed.previewUrl(ed.clips[at.index].assetId); // the proxy seeks much faster when there is one
+    v.src = ed.previewUrl(o.assetId!); // the proxy seeks much faster when there is one
     try {
       await new Promise((r, j) => ((v.onloadeddata = r), (v.onerror = j)));
       const w = STAB_W, h = Math.max(2, Math.round((STAB_W * v.videoHeight) / v.videoWidth / 2) * 2);
       const c = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true })!;
-      const n = Math.max(2, Math.ceil((s.end - s.start) * STAB_FPS));
+      const n = Math.max(2, Math.ceil((b - a) * STAB_FPS));
       const shifts: [number, number][] = [];
       let prev: Uint8Array | null = null;
       for (let k = 0; k < n; k++) {
         // A few ms past the sample time, so the seek lands inside a frame rather than on the boundary between two.
-        v.currentTime = Math.min(s.end - 0.01, s.start + k / STAB_FPS + 0.008) - off;
+        v.currentTime = Math.min(b - 0.01, a + k / STAB_FPS + 0.008);
         await new Promise((r) => (v.onseeked = r));
         const g = grey(c, v, w, h);
         if (prev) shifts.push(shiftOf(prev, g, w, h));
         prev = g;
         ed.stabPct = ((k + 1) / n) * 100;
       }
-      const stab = planStab(shifts, w, h, STAB_FPS, s.start);
+      const stab = planStab(shifts, w, h, STAB_FPS, a);
       ed.commit();
-      ed.segments = ed.segments.with(i, { ...ed.segments[i], fx: { ...ed.segments[i].fx, stab } });
+      ed.overlays = ed.overlays.map((x) => (x.id === id ? { ...x, fx: { ...x.fx, stab } } : x));
     } catch (e) {
       ed.error = 'err.stab';
       logError(e, 'stabilize');
@@ -101,24 +107,25 @@ export function createJobs(ed: Ed) {
       ed.stabPct = null;
     }
   }
-  async function reverseStrip(i: number) {
-    const s = ed.segments[i];
-    if (!s || s.fx?.hold) return;
-    if (s.fx?.rev) return ed.setFx({ rev: undefined }); // toggle off (the copy stays in the library)
-    const starts = clipBases(ed.clips, ed.durations), at = clipAt(ed.clips, ed.durations, (s.start + s.end) / 2);
-    const id = at && ed.clips[at.index].assetId, f = id && ed.files.get(id);
-    if (!at || !f || ed.kindOf(id!) !== 'video') return;
+  // Reverse a video item: a reversed copy of the part of the file it plays is made once and played instead
+  // (its linked sound plays the copy too).
+  async function reverseStrip(id: string) {
+    const o = item(id);
+    if (!o || o.fx?.hold) return;
+    if (o.fx?.rev) return void ed.setFx({ rev: undefined }); // toggle off (the copy stays in the library)
+    const f = ed.files.get(o.assetId!), a = o.offset ?? 0, b = a + srcLen(o);
+    if (!f) return;
     ed.revPct = 0;
     ed.error = '';
-    begin('reverse', { secs: +(s.end - s.start).toFixed(1) }, ed.projectId);
+    begin('reverse', { secs: +(b - a).toFixed(1) }, ed.projectId);
     try {
-      const blob = await makeReversed(f, s.start - starts[at.index], s.end - starts[at.index], (p) => (ed.revPct = p));
-      const file = new File([blob], `${(ed.names.get(id!) ?? 'clip').replace(/\.[^.]+$/, '')} · ${t('reversed')}.mp4`, { type: 'video/mp4' });
+      const blob = await makeReversed(f, a, b, (p) => (ed.revPct = p));
+      const file = new File([blob], `${(ed.names.get(o.assetId!) ?? 'clip').replace(/\.[^.]+$/, '')} · ${t('reversed')}.mp4`, { type: 'video/mp4' });
       const r = await importFile(file);
       ed.assets = [...ed.assets, r.asset];
       ed.register(r.asset, file);
       ed.commit();
-      ed.segments = ed.segments.with(i, { ...ed.segments[i], fx: { ...ed.segments[i].fx, rev: { assetId: r.asset.id, start: s.start, end: s.end } } });
+      ed.overlays = ed.overlays.map((x) => (x.id === id ? { ...x, fx: { ...x.fx, rev: { assetId: r.asset.id, start: a, end: b } } } : x));
     } catch (e) {
       ed.error = 'err.reverse';
       logError(e, 'reverse');
@@ -165,21 +172,21 @@ export function createJobs(ed: Ed) {
     ed.spkMsg = ed.error = '';
     begin('speakers', { captions: ed.captions.length }, ed.projectId);
     try {
-      const starts = clipBases(ed.clips, ed.durations), pcm = new Map<string, Float32Array | null>();
+      const pcm = new Map<string, Float32Array | null>();
       const ids: string[] = [], pieces: Float32Array[] = [], spans: number[] = [], used: Unit[] = [];
       ed.spkStatus = 'st.reading';
       // Whole captions, or ~1.2s pieces of them when lines may be split at speaker changes.
       const list: Unit[] = ed.spkSplit ? units(ed.captions) : ed.captions.filter((c) => c.words.length).map((c) => ({ capId: c.id, from: 0, to: c.words.length, start: c.words[0].start, end: c.words[c.words.length - 1].end }));
       for (const u of list) {
         const c = { id: u.capId, words: [{ text: '', start: u.start, end: u.end }] };
-        const [a, b] = spanOf(c), at = clipAt(ed.clips, ed.durations, (a + b) / 2);
+        const [a, b] = spanOf(c), at = assetAtSrc(ed.assets, (a + b) / 2);
         if (!at) continue;
-        const id = ed.clips[at.index].assetId, f = ed.files.get(id);
-        if (!f || ed.kindOf(id) !== 'video' && ed.kindOf(id) !== 'audio') continue;
+        const id = at.asset.id, f = ed.files.get(id);
+        if (!f || at.asset.kind === 'image') continue;
         if (!pcm.has(id)) pcm.set(id, await decodeAudio(f).catch(() => null));
         const x = pcm.get(id);
         if (!x) continue;
-        const off = starts[at.index], i0 = Math.max(0, Math.floor((a - off) * 16000)), i1 = Math.min(x.length, Math.ceil((b - off) * 16000));
+        const off = at.asset.base!, i0 = Math.max(0, Math.floor((a - off) * 16000)), i1 = Math.min(x.length, Math.ceil((b - off) * 16000));
         if (i1 - i0 < 4000) continue; // under 0.25s of audio
         ids.push(u.capId);
         used.push(u);
@@ -204,58 +211,62 @@ export function createJobs(ed: Ed) {
       ed.spkStatus = '';
     }
   } // highlight start → new project id
-  // Loudness from the waveform peaks (sequence time): mean peak over the range, or null without audio.
+  // Loudness from the waveform peaks over an output range: mean peak of the sound playing there, or null.
   function loudness(a: number, b: number): number | null {
-    const at = clipAt(ed.clips, ed.durations, (a + b) / 2);
-    if (!at) return null;
-    const id = ed.clips[at.index].assetId, pk = ed.peaks[id], dur = ed.durations.get(id);
-    if (!pk || !dur) return null;
-    const off = clipBases(ed.clips, ed.durations)[at.index];
-    const i0 = Math.max(0, Math.floor(((a - off) / dur) * pk.length)), i1 = Math.min(pk.length, Math.ceil(((b - off) / dur) * pk.length));
+    const m = (a + b) / 2, x = ed.liveAudios.filter((y) => m >= y.at && m < y.at + itemLen(y, ed.durations.get(y.assetId) ?? 0)).sort((p, q) => trackOf(p) - trackOf(q))[0];
+    const pk = x && ed.peaks[x.assetId], dur = x && ed.durations.get(x.assetId);
+    if (!x || !pk || !dur) return null;
+    const m2 = { ...x, len: itemLen(x, dur) }, fa = fileAt(m2, a), fb = fileAt(m2, b);
+    const i0 = Math.max(0, Math.floor((fa / dur) * pk.length)), i1 = Math.min(pk.length, Math.ceil((fb / dur) * pk.length));
     let s = 0;
     for (let i = i0; i < i1; i++) s += pk[i];
     return i1 > i0 ? s / (i1 - i0) : null;
   }
-  const findClips = () => ((ed.highlights = findHighlights(keptCaptions(ed.captions, ed.segments), $state.snapshot(ed.hlOpts), loudness)), (ed.shortsMade = {}));
+  // Highlights are found in output time (the words as they play on the timeline).
+  const findClips = () => ((ed.highlights = findHighlights(captionsOut(keptCaps(ed.captions, ed.pieces).filter((c) => !c.free), ed.pieces), $state.snapshot(ed.hlOpts), loudness)), (ed.shortsMade = {}));
   const setHlLen = (min: number, max: number) => ((ed.hlOpts.min = min), (ed.hlOpts.max = max), findClips());
   async function makeAllShorts() {
     for (const [i, h] of (ed.highlights ?? []).entries()) if (!ed.shortsMade[h.start]) { ed.hlBusy = t('hlMaking', { n: i + 1 }); await makeShort(h, i + 1); }
     ed.hlBusy = '';
   }
   function previewClip(h: Highlight) {
-    ed.seek(h.start);
+    ed.seekOut(h.start);
     if (!ed.player.playing) ed.toggle();
   }
   async function makeShort(h: Highlight, n: number) {
     const durOf = (id: string) => ed.durations.get(id) ?? 0;
-    const cut = shortOf($state.snapshot({ segments: ed.segments, overlays: ed.overlays, audios: ed.audios, captions: ed.captions }), h.start, h.end, (x) => itemLen(x, durOf(x.assetId)));
+    const cut = shortOf($state.snapshot({ overlays: ed.overlays, audios: ed.audios, captions: ed.captions }) as Parameters<typeof shortOf>[0], ed.pieces, h.start, h.end, (x) => itemLen(x, durOf(x.assetId)));
     if (ed.hlReframe) {
-      // Find the person in each strip of the short (the segmenter downloads once), so 9:16 keeps them in frame.
+      // Find the person in each video of the short (the segmenter downloads once), so 9:16 keeps them in frame.
       ed.hlBusy = t('hlReframing');
-      for (const [k, sg] of cut.segments.entries()) {
-        const f = await focusOfSeg(sg).catch(() => null);
-        if (f) cut.segments[k] = { ...sg, fx: { ...sg.fx, focus: f } };
+      for (const [k, o] of cut.overlays.entries()) {
+        if (o.kind !== 'video' || !o.fill) continue;
+        const f = await focusOfItem(o).catch(() => null);
+        if (f) cut.overlays[k] = { ...o, fx: { ...o.fx, focus: f } };
       }
       ed.hlBusy = '';
     }
     const title = `${ed.name || t('untitled')} · ${t('short')} ${n}`;
     const doc: ProjectDoc = {
-      ...$state.snapshot({ style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, clipVolume: ed.clipVolume, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise }),
-      ...cut, name: title, luts: ed.luts.map((l) => ({ id: l.id, name: l.name })), aspect: '9:16', words: ed.wordCache,
+      ...$state.snapshot({ style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clipVolume: ed.clipVolume, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks }),
+      ...cut, v: DOC_VERSION, name: title, luts: ed.luts.map((l) => ({ id: l.id, name: l.name })), aspect: '9:16', words: ed.wordCache,
     };
     const meta = await createProject(title);
-    await saveDoc(meta.id, doc, { duration: h.end - h.start, clips: ed.clips.length });
+    await saveDoc(meta.id, doc, { duration: h.end - h.start, clips: cut.overlays.length });
     ed.shortsMade = { ...ed.shortsMade, [h.start]: meta.id };
   }
+  // Transcribe the videos on the timeline (every one, or just the chosen item's file). Words are cached per file
+  // in file time; captions keep the words inside the parts of each file the timeline uses, in source time.
   async function run() {
     if (!ed.hasMedia) return;
     ed.busy = true;
     ed.error = ed.notice = '';
     const lang = ed.language ?? 'auto';
-    const chosen = ed.targetClip ? [ed.targetClip] : ed.clips;
+    const vids = ed.overlays.filter((o) => o.kind === 'video' && o.assetId && !o.fx?.hold && !o.fx?.rev);
+    const chosen = ed.targetClip ? vids.filter((o) => o.id === ed.targetClip!.id) : vids;
     begin('transcribe', { clips: chosen.length, language: lang }, ed.projectId);
     try {
-      const ids = [...new Set(chosen.map((c) => c.assetId))].filter((id) => id && ed.kindOf(id) !== 'image'); // stills and gaps have no sound
+      const ids = [...new Set(chosen.map((o) => o.assetId!))];
       for (let k = 0; k < ids.length; k++) {
         const key = `${ids[k]}|${lang}`, f = ed.files.get(ids[k]);
         if (ed.wordCache[key] || !f) continue;
@@ -266,27 +277,26 @@ export function createJobs(ed: Ed) {
           ed.wordCache[key] = []; // a silent clip just has no words
         }
       }
-      const starts = clipStarts(ed.clips, ed.durations), bases = clipBases(ed.clips, ed.durations);
-      // Words are cached in file time. Keep those inside the part of the file the clip shows (this also drops
-      // timestamps Whisper hallucinates past the end of short or silent clips).
-      const wordsOf = (c: Clip) => {
-        const i = ed.clips.indexOf(c), a = c.in ?? 0, b = a + clipLen(ed.durations, c);
-        return (ed.wordCache[`${c.assetId}|${lang}`] ?? [])
-          .filter((w) => w.start >= a - 1e-6 && w.start < b)
-          .map((w) => ({ ...w, start: w.start + bases[i], end: Math.min(w.end, b) + bases[i] }));
+      // Each file's words between the first and last moment the timeline uses of it (this also drops timestamps
+      // Whisper hallucinates past the end of short or silent clips).
+      const wordsOf = (id: string, items: Overlay[]): Word[] => {
+        const base = ed.assets.find((a) => a.id === id)?.base ?? 0;
+        const lo = Math.min(...items.map((o) => o.offset ?? 0)), hi = Math.max(...items.map((o) => (o.offset ?? 0) + srcLen(o)));
+        return (ed.wordCache[`${id}|${lang}`] ?? []).filter((w) => w.start >= lo - 1e-6 && w.start < hi)
+          .map((w) => ({ ...w, start: w.start + base, end: Math.min(w.end, hi) + base }));
       };
-      const fresh = groupWords(chosen.flatMap(wordsOf));
+      const fresh = groupWords(ids.flatMap((id) => wordsOf(id, chosen.filter((o) => o.assetId === id))).sort((a, b) => a.start - b.start));
       if (ed.targetClip) {
-        const i = ed.clips.indexOf(ed.targetClip);
-        ed.setCaps(replaceInRange(ed.captions, fresh, starts[i], starts[i] + clipLen(ed.durations, ed.targetClip)));
+        const o = ed.targetClip, base = ed.assets.find((a) => a.id === o.assetId)?.base ?? 0;
+        ed.setCaps(replaceInRange(ed.captions, fresh, base + (o.offset ?? 0), base + (o.offset ?? 0) + srcLen(o)));
         if (!fresh.length) ed.error = 'noSpeech';
       } else {
-        ed.setCaps(fresh);
-        if (!ed.captions.length) ed.error = 'noSpeech';
+        ed.setCaps([...ed.captions.filter((c) => c.free), ...fresh]);
+        if (!fresh.length) ed.error = 'noSpeech';
       }
       // Auto clean-up: cut fillers and long pauses straight away (one more undo step, so it can be undone alone).
-      if (cleanup.auto && ed.captions.length) {
-        const r = cleanupRanges(ed.captions.flatMap((c) => c.words), ed.duration, ed.segments);
+      if (cleanup.auto && fresh.length) {
+        const r = cleanupRanges(fresh.flatMap((c) => c.words), ed.pieces);
         if (r.fillers.length || r.silences.length) ed.cutRanges([...r.fillers, ...r.silences]);
       }
     } catch (e) {
@@ -297,38 +307,38 @@ export function createJobs(ed: Ed) {
       ed.busy = false;
     }
   }
+  // Cut silences from the sound itself (no transcript): quiet stretches in the part of each video the timeline plays.
   async function cutAudioSilences() {
     if (!ed.hasMedia || ed.silBusy) return;
     ed.silBusy = true;
     ed.error = ed.notice = '';
     try {
-      const bases = clipBases(ed.clips, ed.durations), byAsset = new Map<string, [number, number][]>();
+      const byAsset = new Map<string, [number, number][]>();
       const ranges: [number, number][] = [];
-      for (let i = 0; i < ed.clips.length; i++) {
-        const id = ed.clips[i].assetId, f = ed.files.get(id), lo = ed.clips[i].in ?? 0, hi = lo + clipLen(ed.durations, ed.clips[i]);
-        if (!f || ed.kindOf(id) === 'image') continue;
-        if (!byAsset.has(id)) byAsset.set(id, await fileSilences(f, cleanup.db, cleanup.min, cleanup.pad).catch(() => []));
-        for (const [a, b] of byAsset.get(id)!) if (a < hi && b > lo) ranges.push([bases[i] + Math.max(a, lo), bases[i] + Math.min(b, hi)]);
+      for (const o of ed.overlays) {
+        const id = o.assetId, f = id && ed.files.get(id), base = ed.assets.find((a) => a.id === id)?.base;
+        if (o.kind !== 'video' || !f || base === undefined || o.fx?.hold || o.fx?.rev) continue;
+        const lo = o.offset ?? 0, hi = lo + srcLen(o);
+        if (!byAsset.has(id!)) byAsset.set(id!, await fileSilences(f, cleanup.db, cleanup.min, cleanup.pad).catch(() => []));
+        for (const [a, b] of byAsset.get(id!)!) if (a < hi && b > lo) ranges.push([base + Math.max(a, lo), base + Math.min(b, hi)]);
       }
-      const fresh = ranges.filter(([a, b]) => !isCut(ed.segments, { start: a, end: b }));
+      const fresh = ranges.filter(([a, b]) => !isCutW(ed.pieces, { start: a, end: b }));
       if (fresh.length) ed.cutRanges(fresh);
       else ed.error = 'noSilence';
     } finally {
       ed.silBusy = false;
     }
   }
-  const focusOf = (i: number) => focusOfSeg(ed.segments[i]);
-  async function focusOfSeg(s: Segment): Promise<{ x: number; y: number } | null> {
-    const starts = clipStarts(ed.clips, ed.durations);
-    const ci = ed.clips.findIndex((_, k) => s.start >= starts[k] - 1e-6 && s.start < starts[k] + clipLen(ed.durations, ed.clips[k]));
-    if (ci < 0) return null;
+  // Where the person is in a video item: the median of the subject's centre over five frames of it.
+  async function focusOfItem(o: Overlay): Promise<{ x: number; y: number } | null> {
+    if (o.kind !== 'video' || !o.assetId) return null;
     const v = document.createElement('video');
     v.muted = true;
-    v.src = ed.urls[ed.clips[ci].assetId];
+    v.src = ed.urls[o.assetId];
     await new Promise((r, j) => ((v.onloadeddata = r), (v.onerror = j)));
     const xs: number[] = [], ys: number[] = [];
     for (let k = 0; k < 5; k++) {
-      v.currentTime = s.start - starts[ci] + (ed.clips[ci].in ?? 0) + ((k + 0.5) / 5) * (s.end - s.start);
+      v.currentTime = fileAt(o, o.at + ((k + 0.5) / 5) * o.len);
       await new Promise((r) => (v.onseeked = r));
       const c = await subjectCenter(v, v.videoWidth, v.videoHeight).catch(() => null);
       if (c) (xs.push(c.x), ys.push(c.y));
@@ -336,35 +346,42 @@ export function createJobs(ed: Ed) {
     v.removeAttribute('src');
     return xs.length ? { x: median(xs), y: median(ys) } : null;
   }
-  async function autoReframe(i: number) {
+  async function autoReframe(id: string) {
+    const o = ed.overlays.find((x) => x.id === id);
+    if (!o) return;
     ed.reframing = true;
     ed.error = '';
     try {
-      const f = await focusOf(i);
+      const f = await focusOfItem(o);
       if (!f) return void (ed.error = 'noPerson');
       ed.commit();
-      ed.segments = ed.segments.with(i, { ...ed.segments[i], fx: { ...ed.segments[i].fx, focus: f } });
+      ed.overlays = ed.overlays.map((x) => (x.id === id ? { ...x, fx: { ...x.fx, focus: f } } : x));
     } catch {
       ed.error = 'noPerson';
     } finally {
       ed.reframing = false;
     }
   }
+  // Every video that fills the frame.
   async function autoReframeAll() {
     ed.reframing = true;
     try {
-      const fs: ({ x: number; y: number } | null)[] = [];
-      for (let i = 0; i < ed.segments.length; i++) fs.push(await focusOf(i).catch(() => null));
+      const fs = new Map<string, { x: number; y: number }>();
+      for (const o of ed.overlays) if (o.kind === 'video' && o.fill) {
+        const f = await focusOfItem(o).catch(() => null);
+        if (f) fs.set(o.id, f);
+      }
       ed.commit();
-      ed.segments = ed.segments.map((s, i) => (fs[i] ? { ...s, fx: { ...s.fx, focus: fs[i]! } } : s));
+      ed.overlays = ed.overlays.map((x) => (fs.has(x.id) ? { ...x, fx: { ...x.fx, focus: fs.get(x.id) } } : x));
     } finally {
       ed.reframing = false;
     }
   }
+  // The selected item's colour on every video and picture.
   function colorToAll() {
     ed.commit();
     const color = $state.snapshot(ed.selColor);
-    ed.segments = ed.segments.map((s) => ({ ...s, fx: { ...s.fx, color } }));
+    ed.overlays = ed.overlays.map((x) => (x.kind === 'text' ? x : { ...x, fx: { ...x.fx, color } }));
   }
   async function translateAll() {
     if (!ed.captions.length) return;
@@ -396,13 +413,15 @@ export function createJobs(ed: Ed) {
       ed.beatBusy = false;
     }
   }
-  // Split the main video on every beat of the selected music (every `every`-th beat).
+  // Split the videos on V1 on every beat of the selected music (every `every`-th beat).
   function cutOnBeats(item: AudioItem, every = 1) {
     const a = ed.assets.find((x) => x.id === item.assetId);
     if (!a?.beats) return;
-    const off = item.offset ?? 0, len = itemLen(item, a.duration), end = outDuration(ed.segments);
-    const outs = a.beats.filter((_, i) => i % every === 0).map((b) => item.at + b - off).filter((t) => t > item.at && t < Math.min(item.at + len, end));
-    ed.setSegs(outs.reduce((s, o) => splitAt(s, toSource(s, o)), ed.segments));
+    const off = item.offset ?? 0, len = itemLen(item, a.duration);
+    const outs = a.beats.filter((_, i) => i % every === 0).map((b) => item.at + b - off).filter((t) => t > item.at && t < item.at + len);
+    const ids = () => ed.overlays.filter((o) => trackOf(o) === 0 && o.kind !== 'text').map((o) => o.id);
+    ed.commit();
+    for (const t of outs) ed.splitItems(ids(), t, false);
   }
 
   return { aimZooms, stabilize, reverseStrip, renderItem, setVoiceFx, detectSpeakers, findClips, setHlLen, makeAllShorts, previewClip, makeShort, run, cutAudioSilences, autoReframe, autoReframeAll, colorToAll, translateAll, detectBeatsFor, cutOnBeats };

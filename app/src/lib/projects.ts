@@ -1,5 +1,7 @@
 // Projects: each one is a doc in IndexedDB (`doc:<id>`) plus media files (`asset:<assetId>`),
 // listed in `projects`. A project can also be packed into a single `.sonant` file and opened anywhere.
+import { migrateDoc, DOC_VERSION } from './migrate.ts';
+import { timelineEnd } from './model.ts';
 import * as store from './store.ts';
 import type { Lut } from './grade.ts';
 import type { Caption, Word } from './captions';
@@ -9,8 +11,10 @@ import type { Asset, AudioItem, Clip } from './project';
 import type { Overlay } from './overlay';
 
 export type ProjectDoc = {
-  name: string; captions: Caption[]; segments: Segment[]; style: Style; language: 'english' | 'spanish' | null;
-  speakers?: string[]; assets?: Asset[]; clips?: Clip[]; audios?: AudioItem[]; clipVolume?: number; overlays?: Overlay[]; showTr?: boolean; denoise?: number; /* AI noise reduction mix for the clips' sound, 0 = off */ autoZoom?: import('./autozoom').AutoZoom | null; luts?: { id: string; name: string }[]; aspect?: import('./export').Aspect; words?: Record<string, Word[]>; tracks?: import('./tracks').Tracks;
+  v?: number; /* doc version: 2 = every track works the same (model.ts); older docs are upgraded on load (migrate.ts) */
+  name: string; captions: Caption[]; style: Style; language: 'english' | 'spanish' | null;
+  segments?: Segment[]; clips?: Clip[]; /* version 1 only: the V1 sequence */
+  speakers?: string[]; assets?: Asset[]; audios?: AudioItem[]; clipVolume?: number; overlays?: Overlay[]; showTr?: boolean; denoise?: number; /* AI noise reduction mix for the clips' sound, 0 = off */ autoZoom?: import('./autozoom').AutoZoom | null; luts?: { id: string; name: string }[]; aspect?: import('./export').Aspect; words?: Record<string, Word[]>; tracks?: import('./tracks').Tracks;
 };
 export type ProjectMeta = { id: string; name: string; created: number; updated: number; duration: number; clips: number; thumb?: string };
 
@@ -33,7 +37,7 @@ export async function saveDoc(id: string, doc: ProjectDoc, meta: Partial<Project
 
 export async function createProject(name = ''): Promise<ProjectMeta> {
   const meta: ProjectMeta = { id: crypto.randomUUID(), name, created: Date.now(), updated: Date.now(), duration: 0, clips: 0 };
-  await store.set('doc:' + meta.id, { name, captions: [], segments: [], language: null } as unknown as ProjectDoc);
+  await store.set('doc:' + meta.id, { v: DOC_VERSION, name, captions: [], language: null } as unknown as ProjectDoc);
   await putList([...(await listProjects()), meta]);
   return meta;
 }
@@ -186,12 +190,13 @@ export async function unpackProject(file: Blob): Promise<{ doc: ProjectDoc; file
 // Give every media file a fresh id (so an opened project never clashes with existing ones) and update references.
 export function reassignIds(doc: ProjectDoc, map: Map<string, string>): ProjectDoc {
   const id = (x: string) => map.get(x) ?? x;
+  const fxIds = (fx: import('./cuts').Fx) => ({ ...fx, ...(fx.bgImage && { bgImage: id(fx.bgImage) }), ...(fx.rev && { rev: { ...fx.rev, assetId: id(fx.rev.assetId) } }) });
   return {
     ...doc,
     assets: (doc.assets ?? []).map((a) => ({ ...a, id: id(a.id) })),
     clips: (doc.clips ?? []).map((c) => ({ ...c, assetId: id(c.assetId) })),
-    audios: (doc.audios ?? []).map((a) => ({ ...a, assetId: id(a.assetId) })),
-    overlays: (doc.overlays ?? []).map((o) => (o.assetId ? { ...o, assetId: id(o.assetId) } : o)),
+    audios: (doc.audios ?? []).map((a) => ({ ...a, assetId: id(a.assetId), ...(a.src && { src: id(a.src) }), ...(a.fx && { fx: fxIds(a.fx) }) })),
+    overlays: (doc.overlays ?? []).map((o) => ({ ...o, ...(o.assetId && { assetId: id(o.assetId) }), ...(o.fx && { fx: fxIds(o.fx) }) })),
     segments: (doc.segments ?? []).map((s) => (s.fx?.bgImage ? { ...s, fx: { ...s.fx, bgImage: id(s.fx.bgImage) } } : s)),
     words: Object.fromEntries(Object.entries(doc.words ?? {}).map(([k, v]) => {
       const [aid, lang] = k.split('|');
@@ -216,15 +221,17 @@ export async function importProjectFile(file: Blob): Promise<ProjectMeta> {
   const { doc, files, luts } = await unpackProject(file);
   for (const l of luts) await store.set('lut:' + l.id, l);
   const map = new Map([...files.keys()].map((k) => [k, crypto.randomUUID()]));
-  const fresh = reassignIds(doc, map);
+  const fresh = migrateDoc(reassignIds(doc, map));
   // Drop media the file didn't include, so nothing points at a missing file.
   const included = new Set<string>(map.values());
   fresh.assets = (fresh.assets ?? []).filter((a) => included.has(a.id));
   for (const [old, f] of files) await store.set('asset:' + map.get(old), f);
   const meta = await createProject(fresh.name ?? '');
   const ids = new Set(fresh.assets.map((a) => a.id));
-  const dur = (fresh.clips ?? []).reduce((n, c) => n + (fresh.assets!.find((a) => a.id === c.assetId)?.duration ?? 0), 0);
-  await saveDoc(meta.id, { ...fresh, clips: (fresh.clips ?? []).filter((c) => ids.has(c.assetId)) }, { duration: dur, clips: fresh.clips?.length ?? 0 });
+  fresh.overlays = (fresh.overlays ?? []).filter((o) => !o.assetId || ids.has(o.assetId));
+  fresh.audios = (fresh.audios ?? []).filter((a) => ids.has(a.assetId));
+  const dur = timelineEnd({ overlays: fresh.overlays, audios: fresh.audios }, (x) => fresh.assets!.find((a) => a.id === x)?.duration ?? 0);
+  await saveDoc(meta.id, fresh, { duration: dur, clips: fresh.overlays.filter((o) => o.kind !== 'text').length });
   return meta;
 }
 

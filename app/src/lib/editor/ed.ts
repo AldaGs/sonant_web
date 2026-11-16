@@ -3,8 +3,8 @@
 import { type Caption, type Word } from '../captions';
 import { type Style } from '../render';
 import { type Font, type SavedFont } from '../fonts';
-import { type Segment, type Fx } from '../cuts';
-import { type Asset, type Clip, type AudioItem } from '../project';
+import { type Fx } from '../cuts';
+import { type Asset, type AudioItem } from '../project';
 import { Player } from '../player';
 import { Transitioner } from '../transitions';
 import { Grader, type Color, type Lut } from '../grade';
@@ -16,16 +16,16 @@ import { type AutoZoom } from '../autozoom';
 import { type Template } from '../templates';
 import { type Overlay, type Transform } from '../overlay';
 import { type Thumb } from '../thumbs';
+import { type Piece } from '../model';
 import type TranscriptView from '../TranscriptView.svelte';
 import { type Version } from '../projects';
 
 /** An undo step: the editable parts of the project. */
-export type Snap = { segments: Segment[]; captions: Caption[]; clips: Clip[]; audios: AudioItem[]; overlays: Overlay[] };
+export type Snap = { captions: Caption[]; audios: AudioItem[]; overlays: Overlay[] };
 
 export interface Ed {
   readonly PIC_MAX: number;
   readonly addAudio: (assetId: string, at?: number) => void;
-  readonly addClip: (assetId: string) => void;
   readonly addOverlay: (a: Asset, at?: number, pip?: boolean) => void;
   readonly addText: () => void;
   aimBusy: boolean;
@@ -41,20 +41,21 @@ export interface Ed {
   capInZone: boolean;
   captions: Caption[];
   readonly cleanBlobs: Map<string, Blob>;
+  readonly cleanUrls: Record<string, string>; // assetId → noise-reduced sound (object URL)
   cleanPct: number | null;
   readonly clearCapSelection: () => never[];
   clipVolume: number;
-  clips: Clip[];
   readonly commit: () => void;
   readonly cutHere: () => void;
-  readonly insertClip: (assetId: string, out: number) => void;
   readonly cutAll: () => unknown;
-  readonly cutRanges: (r: [number, number][]) => false | Segment[];
+  readonly cutRanges: (r: [number, number][]) => boolean; // source time: delete words (ripple)
+  readonly cutOutRange: (a: number, b: number) => void; // output time, every unlocked track
   readonly deleteSelected: () => boolean;
   denoise: number;
-  readonly displayCaps: Caption[];
+  readonly displayCaps: Caption[]; // output time, without cut words (translated when that's on)
   readonly doneEditing: () => boolean;
-  readonly duration: number;
+  readonly dropAsset: (a: Asset, zone: 'v' | 'a', track: number, out: number, exact?: boolean) => void;
+  readonly duration: number; // where the timeline ends
   readonly durations: Map<string, number>;
   readonly endPick: () => void;
   error: string;
@@ -67,8 +68,6 @@ export interface Ed {
   future: Snap[];
   readonly grader: Grader;
   readonly hasMedia: boolean;
-  readonly hasVideoClip: () => boolean;
-  readonly layersEnd: number; // output time the last layer or audio item ends (V1 is padded to it)
   highlights: Highlight[] | null;
   readonly histDialog: HTMLDialogElement | undefined;
   hlBusy: string;
@@ -80,7 +79,7 @@ export interface Ed {
   liveMsg: string;
   readonly lutMap: Map<string, Lut>;
   luts: Lut[];
-  marks: [number | null, number | null];
+  marks: [number | null, number | null]; // I/O, output time
   myTemplates: Template[];
   name: string;
   readonly names: Map<string, string>;
@@ -89,10 +88,11 @@ export interface Ed {
   readonly outNow: () => number;
   readonly outTime: number;
   overlays: Overlay[];
+  readonly pieces: Piece[]; // what plays each moment of each file (captions → timeline)
   tracks: import('../tracks').Tracks;
   tool: import('../tools').Tool;
   readonly rippleDeleteSel: () => boolean;
-  readonly shownOverlays: Overlay[]; // overlays not on a hidden track
+  readonly shownOverlays: Overlay[]; // items not on a hidden track
   readonly liveAudios: AudioItem[]; // audio items not on a muted track
   past: Snap[];
   paused: boolean;
@@ -115,13 +115,9 @@ export interface Ed {
   readonly saveToFile: (again?: boolean) => Promise<void>;
   savedFonts: SavedFont[];
   saving: boolean;
-  readonly seek: (s: number) => number;
   readonly seekOut: (o: number) => void;
-  segments: Segment[];
   readonly selColor: Color;
-  readonly selFx: Fx | null;
   readonly selOverlay: Overlay | null;
-  selected: number;
   selectedAudio: string;
   readonly selectedCap: Caption | null;
   readonly selectedCapId: string | null;
@@ -131,9 +127,8 @@ export interface Ed {
   readonly selectedSet: Set<string>;
   readonly setAudio: (id: string, patch: Partial<AudioItem>) => AudioItem[];
   readonly setCaps: (c: Caption[]) => Caption[];
-  readonly setFx: (p: Partial<Fx>) => false | Segment[];
+  readonly setFx: (p: Partial<Fx>, live?: boolean) => boolean;
   readonly setOverlay: (id: string, patch: Partial<Overlay>, snapshot?: boolean) => void;
-  readonly setSegs: (s: Segment[]) => false | Segment[];
   readonly setTf: (id: string, tf: Partial<Transform>, snapshot?: boolean) => void;
   sheet: "style" | "text" | "assets" | null;
   shortsMade: Record<number, string>;
@@ -148,14 +143,15 @@ export interface Ed {
   spkPct: number;
   readonly spkSplit: boolean;
   spkStatus: string;
+  readonly splitItems: (ids: string[], t: number, snapshot?: boolean) => number;
   stabPct: number | null;
   status: string;
   style: Style;
   tab: "captions" | "transcript";
-  readonly targetClip: Clip | null;
+  readonly targetClip: Overlay | null; // the video item to transcribe alone (null: all of them)
   readonly tc: (s: number) => string;
   readonly thumbs: Record<string, Thumb[]>;
-  time: number;
+  time: number; // output time of the playhead
   readonly toggle: () => boolean;
   trBusy: boolean;
   readonly trDir: Dir;
@@ -166,5 +162,5 @@ export interface Ed {
   versions: Version[];
   vfxBusy: boolean;
   wordCache: Record<string, Word[]>;
-  readonly zooms: import("../autozoom").ZoomMoment[];
+  readonly zooms: import("../autozoom").ZoomMoment[]; // output time
 }

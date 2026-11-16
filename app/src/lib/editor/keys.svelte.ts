@@ -1,17 +1,16 @@
 // Keyboard shortcuts for the editor.
 import { TOOL_KEYS } from '../tools';
-import { cutRange } from '../cuts';
 import { t } from '../i18n.svelte';
 import type { Ed } from './ed';
 
 export function createKeys(ed: Ed) {
   const FRAME = 1 / 30;
-  const step = (d: number) => (ed.player.playing && ed.player.pause(), (ed.paused = true), ed.seek(ed.time + d));
-  // Cut the I/O range (ripple: later material slides left).
+  const step = (d: number) => (ed.player.playing && ed.player.pause(), (ed.paused = true), ed.seekOut(ed.outNow() + d));
+  // Cut the I/O range from every unlocked track (ripple: later material slides left).
   function cutMarks() {
     const [a, b] = ed.marks;
-    if (a === null || b === null) return false;
-    ed.setSegs(cutRange(ed.segments, Math.min(a, b), Math.max(a, b)));
+    if (a === null || b === null || Math.abs(b - a) < 0.02) return false;
+    ed.cutOutRange(Math.min(a, b), Math.max(a, b));
     ed.marks = [null, null];
     ed.announce(t('a11y.rangeCut'));
     return true;
@@ -32,20 +31,21 @@ export function createKeys(ed: Ed) {
     else if (e.key.toLowerCase() === 's') e.shiftKey ? ed.cutAll() : ed.cutHere();
     else if (e.key === 'Escape' && ed.pickKey) ed.endPick();
     else if (e.key === 'Escape') (ed.deselect(), (ed.marks = [null, null]));
-    else if ((e.key === 'Delete' || e.key === 'Backspace') && e.shiftKey && ed.selFx) ed.setFx({ lift: !ed.selFx.lift || undefined });
+    // Delete leaves a gap; Shift+Delete (or Delete with the ripple tool) closes it up.
+    else if ((e.key === 'Delete' || e.key === 'Backspace') && (e.shiftKey || ed.tool === 'ripple') && ed.rippleDeleteSel()) return;
     else if (e.key === 'Delete' || e.key === 'Backspace')
-      cutMarks() || (ed.tool === 'ripple' && ed.rippleDeleteSel()) || ed.removeOverlay() || (ed.tab === 'transcript' && ed.transcriptView?.toggleSelection()) || ed.removeAudioItem() || ed.deleteSelected();
+      cutMarks() || ed.removeOverlay() || (ed.tab === 'transcript' && ed.transcriptView?.toggleSelection()) || ed.removeAudioItem();
     // The timeline and the preview canvas handle their own arrows (seek / nudge caption).
     else if (e.key.startsWith('Arrow') && (e.target as HTMLElement).closest?.('.tl, canvas')) return;
     else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
       (e.preventDefault(), step((e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 1 : FRAME)));
-    else if (e.key === 'Home') (e.preventDefault(), ed.seek(0));
-    else if (e.key === 'End') (e.preventDefault(), ed.seek(ed.duration));
+    else if (e.key === 'Home') (e.preventDefault(), ed.seekOut(0));
+    else if (e.key === 'End') (e.preventDefault(), ed.seekOut(ed.duration));
     else if (e.key.toLowerCase() === 'k') (ed.player.pause(), (ed.paused = true));
     else if (e.key.toLowerCase() === 'l') (ed.player.play(), (ed.paused = !ed.player.playing));
-    else if (e.key.toLowerCase() === 'j') ed.seek(ed.time - (e.shiftKey ? 5 : 1));
-    else if (e.key.toLowerCase() === 'i') ((ed.marks = [ed.time, ed.marks[1]]), ed.announce(t('a11y.markIn', { t: ed.tc(ed.outTime) })));
-    else if (e.key.toLowerCase() === 'o') ((ed.marks = [ed.marks[0], ed.time]), ed.announce(t('a11y.markOut', { t: ed.tc(ed.outTime) })));
+    else if (e.key.toLowerCase() === 'j') ed.seekOut(ed.outNow() - (e.shiftKey ? 5 : 1));
+    else if (e.key.toLowerCase() === 'i') ((ed.marks = [ed.outNow(), ed.marks[1]]), ed.announce(t('a11y.markIn', { t: ed.tc(ed.outNow()) })));
+    else if (e.key.toLowerCase() === 'o') ((ed.marks = [ed.marks[0], ed.outNow()]), ed.announce(t('a11y.markOut', { t: ed.tc(ed.outNow()) })));
     else if (e.key.toLowerCase() === 'x') cutMarks();
     else if (e.key.toLowerCase() === 'n') ((ed.snapOn = !ed.snapOn), ed.announce(t(ed.snapOn ? 'a11y.on' : 'a11y.off', { what: t('snap') })));
     else if (e.key.toLowerCase() === 'a') ((ed.autoSelect = !ed.autoSelect), ed.announce(t(ed.autoSelect ? 'a11y.on' : 'a11y.off', { what: t('autoSelect') })));
