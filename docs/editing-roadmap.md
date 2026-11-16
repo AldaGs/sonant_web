@@ -1,7 +1,7 @@
 # Pro editing roadmap
 
 Goal: make Sonant a complete video editor with NLE-style (Premiere-like) editing, on top of the
-multi-track timeline (V1/A1 main sequence, V2… layers, A2… music & VO, see `app/src/lib/tracks.ts`).
+multi-track timeline (every track works the same, see `app/src/lib/model.ts` and `tracks.ts`).
 
 Phases are ordered by dependency: each one builds on helpers from the previous.
 
@@ -58,15 +58,17 @@ import as before.
   under the pointer (V1 = append/insert into the sequence) and audio on the A track, at the drop time.
 - Dropping over an occupied spot opens a new track at that position (`moveToTrack` already does this).
 
-## Phase 7 — Media bin and gaps on V1  ✅ done
-Done: importing only adds to the Media panel (drop files anywhere in the editor); nothing is auto-placed. Media is dragged
-onto any track; layers are full frame by default (`fitMedia`), PiP only from the panel's PiP button. V1 can hold gaps:
-`gaps.ts` (gap clips with `assetId: ''`, `placeClip`, `tidyGaps`) with tests. A gap is one lifted strip, so the player,
-preview, captions and export need no special case. Dropping/moving a V1 clip into empty time keeps it there; moving one
-leaves a gap; deleting a gap closes it. A trailing gap pads V1 to the end of the last layer/audio item, so a timeline of
-only layers plays and exports.
-Still open: text and layers placed on V1 itself, and dragging a clip between V1 and V2+ (V1 stays the transcript-driven
-main sequence).
+## Phase 7 — Media bin and drag-and-drop import  ✅ done
+Importing only adds to the Media panel (drop files anywhere in the editor); nothing is auto-placed.
+
+## Phase 8 — Every track works the same  ✅ done
+V1 is an ordinary track (`model.ts`, with tests). Video tracks hold video, pictures and text anywhere in output time;
+audio tracks hold sound, and a video's sound is a linked item. Per-strip effects moved onto items (`fx`); media can
+fill the frame (`fill`) or be placed freely. Captions are in source time (each asset has a fixed `base`), so they
+follow their footage; deleting words ripple-cuts the item that plays them (and its partner) on their tracks,
+restoring them puts the footage back. Preview and export share `compose.ts`; the player pools media elements per
+file. Version 1 projects are upgraded on load (`migrate.ts`).
+Still open: ripple across tracks that aren't linked (a "sync lock"), and moving captions with an item copied twice.
 
 ## Next ideas
 - Roll and slip on V1 strips; automatic cross-dissolve between touching items on a track.

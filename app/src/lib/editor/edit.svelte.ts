@@ -141,7 +141,7 @@ export function createEdit(ed: Ed) {
   function freezeHere(secs = 1) {
     const at = ed.outNow();
     const v = [ed.selOverlay, ...ed.shownOverlays.filter((x) => x.kind === 'video').sort((a, b) => trackOf(a) - trackOf(b))]
-      .find((x) => x && x.kind === 'video' && !x.fx?.hold && at > x.at + 0.05 && at < x.at + x.len - 0.05);
+      .find((x) => x && x.kind === 'video' && !x.fx?.hold && at >= x.at - 1e-3 && at < x.at + x.len - 0.05); // at its very start: a hold of its first frame
     if (!v) return false;
     commit();
     ed.splitItems([v.id], at, false);
