@@ -3,7 +3,7 @@
   import { begin, end, logError } from './crash';
   import { exportVideo, outputSize, type Aspect, type Res, type Quality, type ExportSource } from './export';
   import type { Caption } from './captions';
-  import type { Segment } from './cuts';
+  import { outLen, type Segment } from './cuts';
   import type { Style } from './render';
   import { t } from './i18n.svelte';
 
@@ -85,7 +85,7 @@
     const t0 = performance.now();
     // A note in case the tab runs out of memory and dies: the next load says what was being exported.
     const src0 = source();
-    begin('export', { res, aspect, fps, quality, length: `${Math.round(segments.reduce((a, s) => a + (s.fx?.hold ?? (s.end - s.start) / (s.fx?.speed ?? 1)), 0))}s`,
+    begin('export', { res, aspect, fps, quality, length: `${Math.round(segments.reduce((a, s) => a + outLen(s), 0))}s`,
       clips: src0.clips.length, layers: src0.overlays?.length ?? 0, loudness, voice });
     try {
       // Snapshot so edits during export don't change what's being rendered.

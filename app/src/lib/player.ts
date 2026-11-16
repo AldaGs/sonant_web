@@ -1,6 +1,6 @@
 import { DUCK_LEVEL, clipAt, clipLen, clipStarts, clipBases, itemLen, type AudioItem, type Clip } from './project';
 import { envelopeAt, hasEnvelope } from './layertrans';
-import { nextKept, toOutput, toSource, outDuration, segAt, type Segment } from './cuts';
+import { nextKept, rateAt, toOutput, toSource, outDuration, segAt, type Segment } from './cuts';
 import type { Overlay } from './overlay';
 import { duckGain } from './audio';
 import { setVolume, unlockAudio } from './mediavol.ts';
@@ -148,7 +148,7 @@ export class Player {
       setVolume(el, vol);
       el.muted = !!clean; // the cleaned copy plays the sound instead
       const seg = segAt(s.segments, this.t);
-      const rate = seg?.fx?.speed ?? 1;
+      const rate = seg ? rateAt(seg, this.t) : 1; // re-read every frame, so ramps glide
       if (el.playbackRate !== rate) el.playbackRate = rate; // pitch is preserved by the browser
       const frozen = !!seg?.fx?.hold;
       const target = this.pending.get(el) ?? el.currentTime;

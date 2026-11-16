@@ -540,7 +540,7 @@
 
   function edge(e: PointerEvent, i: number, side: 'start' | 'end') {
     const s0 = segments[i], pts = srcPoints('', i); // captured at drag start, so the preview seek doesn't move the target
-    const k = s0.fx?.speed ?? 1; // dragging an edge of a sped-up strip moves source time faster
+    const k = s0.fx?.hold ? 1 : (s0.end - s0.start) / outLen(s0); // dragging an edge of a sped-up strip moves source time faster
     drag(e, (d, on) => {
       const v = (side === 'start' ? s0.start : s0.end) + d * k;
       const x = v + nearest([v], pts, on, srcOut);
@@ -734,7 +734,7 @@
               {#each segThumbs(s) as th}<img src={th.url} alt="" draggable="false" />{/each}
             </div>
             {#if s.fx?.trans && i > 0}<span class="trn" title={t('trans.' + s.fx.trans)} aria-hidden="true"><Icon name="transition_fade" size={13} /></span>{/if}
-            <span class="cname">{#if s.fx?.hold}<Icon name="ac_unit" size={12} /> {s.fx.hold}s{:else}{s.fx?.lift ? t('gap') : clipName(s)}{/if}{#if s.fx?.zoom} <Icon name="zoom_in" size={12} />{/if}{s.fx?.speed ? ` ${s.fx.speed}×` : ''}</span>
+            <span class="cname">{#if s.fx?.hold}<Icon name="ac_unit" size={12} /> {s.fx.hold}s{:else}{s.fx?.lift ? t('gap') : clipName(s)}{/if}{#if s.fx?.zoom} <Icon name="zoom_in" size={12} />{/if}{s.fx?.speed || s.fx?.speedEnd ? ` ${s.fx.speed ?? 1}×${s.fx.speedEnd ? `→${s.fx.speedEnd}×` : ''}` : ''}</span>
             {#if i === selected}
               <div class="handle l" role="slider" tabindex="-1" aria-label={t('trimStart')} aria-valuenow={s.start}
                 onpointerdown={(e) => edge(e, i, 'start')}></div>

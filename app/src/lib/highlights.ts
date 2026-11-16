@@ -3,7 +3,7 @@
 // and works offline. Times are sequence time, like captions.
 import type { Caption, Word } from './captions.ts';
 import { normalize, isFiller } from './transcript.ts';
-import { toOutput, type Segment } from './cuts.ts';
+import { toOutput, outLen, type Segment } from './cuts.ts';
 import type { Overlay } from './overlay.ts';
 import type { AudioItem } from './project.ts';
 
@@ -132,7 +132,7 @@ export function shiftTimed<T extends { at: number; offset?: number }>(items: T[]
 export function shortOf(p: { segments: Segment[]; overlays: Overlay[]; audios: AudioItem[]; captions: Caption[] }, a: number, b: number, itemLen: (x: AudioItem) => number) {
   const A = toOutput(p.segments, a) ?? 0;
   const segments = clipSegments(p.segments, a, b);
-  const B = A + segments.reduce((t, s) => t + (s.fx?.hold ?? (s.end - s.start) / (s.fx?.speed ?? 1)), 0);
+  const B = A + segments.reduce((t, s) => t + outLen(s), 0);
   // Only the words inside the clip, so the short's transcript isn't the whole long video struck out.
   const inside = (w: Word) => (w.start + w.end) / 2 >= a && (w.start + w.end) / 2 < b;
   const captions = p.captions.flatMap((c) => {

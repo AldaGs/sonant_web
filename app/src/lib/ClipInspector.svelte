@@ -6,7 +6,7 @@
   import KeyControls from './KeyControls.svelte';
   import { t } from './i18n.svelte';
   import { acceptExt } from './platform';
-  import { PUNCH_IN, type Fx, type Segment } from './cuts';
+  import { PUNCH_IN, outLen, type Fx, type Segment } from './cuts';
   import { TRANSITIONS } from './transitions';
   import { COLOR_PRESETS, COLOR_LOOKS, EFFECTS, type Color, type Lut } from './grade';
   import type { ChromaKey } from './layerfx';
@@ -26,6 +26,15 @@
     autoReframe: (i: number) => void; autoReframeAll: () => void; reframing: boolean; webgl: boolean; deselect: () => void;
   } = $props();
   const c = $derived(selColor);
+  const seg = $derived(segments[selected]);
+  // Retime: speed and output length are two views of one number (length = source / speed).
+  const clampSp = (v: number) => (v > 0 ? Math.round(Math.max(0.1, Math.min(16, v)) * 1000) / 1000 : 0);
+  const setSpeed = (v: number) => { v = clampSp(v); if (v) setFx({ speed: v === 1 ? undefined : v }); };
+  // Fit to a length: scale the whole ramp (or the constant speed) by the same factor.
+  const fitLen = (d: number) => {
+    const f = outLen(seg) / d, a = clampSp((selFx.speed ?? 1) * f), b = selFx.speedEnd && clampSp(selFx.speedEnd * f);
+    setFx({ speed: a === 1 ? undefined : a, speedEnd: b || undefined });
+  };
 </script>
 
 <section class="layer clipfx" aria-label={t('clipH')}>
@@ -46,9 +55,16 @@
     </label>
   {:else}
     <label class="vol inline">{t('speed')}
-      <select value={selFx.speed ?? 1} onchange={(e) => setFx({ speed: +e.currentTarget.value === 1 ? undefined : +e.currentTarget.value })}>
-        {#each [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as v}<option value={v}>{v}×</option>{/each}
-      </select>
+      <input type="number" min="0.1" max="16" step="0.05" value={selFx.speed ?? 1} style="width: 64px"
+        onchange={(e) => setSpeed(+e.currentTarget.value)} />×
+    </label>
+    <label class="vol inline" title={t('rampTip')}>{t('rampTo')}
+      <input type="number" min="0.1" max="16" step="0.05" value={selFx.speedEnd ?? ''} placeholder="—" style="width: 64px"
+        onchange={(e) => { const v = clampSp(+e.currentTarget.value); setFx({ speedEnd: v && v !== (selFx.speed ?? 1) ? v : undefined }); }} />×
+    </label>
+    <label class="vol inline" title={t('retimeTip')}>{t('retimeLen')}
+      <input type="number" min="0.1" step="0.1" value={+outLen(seg).toFixed(2)} style="width: 64px"
+        onchange={(e) => { const d = +e.currentTarget.value; if (d > 0) fitLen(d); }} />
     </label>
   {/if}
   <button class="sm" class:on={!!selFx.zoom} aria-pressed={!!selFx.zoom} title={t('punchTip')}

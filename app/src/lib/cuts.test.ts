@@ -95,3 +95,16 @@ console.log('cuts ok');
   assert.equal(sa(fr, 2.01), fr); // can't split a freeze frame
   console.log('speed/freeze ok');
 }
+
+// speed ramps: 1× → 3× over 8 s of source takes 4 s, and the mapping round-trips
+{
+  const { outLen, srcIn, rateAt } = await import('./cuts.ts');
+  const r = { start: 0, end: 8, fx: { speedEnd: 3 } };
+  assert.equal(outLen(r), 4);
+  assert.equal(srcIn(r, 4), 8);
+  assert.ok(Math.abs(rateAt(r, 8) - 3) < 1e-9 && rateAt(r, 0) === 1);
+  for (const o of [0.5, 1.7, 3.2]) assert.ok(Math.abs((toOutput([r], srcIn(r, o)) ?? -1) - o) < 1e-9);
+  const [p, q] = splitAt([r], srcIn(r, 2)); // split mid-ramp: pieces keep their timing
+  assert.ok(Math.abs(outLen(p) - 2) < 1e-9 && Math.abs(outLen(q) - 2) < 1e-9);
+  console.log('ramp ok');
+}

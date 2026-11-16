@@ -4,9 +4,9 @@ import type { Caption } from './captions';
 // fx: per-strip effects. behind = captions behind the person; bg = swap the background.
 // zoom: punch-in factor (1 = none); zoomIn: ease into it over the strip's first ZOOM_IN seconds.
 // lift: the strip keeps its time on the timeline but shows black, plays silent and hides captions (a gap).
-// speed: playback rate (0.25–4). hold: a freeze frame, the strip's first frame shown for `hold` seconds.
+// speed: playback rate (0.1–16); speedEnd: ramp linearly (in output time) from speed to speedEnd. hold: a freeze frame, the strip's first frame shown for `hold` seconds.
 export type Fx = { behind?: boolean; bg?: 'color' | 'blur' | 'image'; bgColor?: string; bgImage?: string /* image asset id */; zoom?: number; zoomIn?: boolean; lift?: boolean;
-  speed?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number;
+  speed?: number; speedEnd?: number; hold?: number; trans?: import('./transitions').Trans; transDur?: number;
   color?: import('./grade').Color; focus?: import('./reframe').Focus;
   shake?: number; /* handheld camera shake 0..1 */
   vol?: number; /* this strip's sound, 0..1 × the clips' volume (each split piece keeps its own) */
@@ -15,15 +15,31 @@ export type Fx = { behind?: boolean; bg?: 'color' | 'blur' | 'image'; bgColor?: 
   key?: import('./layerfx').ChromaKey /* green screen on the strip: keyed area shows the background (bg) */ };
 
 // How long a strip lasts in the output, and the source time `o` seconds into it.
-export const outLen = (s: Segment) => s.fx?.hold ?? (s.end - s.start) / (s.fx?.speed ?? 1);
-export const srcIn = (s: Segment, o: number) => (s.fx?.hold ? s.start : Math.min(s.end, s.start + Math.max(0, o) * (s.fx?.speed ?? 1)));
+export const outLen = (s: Segment) => s.fx?.hold ?? (2 * (s.end - s.start)) / (sp(s) + spEnd(s));
+const sp = (s: Segment) => s.fx?.speed ?? 1, spEnd = (s: Segment) => s.fx?.speedEnd ?? sp(s);
+// Ramp acceleration: speed change per output second.
+const accel = (s: Segment) => (spEnd(s) - sp(s)) / outLen(s);
+export function srcIn(s: Segment, o: number) {
+  if (s.fx?.hold) return s.start;
+  o = Math.max(0, o);
+  return Math.min(s.end, s.start + sp(s) * o + (accel(s) * o * o) / 2);
+}
+// Playback rate at source time `src` in the strip (v² = a² + 2·k·x for a linear ramp).
+export const rateAt = (s: Segment, src: number) =>
+  Math.sqrt(Math.max(0, sp(s) ** 2 + 2 * accel(s) * Math.max(0, src - s.start))) || sp(s);
+// Output seconds into the strip for a source time in it (inverse of srcIn).
+export function outIn(s: Segment, src: number) {
+  if (s.fx?.hold) return 0;
+  const x = src - s.start, k = accel(s);
+  return Math.abs(k) < 1e-9 ? x / sp(s) : (rateAt(s, src) - sp(s)) / k;
+}
 export const FREEZE_SRC = 1 / 30; // source time a freeze-frame strip takes (one frame)
 // Insert a freeze frame of `secs` at source time t (inside a normal strip).
 export function freezeAt(segs: Segment[], t: number, secs: number): Segment[] {
   const i = segs.findIndex((s) => !s.fx?.hold && t >= s.start && t < s.end);
   if (i < 0) return segs;
   const s = segs[i], a = Math.min(t, s.end - FREEZE_SRC), b = a + FREEZE_SRC;
-  const { speed: _sp, ...fx } = s.fx ?? {};
+  const { speed: _sp, speedEnd: _se, ...fx } = s.fx ?? {};
   const out: Segment[] = [];
   if (a - s.start > 1e-6) out.push({ ...s, end: a });
   out.push({ start: a, end: b, fx: { ...fx, hold: secs } });
@@ -93,7 +109,9 @@ export function splitAt(segs: Segment[], t: number): Segment[] {
   const i = segs.findIndex((s) => !s.fx?.hold && t > s.start + MIN && t < s.end - MIN);
   if (i < 0) return segs;
   const s = segs[i];
-  return segs.toSpliced(i, 1, { ...s, end: t }, { ...s, start: t });
+  if (s.fx?.speedEnd === undefined) return segs.toSpliced(i, 1, { ...s, end: t }, { ...s, start: t });
+  const v = rateAt(s, t); // a ramp splits into two ramps meeting at the speed it had there
+  return segs.toSpliced(i, 1, { ...s, end: t, fx: { ...s.fx, speedEnd: v } }, { ...s, start: t, fx: { ...s.fx, speed: v } });
 }
 
 export const remove = (segs: Segment[], i: number) => (segs.length > 1 ? segs.toSpliced(i, 1) : segs);
@@ -121,7 +139,7 @@ export function toSource(segs: Segment[], out: number): number {
 export function toOutput(segs: Segment[], src: number): number | null {
   let acc = 0;
   for (const s of segs) {
-    if (src >= s.start && src < s.end) return acc + (s.fx?.hold ? 0 : (src - s.start) / (s.fx?.speed ?? 1));
+    if (src >= s.start && src < s.end) return acc + outIn(s, src);
     acc += outLen(s);
   }
   return null;

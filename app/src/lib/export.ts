@@ -119,14 +119,21 @@ async function mixAudio(src: ExportSource, segs: Segment[], seconds: number, opt
     const buf = at && decoded.get(rev ? rev.assetId : src.clips[at.index].assetId);
     const speed = s.fx?.speed ?? 1, vol = src.clipVolume * (s.fx?.vol ?? 1);
     if (buf && !s.fx?.lift && !s.fx?.hold) { // lifted gaps and freeze frames are silent
-      if (speed === 1) play(buf, out, s.start - at.base, s.end - s.start, vol, voice);
+      if (speed === 1 && !s.fx?.speedEnd) play(buf, out, s.start - at.base, s.end - s.start, vol, voice);
       else {
-        // Sped-up / slowed-down strips: time-stretched so voices keep their pitch.
-        const a = Math.floor((s.start - at.base) * buf.sampleRate), z = Math.min(buf.length, Math.ceil((s.end - at.base) * buf.sampleRate));
-        const ch = stretch(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c).subarray(a, z)), speed);
-        const piece = new AudioBuffer({ length: ch[0].length, numberOfChannels: ch.length, sampleRate: buf.sampleRate });
-        ch.forEach((d, c) => piece.copyToChannel(d as Float32Array<ArrayBuffer>, c));
-        play(piece, out, 0, piece.duration, vol, voice);
+        // Sped-up / slowed-down strips: time-stretched so voices keep their pitch. A ramp is stretched
+        // in short pieces, each at its own average speed.
+        // ponytail: fixed 0.25 s pieces; crossfade them if seams ever become audible.
+        const L = outLen(s), step = s.fx?.speedEnd ? 0.25 : L;
+        for (let o = 0; o < L - 1e-6; o += step) {
+          const d = Math.min(step, L - o), x0 = srcIn(s, o), x1 = srcIn(s, o + d);
+          const a = Math.floor((x0 - at.base) * buf.sampleRate), z = Math.min(buf.length, Math.ceil((x1 - at.base) * buf.sampleRate));
+          if (z <= a) continue;
+          const ch = stretch(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c).subarray(a, z)), (x1 - x0) / d);
+          const piece = new AudioBuffer({ length: ch[0].length, numberOfChannels: ch.length, sampleRate: buf.sampleRate });
+          ch.forEach((dd, c) => piece.copyToChannel(dd as Float32Array<ArrayBuffer>, c));
+          play(piece, out + o, 0, Math.min(piece.duration, d), vol, voice);
+        }
       }
     }
     out += outLen(s);
