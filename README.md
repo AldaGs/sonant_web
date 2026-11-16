@@ -11,9 +11,10 @@ Everything runs locally in the browser. No server, no account, and your media ne
   - Open, rename, duplicate, save to file or delete.
   - Autosaved in the browser. See [Projects and saving](#projects-and-saving).
 - **Media:**
-  - Import several videos and audio files at once by picking or dropping them.
-  - Videos play back to back as a sequence; reorder or remove them from the Sequence list.
-  - Audio goes onto a separate **Music & VO** track, with its own volume and a volume for the clips' own sound.
+  - Import several videos, pictures and audio files at once by picking them or dropping them anywhere in the editor. Imports go to the Media panel only, like an NLE bin.
+  - Drag media onto any track: V1 (the main video), V2 and up (layers, full frame by default) or an A track. Files dropped straight onto a track are imported and placed there.
+  - Clips on V1 can have **gaps** between them: drop or drag a clip into empty time and it stays there (moving a clip leaves a gap behind). Delete a gap to close it up. V1 always lasts until the last layer or audio item ends.
+  - Audio goes onto **Music & VO** tracks, with its own volume and a volume for the clips' own sound.
 - **Transcription:**
   - Whisper runs in the browser (WebGPU, falls back to WASM).
   - English, Spanish or auto-detect, with word-level timing.
@@ -50,7 +51,7 @@ Everything runs locally in the browser. No server, no account, and your media ne
   - Arrow keys nudge it; Shift moves it further.
 - **Animated titles:** **Animated title** in the toolbar adds a text layer on top of the stack that animates in and out while travelling along a path, each letter bending to follow the curve. Paths: S curve, Wave, Arc, Loop-the-loop, Zigzag, or none. In & out styles: Pop, Drop & bounce, Spin, Swing, Stretch, Flip. In the layer inspector, set the in and out times, how far it travels and how deep the curve bends. The path is shown as a dashed guide in the preview; drag the layer to move the whole path. While a layer is selected, the Style panel shows only that layer's settings.
 - **Tracks:** a multi-track timeline. The main sequence is V1 with its sound on A1; layers go on V2, V3, … (higher tracks draw on top) and music and voiceover on A2, A3, …. Drag items sideways to move them in time and up or down to change track; items on one track never overlap. Each track has a hide (V) or mute (A) switch and a lock. **+V / +A** add an empty track; double-click an empty track's name to delete it. Bring forward / send backward on a layer moves it up or down a track, opening a new track if the spot is taken. Hidden and muted tracks are left out of the export too. **Split all** (Shift+S) cuts the main strip and every unlocked layer and audio item at the playhead; S still splits only the main strip.
-- **Layers:** picture-in-picture video, images and text over the main video, with move/scale/rotate handles, crop, flip, opacity and **keyframes** (position, size, rotation, opacity). Punch-in presets for layers and strips.
+- **Layers:** video, images and text on V2 and up (full frame by default, or a small picture-in-picture from the Media panel), with move/scale/rotate handles, crop, flip, opacity and **keyframes** (position, size, rotation, opacity). Punch-in presets for layers and strips.
 - **Clip tools (per strip):** speed 0.25×–4× (pitch preserved), freeze frame, transitions (fade, dip to black/white, zoom, whip, slide), lift to leave a gap, color (brightness, contrast, saturation, temperature, presets, `.cube` LUTs) and background removal / captions behind the person.
 - **Canvas shape:** Original, 9:16, 1:1, 4:5 or 16:9, with a focus point per strip and auto-reframe that follows the person.
 - **Fonts:** bundled free OFL fonts, plus your own fonts from your PC (Chrome/Edge) or uploaded files.

@@ -302,9 +302,14 @@ export function corner(p: Placed, sx: number, sy: number, out = 0): { x: number;
 // New overlays.
 export const newText = (at: number, text: string): Overlay =>
   ({ id: crypto.randomUUID(), kind: 'text', at, len: 3, text, tf: { ...DEFAULT_TF, y: 0.3, scale: 1 } });
-export const newMedia = (kind: 'video' | 'image', assetId: string, at: number, len: number): Overlay =>
+// fill: the media's width as a fraction of the frame's (fitMedia makes it fill the frame like on V1); without it, a small
+// picture-in-picture in the top right corner.
+export const newMedia = (kind: 'video' | 'image', assetId: string, at: number, len: number, fill?: number): Overlay =>
   ({ id: crypto.randomUUID(), kind, assetId, at, len, ...(kind === 'video' ? { offset: 0, volume: 0 } : {}),
-    tf: { ...DEFAULT_TF, x: 0.72, y: 0.28, scale: 0.4 } });
+    tf: fill ? { ...DEFAULT_TF, scale: fill } : { ...DEFAULT_TF, x: 0.72, y: 0.28, scale: 0.4 } });
+/** Width (fraction of the frame) at which media of size w×h fits inside a W×H frame, the way V1 shows it. */
+export const fitMedia = (w: number | undefined, h: number | undefined, W: number, H: number) =>
+  w && h ? Math.min(1, (w / h) / (W / H)) : 1;
 export const newTitle = (at: number, text: string, len = 4): Overlay =>
   ({ ...newText(at, text), len, motion: { ...DEFAULT_MOTION }, tf: { ...DEFAULT_TF, y: 0.25, scale: 1.2 } });
 

@@ -26,7 +26,7 @@ export interface Ed {
   readonly PIC_MAX: number;
   readonly addAudio: (assetId: string, at?: number) => void;
   readonly addClip: (assetId: string) => void;
-  readonly addOverlay: (a: Asset, at?: number) => void;
+  readonly addOverlay: (a: Asset, at?: number, pip?: boolean) => void;
   readonly addText: () => void;
   aimBusy: boolean;
   readonly announce: (m: string) => void;
@@ -68,12 +68,13 @@ export interface Ed {
   readonly grader: Grader;
   readonly hasMedia: boolean;
   readonly hasVideoClip: () => boolean;
+  readonly layersEnd: number; // output time the last layer or audio item ends (V1 is padded to it)
   highlights: Highlight[] | null;
   readonly histDialog: HTMLDialogElement | undefined;
   hlBusy: string;
   readonly hlOpts: { min: number; max: number; count: number; };
   readonly hlReframe: boolean;
-  readonly importMedia: (list: FileList | File[] | undefined | null) => Promise<void>;
+  readonly importMedia: (list: FileList | File[] | undefined | null) => Promise<Asset[]>;
   readonly kindOf: (id: string) => "video" | "audio" | "image" | undefined;
   language: "english" | "spanish" | null;
   liveMsg: string;

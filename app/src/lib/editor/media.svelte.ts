@@ -218,14 +218,15 @@ export function createMedia(ed: Ed) {
   }
 
   // ---- Media library ----
-  // Import any number of files at once: probed in parallel, added in the order picked.
-  // Videos join the end of the sequence; audio goes onto the Music & VO track at the playhead.
-  async function importMedia(list: FileList | File[] | undefined | null) {
+  // Import any number of files at once: probed in parallel, added to the Media panel in the order picked.
+  // Nothing goes on the timeline here: media is dragged (or "+"-ed) onto a track from the panel, like an NLE bin.
+  // Returns the new assets.
+  async function importMedia(list: FileList | File[] | undefined | null): Promise<Asset[]> {
     const media = [...(list ?? [])].filter((f) => mediaKind(f));
-    if (!media.length) return;
+    if (!media.length) return [];
     ed.error = ed.notice = '';
-    const at = toOutput(ed.segments, ed.time) ?? 0;
     const results = await Promise.all(media.map((f) => importFile(f).then((r) => ({ f, ...r }), () => null)));
+    const added: Asset[] = [];
     for (const r of results) {
       if (!r) {
         ed.error = 'err.badMedia';
@@ -236,11 +237,9 @@ export function createMedia(ed: Ed) {
       register(r.asset, r.f);
       if (!ed.name) ed.name = r.f.name.replace(/\.[^.]+$/, '');
       if (wantsProxy(r.asset)) buildProxy(r.asset); // big or long footage: fast preview copy in the background
-      // Images start a slideshow on the main track when there's no video yet; over video they're layers.
-      if (r.asset.kind === 'video' || (r.asset.kind === 'image' && !ed.hasVideoClip())) ed.addClip(r.asset.id);
-      else if (r.asset.kind === 'image') ed.addOverlay(r.asset, at);
-      else ed.addAudio(r.asset.id, at);
+      added.push(r.asset);
     }
+    return added;
   }
 
 

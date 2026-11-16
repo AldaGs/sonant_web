@@ -2,7 +2,8 @@
 import { setText, toSRT, toVTT, startOf, type Caption } from '../captions';
 import { resolveStyle, type Style } from '../render';
 import { localFonts, uploadFont } from '../fonts';
-import { remove, trim, toOutput, nextKept, outDuration, captionsForOutput, type Segment, type Fx } from '../cuts';
+import { remove, trim, toOutput, nextKept, outDuration, outLen, captionsForOutput, type Segment, type Fx } from '../cuts';
+import { isGap, gapClip, clipSpans, placeClip, tidyGaps } from '../gaps';
 import { clipAt, clipLen, resizeClip, isolateStrip, extendClip, STILL_LEN, clipStarts, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from '../project';
 import * as store from '../store';
 import { t } from '../i18n.svelte';
@@ -86,16 +87,22 @@ export function createEdit(ed: Ed) {
   const setSegs = (s: Segment[]) => s !== ed.segments && (commit(), (ed.segments = normalize(s)));
 
   // Change the clip list; cuts and captions follow their clips.
-  function setClips(next: Clip[]) {
+  function setClips(next: Clip[], from = { clips: ed.clips, segments: ed.segments, captions: ed.captions }) {
     commit();
-    const r = remapProject(ed.clips, next, ed.durations, ed.segments, ed.captions);
-    ed.clips = next;
-    ed.segments = r.segments;
-    ed.captions = r.captions;
+    const r = remapProject(from.clips, next, ed.durations, from.segments, from.captions);
+    const g = tidyGaps(next, ed.durations, r.segments, r.captions, ed.layersEnd);
+    ed.clips = g?.clips ?? next;
+    ed.segments = normalize(g?.segments ?? r.segments);
+    ed.captions = g?.captions ?? r.captions;
     ed.selected = -1;
   }
-  const addClip = (assetId: string) =>
-    setClips([...ed.clips, { id: crypto.randomUUID(), assetId, ...(ed.kindOf(assetId) === 'image' ? { len: STILL_LEN } : {}) }]);
+  const newClip = (assetId: string): Clip => ({ id: crypto.randomUUID(), assetId, ...(ed.kindOf(assetId) === 'image' ? { len: STILL_LEN } : {}) });
+  // "+" adds a clip right after the last one on V1 (before any empty time at the end).
+  function addClip(assetId: string) {
+    const spans = clipSpans(ed.clips, ed.durations, ed.segments), last = ed.clips.findLastIndex((c) => !isGap(c));
+    const c = newClip(assetId);
+    setClips(placeClip(ed.clips, spans, c, last < 0 ? 0 : spans[last][1], clipLen(ed.durations, c)));
+  }
   // Set an image clip's length (seconds); cuts inside it are reset, later clips move.
   function setClipLen(i: number, len: number) {
     if (!(len > 0) || !ed.clips[i]) return;
@@ -113,7 +120,7 @@ export function createEdit(ed: Ed) {
     const o = trimFrom, seg = o.segments[i];
     const at = seg && clipAt(o.clips, ed.durations, (seg.start + seg.end) / 2);
     if (!at) return;
-    const still = ed.kindOf(o.clips[at.index].assetId) === 'image';
+    const still = ed.kindOf(o.clips[at.index].assetId) === 'image' || isGap(o.clips[at.index]); // gaps stretch like stills
     const c0 = clipStarts(o.clips, ed.durations)[at.index], c1 = c0 + clipLen(ed.durations, o.clips[at.index]);
     const atStart = Math.abs(seg.start - c0) < 1e-6, atEnd = Math.abs(seg.end - c1) < 1e-6;
     const side = Math.abs(s - seg.start) > 1e-9 ? 'start' : Math.abs(e - seg.end) > 1e-9 ? 'end' : null;
@@ -126,28 +133,25 @@ export function createEdit(ed: Ed) {
     const segs = trim(o.segments, i, Math.max(c0, s), Math.min(c1, e), ed.duration);
     ((ed.clips = o.clips), (ed.captions = o.captions), (ed.segments = segs));
   }
-  // Drag a V1 strip to another place in the sequence. The strip becomes its own clip (same file, its own
-  // in/out) and is inserted at the clip boundary nearest `out` (output time); everything else closes up.
+  // Drag a V1 strip to another place on V1 so it starts at output time `out`. The strip becomes its own clip
+  // (same file, its own in/out) and leaves a gap of its length behind, so nothing else moves. It lands in
+  // empty time (a gap, or past the end) where it was dropped; over another clip it's inserted at that
+  // clip's nearest edge. Its cuts, effects and words go with it.
   function moveStrip(i: number, out: number) {
-    const g = ed.segments[i];
-    if (!g) return false;
+    const g = ed.segments[i], at = g && clipAt(ed.clips, ed.durations, (g.start + g.end) / 2);
+    if (!at || isGap(ed.clips[at.index])) return false; // a gap is empty time, not something to move
     const iso = isolateStrip(ed.clips, ed.durations, g.start, g.end);
     if (!iso) return false;
-    // Output time of each clip boundary (a boundary inside a cut counts from the next kept moment).
-    const starts = clipStarts(iso.clips, ed.durations);
-    const bounds = [...starts, ed.duration].map((t) => {
-      const k = nextKept(ed.segments, t);
-      return k === null ? outDuration(ed.segments) : toOutput(ed.segments, k) ?? 0;
-    });
-    let k = 0;
-    bounds.forEach((p, j) => Math.abs(p - out) < Math.abs(bounds[k] - out) && (k = j));
-    if (k === iso.index || k === iso.index + 1) return false;
-    const order = iso.clips.filter((_, j) => j !== iso.index);
-    order.splice(k > iso.index ? k - 1 : k, 0, iso.clips[iso.index]);
-    commit();
-    const r = remapProject(iso.clips, order, ed.durations, ed.segments, ed.captions);
-    ((ed.clips = order), (ed.segments = normalize(r.segments)), (ed.captions = r.captions));
-    ed.selected = r.segments.findIndex((x) => Math.abs(x.start - clipStarts(order, ed.durations)[k > iso.index ? k - 1 : k]) < 1e-6 && x.end - x.start > 0);
+    const len = outLen(g), c = iso.clips[iso.index];
+    const from = { clips: iso.clips, segments: ed.segments, captions: ed.captions };
+    const spans = clipSpans(iso.clips, ed.durations, ed.segments);
+    if (Math.abs(spans[iso.index][0] - out) < 0.02) return false; // dropped where it was
+    const holed = iso.clips.with(iso.index, gapClip(len));
+    // With the gap in its place every other clip keeps its output time, so the spans still hold.
+    const next = placeClip(holed, spans, c, Math.max(0, out), len);
+    setClips(next, from);
+    const s0 = clipStarts(ed.clips, ed.durations)[ed.clips.findIndex((x) => x.id === c.id)];
+    ed.selected = ed.segments.findIndex((x) => Math.abs(x.start - s0) < 1e-6);
     return true;
   }
   function addAudio(assetId: string, at = toOutput(ed.segments, ed.time) ?? 0) {
@@ -247,17 +251,10 @@ export function createEdit(ed: Ed) {
     if (a) addToTimeline(a);
     else ed.importMedia(e.dataTransfer?.files);
   }
-  // Put a clip into the main sequence at the clip boundary nearest output time `out` (insert edit).
+  // Put a new clip on V1 starting at output time `out` (see placeClip: empty time is filled, clips are inserted at an edge).
   function insertClip(assetId: string, out: number) {
-    const c: Clip = { id: crypto.randomUUID(), assetId, ...(ed.kindOf(assetId) === 'image' ? { len: STILL_LEN } : {}) };
-    const starts = clipStarts(ed.clips, ed.durations);
-    const bounds = [...starts, ed.duration].map((t) => {
-      const k = nextKept(ed.segments, t);
-      return k === null ? outDuration(ed.segments) : toOutput(ed.segments, k) ?? 0;
-    });
-    let k = 0;
-    bounds.forEach((p, j) => Math.abs(p - out) < Math.abs(bounds[k] - out) && (k = j));
-    setClips(ed.clips.toSpliced(k, 0, c));
+    const c = newClip(assetId);
+    setClips(placeClip(ed.clips, clipSpans(ed.clips, ed.durations, ed.segments), c, out, clipLen(ed.durations, c)));
   }
 
   return { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline, insertClip };

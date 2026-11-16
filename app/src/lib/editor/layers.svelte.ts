@@ -1,13 +1,13 @@
 // Layers over the video (text, titles, images, videos): adding, editing, keyframes, stacking, templates.
 import { type Style } from '../render';
 import { trim, outDuration, splitAt, toSource } from '../cuts';
-import { itemLen, type Asset, type AudioItem } from '../project';
+import { itemLen, STILL_LEN, type Asset, type AudioItem } from '../project';
 import { linkedAudio, unlink as unlinkPair } from '../links';
 import { rippleTrim, rippleDelete, rollEdit, slip, type Span, type Patch } from '../tools';
 import { moveToTrack, removeTrack, setFlag, trackOf, isLockedV, isLockedA, splitOverlay, splitAudio, byTrack, type TrackFlags } from '../tracks';
 import { type ChromaKey } from '../layerfx';
 import { placeLayers, fromProject, type Template } from '../templates';
-import { newText, newTitle, DEFAULT_MOTION, newMedia, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Transform, type Motion } from '../overlay';
+import { newText, newTitle, DEFAULT_MOTION, newMedia, fitMedia, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Transform, type Motion } from '../overlay';
 import * as store from '../store';
 import { t } from '../i18n.svelte';
 import { end } from '../crash';
@@ -19,11 +19,11 @@ export function createLayers(ed: Ed) {
     ed.overlays = [...ed.overlays, o];
     ed.selectedOverlay = o.id;
   }
-  // A video or image as a layer at the playhead (videos keep their length, capped by the timeline end).
-  function addOverlay(a: Asset, at = ed.outNow()) {
-    const end = outDuration(ed.segments) || a.duration;
-    const len = a.kind === 'video' ? Math.min(a.duration, Math.max(1, end - at)) : Math.min(5, Math.max(1, end - at));
-    const o = newMedia(a.kind === 'video' ? 'video' : 'image', a.id, at, len);
+  // A video or image as a layer at the playhead: full frame like on V1 (pip: a small picture-in-picture instead).
+  // Videos keep their whole length, pictures last STILL_LEN; the timeline grows to fit.
+  function addOverlay(a: Asset, at = ed.outNow(), pip = false) {
+    const len = a.kind === 'video' ? a.duration : STILL_LEN;
+    const o = newMedia(a.kind === 'video' ? 'video' : 'image', a.id, at, len, pip ? undefined : fitMedia(a.width, a.height, ed.frameW, ed.frameH));
     if (a.kind !== 'video') return pushOverlay(o);
     // Video layers bring their sound as a linked audio item on an A track (see links.ts).
     o.link = crypto.randomUUID();

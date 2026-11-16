@@ -255,7 +255,7 @@ export function createJobs(ed: Ed) {
     const chosen = ed.targetClip ? [ed.targetClip] : ed.clips;
     begin('transcribe', { clips: chosen.length, language: lang }, ed.projectId);
     try {
-      const ids = [...new Set(chosen.map((c) => c.assetId))].filter((id) => ed.kindOf(id) !== 'image'); // stills have no sound
+      const ids = [...new Set(chosen.map((c) => c.assetId))].filter((id) => id && ed.kindOf(id) !== 'image'); // stills and gaps have no sound
       for (let k = 0; k < ids.length; k++) {
         const key = `${ids[k]}|${lang}`, f = ed.files.get(ids[k]);
         if (ed.wordCache[key] || !f) continue;
