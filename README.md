@@ -151,7 +151,7 @@ The logic modules have small assert-based tests that run directly in Node (TypeS
 
 ```bash
 cd app
-for t in audio beats captions autozoom cuts denoise diarize export grade highlights keywords layerfx audiodecode crash perf reverse stabilize tts voicefx overlay project projects reframe render silence stretch templates transcript translate waveform; do node src/lib/$t.test.ts; done
+for t in audio audiodecode autozoom beats captions crash cuts denoise diarize export grade highlights keywords layerfx layertrans links model overlay perf project projects reframe render reverse silence stabilize stretch templates tools tracks transcript translate tts voicefx waveform; do node src/lib/$t.test.ts; done
 ```
 
 ## Stack
@@ -188,8 +188,8 @@ app/src/
     ColorField.svelte     color picker popover
     ExportDialog.svelte   export settings and progress
     projects.ts           project list, docs, duplicate/delete, .sonant pack/unpack, storage
-    project.ts            clip sequence, remapping on reorder, audio lanes and trimming
-    player.ts             multi-clip playback clock
+    project.ts            assets, audio items and trimming (plus the old clip sequence, for upgrading projects)
+    player.ts             playback clock for every track, media elements pooled per file
     assets.ts             media import, probing, file-type detection
     captions.ts           caption model, grouping, editing, SRT/VTT
     model.ts              the timeline model: items on tracks, source time for captions, ripple cut / restore
@@ -267,9 +267,8 @@ icon/                     (repo root) Sonant mark, lockups and usage guide
 ## Known limits
 
 - Color LUTs are stored in the browser per project and are not packed into `.sonant` files yet.
-- Speaker labels are manual; there is no automatic speaker detection.
-- Clips play whole and in sequence (cut inside them with the transcript or timeline); there are no overlaps or transitions between clips.
-- Music and voiceover play in output time, so cutting words does not move them, and they are not transcribed.
+- Transitions play only into an item on the bottom picture track that directly follows another; there is no automatic cross-dissolve between overlapping items.
+- Cutting words moves only the track the words are on and its linked picture or sound; other tracks (music, titles, B-roll) stay put. Only video is transcribed, not audio-only files.
 - Projects live in one browser on one device; use `.sonant` files to move or back them up. There is no cloud sync.
 - Very large files (over ~2 GB) can run out of browser memory or storage quota.
 - Filler removal only targets hesitation sounds (um, uh, eh…). Words like "like" or "este" are left alone.
