@@ -3,7 +3,8 @@ import type { Segment } from './cuts';
 
 // Media the user imported. Files live in IndexedDB under `asset:<id>`.
 // beats/bpm: detected beat times (file time) for music, once the user asks for them.
-export type Asset = { id: string; name: string; kind: 'video' | 'audio' | 'image'; duration: number; width?: number; height?: number; beats?: number[]; bpm?: number; proxy?: boolean };
+// base: where the asset sits in source time (captions are timed there; see model.ts).
+export type Asset = { id: string; name: string; kind: 'video' | 'audio' | 'image'; duration: number; width?: number; height?: number; beats?: number[]; bpm?: number; proxy?: boolean; base?: number };
 // A video clip on the video track. Clips play back to back; together they form the "sequence".
 // Sequence time is what segments, captions and words are measured in.
 // in: where in the file the clip starts (video; default 0). len: how long it plays (default: the rest of the file;
@@ -17,12 +18,16 @@ export const STILL_LEN = 5; // default seconds for an image clip
 export type AudioItem = { id: string; assetId: string; at: number; volume: number; offset?: number; len?: number; duck?: boolean;
   vfx?: import('./voicefx').VoiceFx; dn?: number /* noise reduction level */; src?: string;
   volKf?: import('./layertrans').VolKey[] /* volume points, seconds from the item's start */; fadeIn?: number; fadeOut?: number;
-  link?: string /* shared with the video layer this is the sound of (links.ts) */;
-  track?: number /* 0 = A2, the first track under the clips' own sound; see tracks.ts */ };
+  link?: string /* shared with the video item this is the sound of (links.ts) */;
+  fx?: import('./cuts').Fx /* speed, ramp, freeze or reverse, shared with its picture (model.ts) */;
+  track?: number /* 0 = A1; see tracks.ts */ };
 export const DUCK_LEVEL = 0.25; // ≈ −12 dB under speech
 
 // How long an audio item plays (its trimmed length, or the rest of the file).
-export const itemLen = (a: AudioItem, assetDur: number) => Math.max(0, Math.min(a.len ?? Infinity, assetDur - (a.offset ?? 0)));
+export const itemLen = (a: AudioItem, assetDur: number) => {
+  const k = ((a.fx?.speed ?? 1) + (a.fx?.speedEnd ?? a.fx?.speed ?? 1)) / 2;
+  return Math.max(0, Math.min(a.len ?? Infinity, (assetDur - (a.offset ?? 0)) / k));
+};
 
 // Stack audio items into lanes so overlapping ones don't sit on top of each other. Returns item id → lane.
 export function audioLanes(items: AudioItem[], durOf: (assetId: string) => number): Map<string, number> {

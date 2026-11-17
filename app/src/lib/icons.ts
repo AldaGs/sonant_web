@@ -8,6 +8,7 @@ import music_note from '@material-symbols/svg-400/rounded/music_note.svg?raw';
 import bolt from '@material-symbols/svg-400/rounded/bolt.svg?raw';
 import animation from '@material-symbols/svg-400/rounded/animation.svg?raw';
 import picture_in_picture_alt from '@material-symbols/svg-400/rounded/picture_in_picture_alt.svg?raw';
+import movie from '@material-symbols/svg-400/rounded/movie.svg?raw';
 import arrow_upward from '@material-symbols/svg-400/rounded/arrow_upward.svg?raw';
 import arrow_downward from '@material-symbols/svg-400/rounded/arrow_downward.svg?raw';
 import play_arrow from '@material-symbols/svg-400/rounded/play_arrow.svg?raw';
@@ -113,6 +114,7 @@ export const ICONS = {
   bolt: m(bolt),
   animation: m(animation),
   picture_in_picture_alt: m(picture_in_picture_alt),
+  movie: m(movie),
   arrow_upward: m(arrow_upward),
   arrow_downward: m(arrow_downward),
   play_arrow: m(play_arrow),

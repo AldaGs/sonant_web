@@ -1,7 +1,9 @@
 import type { Style } from './render';
 
 export type Word = { text: string; start: number; end: number; em?: boolean }; // seconds, source time; em: auto/hand emphasis (always drawn in the highlight color)
-export type Caption = { id: string; words: Word[]; speaker?: number; style?: Partial<Style>; tr?: string }; // speaker: index into the project speaker list; style: per-caption override
+// speaker: index into the project speaker list; style: per-caption override.
+// Words are in source time (see model.ts), except on a free line (typed over empty time), which is timed on the timeline.
+export type Caption = { id: string; words: Word[]; speaker?: number; style?: Partial<Style>; tr?: string; free?: boolean };
 
 const MAX_WORDS = 6;
 const MAX_SECONDS = 2.5;

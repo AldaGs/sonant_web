@@ -1,14 +1,13 @@
-// Everyday edits: caption selection and per-caption style, undo/redo, the clip list, assets, fonts.
+// Everyday edits: caption selection and per-caption style, undo/redo, text-based cuts, item effects, assets, fonts.
 import { setText, toSRT, toVTT, startOf, type Caption } from '../captions';
 import { resolveStyle, type Style } from '../render';
 import { localFonts, uploadFont } from '../fonts';
-import { remove, trim, toOutput, nextKept, outDuration, outLen, captionsForOutput, type Segment, type Fx } from '../cuts';
-import { isGap, gapClip, clipSpans, placeClip, tidyGaps } from '../gaps';
-import { clipAt, clipLen, resizeClip, isolateStrip, extendClip, STILL_LEN, clipStarts, remapProject, splitAtBoundaries, move, type Asset, type Clip, type AudioItem } from '../project';
+import { type Fx } from '../cuts';
+import { type Asset, type AudioItem } from '../project';
+import { cutSource, restoreSource, cutRanges as cutOut, tracksOf, rippleInsert, srcLen, lenFor, fileAt, outToSrc, type Lists, type Tracks } from '../model';
+import { trackOf } from '../tracks';
 import * as store from '../store';
 import { t } from '../i18n.svelte';
-import Timeline from '../Timeline.svelte';
-import { end } from '../crash';
 import { deleteAssetIfUnused } from '../projects';
 import type { Ed, Snap } from './ed';
 
@@ -63,8 +62,8 @@ export function createEdit(ed: Ed) {
       return rest;
     });
   }
-  const snap = (): Snap => $state.snapshot({ segments: ed.segments, captions: ed.captions, clips: ed.clips, audios: ed.audios, overlays: ed.overlays });
-  const restore = (s: Snap) => ((ed.segments = s.segments), (ed.captions = s.captions), (ed.clips = s.clips), (ed.audios = s.audios), (ed.overlays = s.overlays ?? []), (ed.selected = -1), (ed.selectedCapIds = []));
+  const snap = (): Snap => $state.snapshot({ captions: ed.captions, audios: ed.audios, overlays: ed.overlays });
+  const restore = (s: Snap) => ((ed.captions = s.captions), (ed.audios = s.audios), (ed.overlays = s.overlays ?? []), (ed.selectedCapIds = []));
   function commit() {
     ed.past = [...ed.past.slice(-99), snap()]; // ponytail: 100-step cap, full snapshots; fine at caption-list sizes
     ed.future = [];
@@ -82,91 +81,81 @@ export function createEdit(ed: Ed) {
     queueMicrotask(() => (ed.liveMsg = m));
   }
   const setCaps = (c: Caption[]) => (commit(), (ed.captions = c));
-  // Kept segments never cross a clip boundary (so clips can be reordered and exported piece by piece).
-  const normalize = (s: Segment[]) => splitAtBoundaries(s, clipStarts(ed.clips, ed.durations));
-  const setSegs = (s: Segment[]) => s !== ed.segments && (commit(), (ed.segments = normalize(s)));
+  const lists = (): Lists => ({ overlays: ed.overlays, audios: ed.audios });
+  const assign = (l: Lists) => ((ed.overlays = l.overlays), (ed.audios = l.audios));
 
-  // Change the clip list; cuts and captions follow their clips.
-  function setClips(next: Clip[], from = { clips: ed.clips, segments: ed.segments, captions: ed.captions }) {
+  // ---- Text-based editing (source time: the time captions are in) ----
+  // Deleting words cuts them out of whatever plays them and closes the gap on that track (and its sound's).
+  const cutRanges = (r: [number, number][]) => {
+    if (!r.length) return false;
+    const next = cutSource(lists(), ed.pieces, r);
+    if (next.overlays === ed.overlays && next.audios === ed.audios) return false;
     commit();
-    const r = remapProject(from.clips, next, ed.durations, from.segments, from.captions);
-    const g = tidyGaps(next, ed.durations, r.segments, r.captions, ed.layersEnd);
-    ed.clips = g?.clips ?? next;
-    ed.segments = normalize(g?.segments ?? r.segments);
-    ed.captions = g?.captions ?? r.captions;
-    ed.selected = -1;
-  }
-  const newClip = (assetId: string): Clip => ({ id: crypto.randomUUID(), assetId, ...(ed.kindOf(assetId) === 'image' ? { len: STILL_LEN } : {}) });
-  // "+" adds a clip right after the last one on V1 (before any empty time at the end).
-  function addClip(assetId: string) {
-    const spans = clipSpans(ed.clips, ed.durations, ed.segments), last = ed.clips.findLastIndex((c) => !isGap(c));
-    const c = newClip(assetId);
-    setClips(placeClip(ed.clips, spans, c, last < 0 ? 0 : spans[last][1], clipLen(ed.durations, c)));
-  }
-  // Set an image clip's length (seconds); cuts inside it are reset, later clips move.
-  function setClipLen(i: number, len: number) {
-    if (!(len > 0) || !ed.clips[i]) return;
+    assign(next);
+    return true;
+  };
+  // Restoring struck words puts their footage back next to the piece it came from.
+  const keepRanges = (r: [number, number][]) => {
+    let next = lists();
+    for (const [a, b] of r) next = restoreSource(next, ed.assets, a, b);
+    if (next.overlays === ed.overlays && next.audios === ed.audios) return false;
     commit();
-    const r = resizeClip(ed.clips, i, len, ed.durations, ed.segments, ed.captions);
-    ((ed.clips = r.clips), (ed.segments = r.segments), (ed.captions = r.captions), (ed.selected = -1));
+    assign(next);
+    return true;
+  };
+  // Ripple-cut an output range from every unlocked track (the I/O marks).
+  function cutOutRange(a: number, b: number) {
+    const all = (k: 'v' | 'a') => new Set(Array.from({ length: Math.max(ed.tracks[k].length, ...(k === 'v' ? ed.overlays : ed.audios).map((x) => trackOf(x) + 1)) }, (_, i) => i).filter((i) => !ed.tracks[k][i]?.locked));
+    commit();
+    assign(cutOut(lists(), [{ o0: a, o1: b, tracks: { v: all('v'), a: all('a') } }]));
   }
-  // Timeline edge drag. Inside a clip, an edge moves up to the neighbouring strip. On the clip's own edge,
-  // dragging outward reveals more of the file (or makes a still longer), dragging inward hides it again and
-  // the clips after it move. Each call is measured from the state when the drag began (`trimFrom`).
-  let trimFrom: { clips: Clip[]; segments: Segment[]; captions: Caption[]; i: number } | null = null;
-  const trimDone = () => (trimFrom = null);
-  function trimStrip(i: number, s: number, e: number) {
-    if (!trimFrom || trimFrom.i !== i) trimFrom = { ...$state.snapshot({ clips: ed.clips, segments: ed.segments, captions: ed.captions }), i };
-    const o = trimFrom, seg = o.segments[i];
-    const at = seg && clipAt(o.clips, ed.durations, (seg.start + seg.end) / 2);
-    if (!at) return;
-    const still = ed.kindOf(o.clips[at.index].assetId) === 'image' || isGap(o.clips[at.index]); // gaps stretch like stills
-    const c0 = clipStarts(o.clips, ed.durations)[at.index], c1 = c0 + clipLen(ed.durations, o.clips[at.index]);
-    const atStart = Math.abs(seg.start - c0) < 1e-6, atEnd = Math.abs(seg.end - c1) < 1e-6;
-    const side = Math.abs(s - seg.start) > 1e-9 ? 'start' : Math.abs(e - seg.end) > 1e-9 ? 'end' : null;
-    if (side === 'end' && atEnd && (e > c1 || still) || side === 'start' && atStart && s < c0 && !still) {
-      const r = extendClip(o.clips, at.index, side, side === 'end' ? e : s, ed.durations, o.segments, o.captions, still);
-      if (r) ((ed.clips = r.clips), (ed.segments = normalize(r.segments)), (ed.captions = r.captions));
-      return;
-    }
-    // Within the clip: never past its edges or the neighbouring strips.
-    const segs = trim(o.segments, i, Math.max(c0, s), Math.min(c1, e), ed.duration);
-    ((ed.clips = o.clips), (ed.captions = o.captions), (ed.segments = segs));
-  }
-  // Drag a V1 strip to another place on V1 so it starts at output time `out`. The strip becomes its own clip
-  // (same file, its own in/out) and leaves a gap of its length behind, so nothing else moves. It lands in
-  // empty time (a gap, or past the end) where it was dropped; over another clip it's inserted at that
-  // clip's nearest edge. Its cuts, effects and words go with it.
-  function moveStrip(i: number, out: number) {
-    const g = ed.segments[i], at = g && clipAt(ed.clips, ed.durations, (g.start + g.end) / 2);
-    if (!at || isGap(ed.clips[at.index])) return false; // a gap is empty time, not something to move
-    const iso = isolateStrip(ed.clips, ed.durations, g.start, g.end);
-    if (!iso) return false;
-    const len = outLen(g), c = iso.clips[iso.index];
-    const from = { clips: iso.clips, segments: ed.segments, captions: ed.captions };
-    const spans = clipSpans(iso.clips, ed.durations, ed.segments);
-    if (Math.abs(spans[iso.index][0] - out) < 0.02) return false; // dropped where it was
-    const holed = iso.clips.with(iso.index, gapClip(len));
-    // With the gap in its place every other clip keeps its output time, so the spans still hold.
-    const next = placeClip(holed, spans, c, Math.max(0, out), len);
-    setClips(next, from);
-    const s0 = clipStarts(ed.clips, ed.durations)[ed.clips.findIndex((x) => x.id === c.id)];
-    ed.selected = ed.segments.findIndex((x) => Math.abs(x.start - s0) < 1e-6);
+
+  // ---- Effects of the selected media item ----
+  // Speed and freeze change how long the item lasts: what comes after it on its track (and its sound's) moves.
+  let fxEditing = false;
+  function setFx(p: Partial<Fx>, live = false) {
+    const o = ed.selOverlay;
+    if (!o || o.kind === 'text') return false;
+    const fx = Object.fromEntries(Object.entries({ ...o.fx, ...p }).filter(([, v]) => v !== undefined)) as Fx;
+    const timing = 'speed' in p || 'speedEnd' in p || 'hold' in p;
+    if (!fxEditing) commit();
+    fxEditing = live;
+    if (!timing) return void (ed.overlays = ed.overlays.map((x) => (x.id === o.id ? { ...x, fx } : x))), true;
+    const len = fx.hold ? fx.hold : lenFor(srcLen(o), fx), d = len - o.len;
+    const tr: Tracks = tracksOf(lists(), new Set([o.id])), end = o.at + o.len;
+    const moved = { overlays: rippleInsert(ed.overlays, tr.v, end, d), audios: rippleInsert(ed.audios, tr.a, end, d) };
+    ed.overlays = moved.overlays.map((x) => (x.id === o.id ? { ...x, fx, len } : x));
+    ed.audios = moved.audios;
     return true;
   }
-  function addAudio(assetId: string, at = toOutput(ed.segments, ed.time) ?? 0) {
+  const fxDone = () => (fxEditing = false);
+  // A sound file at output time `at` (its track is chosen afterwards: see dropAsset).
+  function addAudio(assetId: string, at = ed.outNow()) {
     commit();
-    const item = { id: crypto.randomUUID(), assetId, at, volume: 1 };
+    const item = { id: crypto.randomUUID(), assetId, at: Math.max(0, at), volume: 1 };
     ed.audios = [...ed.audios, item];
     ed.selectedAudio = item.id;
   }
-  const hasVideoClip = () => ed.clips.some((c) => ed.kindOf(c.assetId) === 'video');
-  // "+" puts videos and images on the main track (images play as stills); the layer button makes them overlays.
-  const addToTimeline = (a: Asset) => (a.kind === 'audio' ? addAudio(a.id) : addClip(a.id));
+  // Freeze frame at the playhead: the video under it (the selected one, else the lowest) holds that frame for
+  // `secs`; everything after it on its track and its sound's moves on.
+  function freezeHere(secs = 1) {
+    const at = ed.outNow();
+    const v = [ed.selOverlay, ...ed.shownOverlays.filter((x) => x.kind === 'video').sort((a, b) => trackOf(a) - trackOf(b))]
+      .find((x) => x && x.kind === 'video' && !x.fx?.hold && at >= x.at - 1e-3 && at < x.at + x.len - 0.05); // at its very start: a hold of its first frame
+    if (!v) return false;
+    commit();
+    ed.splitItems([v.id], at, false);
+    const tr = tracksOf(lists(), new Set([v.id]));
+    const { speed: _a, speedEnd: _b, rev: _r, trans: _t, ...keep } = v.fx ?? {};
+    const hold = { ...v, id: crypto.randomUUID(), at, len: secs, offset: fileAt(v, at), link: undefined, fx: { ...keep, hold: secs } };
+    ed.overlays = [...rippleInsert(ed.overlays, tr.v, at, secs), hold];
+    ed.audios = rippleInsert(ed.audios, tr.a, at, secs);
+    ed.selectedOverlay = hold.id;
+    return true;
+  }
 
   async function removeAsset(a: Asset) {
     if (!confirm(t('confirmRemoveAsset', { name: a.name }))) return;
-    setClips(ed.clips.filter((c) => c.assetId !== a.id));
     ed.audios = ed.audios.filter((x) => x.assetId !== a.id);
     ed.overlays = ed.overlays.filter((x) => x.assetId !== a.id);
     ed.assets = ed.assets.filter((x) => x.id !== a.id);
@@ -177,16 +166,10 @@ export function createEdit(ed: Ed) {
     await deleteAssetIfUnused(a.id, ed.projectId); // duplicates of this project may share the file
   }
 
-  // Register each <video>/<audio> with the player.
-  function media(node: HTMLMediaElement, [kind, id]: ['v' | 'a' | 'o', string]) {
-    const map = (kind === 'v' ? ed.player.videos : kind === 'o' ? ed.player.overlays : ed.player.audios) as Map<string, HTMLMediaElement>;
-    map.set(id, node);
-    return { destroy: () => map.get(id) === node && map.delete(id) };
-  }
   const update = (i: number, c: Caption) => setCaps(ed.captions.with(i, c));
 
   function download(ext: 'srt' | 'vtt') {
-    const caps = captionsForOutput(ed.displayCaps, ed.segments);
+    const caps = ed.displayCaps; // already on the timeline, without cut words
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([ext === 'srt' ? toSRT(caps) : toVTT(caps)], { type: 'text/plain' }));
     a.download = (ed.name || 'captions') + '.' + ext;
@@ -223,16 +206,18 @@ export function createEdit(ed: Ed) {
     }
   }
 
-  // Add a 2-second line at the playhead, kept in time order.
+  // Add a 2-second line at the playhead. Over footage it belongs to that footage (source time, so it follows it);
+  // over empty time it's a free line, timed on the timeline.
   function addLine() {
-    const s = ed.time, e = Math.min(ed.duration || s + 2, s + 2);
-    const c = setText({ id: crypto.randomUUID(), words: [{ text: '…', start: s, end: e }] }, t('newLine'));
+    const o = ed.outNow(), src = outToSrc(ed.pieces, o);
+    const s = src ?? o, e = s + 2;
+    const c = { ...setText({ id: crypto.randomUUID(), words: [{ text: '…', start: s, end: e }] }, t('newLine')), ...(src === null && { free: true }) };
     const i = ed.captions.findIndex((x) => startOf(x) > s);
     setCaps(i < 0 ? [...ed.captions, c] : ed.captions.toSpliced(i, 0, c));
     ed.tab = 'captions';
   }
-  const setFx = (p: Partial<Fx>) => ed.selected >= 0 && setSegs(ed.segments.with(ed.selected, { ...ed.segments[ed.selected], fx: { ...ed.segments[ed.selected].fx, ...p } }));
-  const deleteSelected = () => ed.selected >= 0 && (setSegs(remove(ed.segments, ed.selected)), (ed.selected = -1), announce(t('a11y.deleted')), true);
+  // Delete: the selected item goes and leaves a gap (Shift+Delete closes it up).
+  const deleteSelected = () => ed.removeOverlay() || removeAudioItem();
   function removeAudioItem() {
     if (!ed.selectedAudio) return false;
     commit();
@@ -243,7 +228,7 @@ export function createEdit(ed: Ed) {
   const setAudio = (id: string, patch: Partial<AudioItem>) => (ed.audios = ed.audios.map((a) => (a.id === id ? { ...a, ...patch } : a)));
 
   // Drag an asset card onto the timeline (or drop files anywhere on it). Drops the Timeline didn't place on a
-  // track (the header, empty space under the rows) go to the default place for their kind.
+  // track (the header, empty space under the rows) go onto the lowest free track at the playhead.
   function dropOnTimeline(e: DragEvent) {
     e.preventDefault();
     const id = e.dataTransfer?.getData('text/x-asset');
@@ -251,11 +236,12 @@ export function createEdit(ed: Ed) {
     if (a) addToTimeline(a);
     else ed.importMedia(e.dataTransfer?.files);
   }
-  // Put a new clip on V1 starting at output time `out` (see placeClip: empty time is filled, clips are inserted at an edge).
-  function insertClip(assetId: string, out: number) {
-    const c = newClip(assetId);
-    setClips(placeClip(ed.clips, clipSpans(ed.clips, ed.durations, ed.segments), c, out, clipLen(ed.durations, c)));
+  // "+": at the playhead, on V1 (or the lowest track with room there) — audio on A1.
+  function addToTimeline(a: Asset) {
+    ed.dropAsset(a, a.kind === 'audio' ? 'a' : 'v', 0, ed.outNow());
   }
 
-  return { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline, insertClip };
+  return { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps,
+    cutRanges, keepRanges, cutOutRange, setFx, fxDone, freezeHere, addAudio, addToTimeline, removeAsset, update, download,
+    addLocalFonts, addUploadedFont, addLine, deleteSelected, removeAudioItem, setAudio, dropOnTimeline };
 }

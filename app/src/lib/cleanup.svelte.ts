@@ -1,5 +1,5 @@
 import type { Word } from './captions';
-import { isCut, type Segment } from './cuts';
+import { isCutW, type Piece } from './model';
 import { isFiller, silenceRanges } from './transcript';
 
 // Clean-up settings (shared by the transcript panel, the timeline preview and auto-clean after transcription).
@@ -23,11 +23,13 @@ $effect.root(() => {
 });
 
 type Range = [number, number];
-// What a clean-up would cut right now: fillers and silences that are still in the video.
-export function cleanupRanges(words: Word[], duration: number, segments: Segment[]): { fillers: Range[]; silences: Range[] } {
-  const fillers = cleanup.fillers ? words.flatMap((w) => (isFiller(w) && !isCut(segments, w) ? [[w.start, w.end] as Range] : [])) : [];
+// What a clean-up would cut right now (source time): fillers and silences that the timeline still plays.
+export function cleanupRanges(words: Word[], pieces: Piece[]): { fillers: Range[]; silences: Range[] } {
+  words = [...words].sort((a, b) => a.start - b.start);
+  const end = Math.max(0, ...pieces.map((p) => p.end));
+  const fillers = cleanup.fillers ? words.flatMap((w) => (isFiller(w) && !isCutW(pieces, w) ? [[w.start, w.end] as Range] : [])) : [];
   const silences = cleanup.silences
-    ? silenceRanges(words, duration, cleanup.min, cleanup.pad).filter(([a, b]) => b - a > 0.05 && !isCut(segments, { start: a, end: b }))
+    ? silenceRanges(words, end, cleanup.min, cleanup.pad).filter(([a, b]) => b - a > 0.05 && !isCutW(pieces, { start: a, end: b }))
     : [];
   return { fillers, silences };
 }

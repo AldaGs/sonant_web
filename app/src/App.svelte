@@ -2,8 +2,8 @@
   import { setRange, split, startOf, endOf, type Caption, type Word } from './lib/captions';
   import { DEFAULT_STYLE, type Style } from './lib/render';
   import { BUNDLED, type Font, type SavedFont } from './lib/fonts';
-  import { freezeAt, splitAt, toSource, outDuration, captionsForOutput, cutRange, keepRange, keptCaptions, type Segment } from './lib/cuts';
-  import { seqDuration, move, type Asset, type Clip, type AudioItem } from './lib/project';
+  import { type Asset, type AudioItem } from './lib/project';
+  import { assignBases, piecesOf, captionsOut, keptCaps, srcToOut, timelineEnd, outToSrc } from './lib/model';
   import { Player } from './lib/player';
   import { Transitioner } from './lib/transitions';
   import { Grader, parseCube, type Color, type Lut } from './lib/grade';
@@ -24,7 +24,7 @@
   import { DEFAULT_HL, type Highlight } from './lib/highlights';
   import { zoomMoments, zoomShake, type AutoZoom } from './lib/autozoom';
   import { BUILTIN, type Template } from './lib/templates';
-  import { type Overlay } from './lib/overlay';
+  import { fitMedia, type Overlay } from './lib/overlay';
   import { type Thumb } from './lib/thumbs';
   import * as store from './lib/store';
   import { t, ui, setLang } from './lib/i18n.svelte';
@@ -46,20 +46,20 @@
   import { reconcile } from './lib/links';
   import { assignTracks, byTrack, isHidden, isMuted, type Tracks } from './lib/tracks';
   import { itemLen as audItemLen, STILL_LEN } from './lib/project';
-  import { tidyGaps } from './lib/gaps';
 
   // The editor works on one project at a time; the home page (#/) lists them all.
   let { projectId }: { projectId: string } = $props();
 
   // ---- Project media ----
   let assets = $state<Asset[]>([]);
-  let clips = $state<Clip[]>([]); // video track, in play order
-  let audios = $state<AudioItem[]>([]); // music / voiceover, output time
-  let clipVolume = $state(1); // volume of the clips' own sound
-  let denoise = $state(0); // AI noise reduction on the clips' sound: wet mix, 0 = off
-  let overlays = $state<Overlay[]>([]); // picture-in-picture video, images, text layers; output time, bottom first
+  // Every track works the same (lib/model.ts): video tracks V1, V2… hold video, pictures and text; audio tracks
+  // A1, A2… hold sound (a video's own sound is a linked item). All placed in output time.
+  let overlays = $state<Overlay[]>([]); // items on the video tracks; track 0 = V1
+  let audios = $state<AudioItem[]>([]); // items on the audio tracks; track 0 = A1
+  let clipVolume = $state(1); // extra volume for the sound of videos
+  let denoise = $state(0); // AI noise reduction on the sound of videos: wet mix, 0 = off
   let selectedOverlay = $state('');
-  // Numbered tracks (V2… for layers, A2… for music & VO) and their hide / mute / lock switches.
+  // Numbered tracks and their hide / mute / lock switches.
   let tracks = $state<Tracks>({ v: [], a: [] });
   const TOOL_ICON = { select: 'arrow_selector_tool', razor: 'content_cut', ripple: 'keyboard_tab', roll: 'arrow_range', slip: 'swap_horiz' } as const;
   let tool = $state<Tool>('select'); // timeline tool (V select, C razor, B ripple, R roll, Y slip)
@@ -74,13 +74,17 @@
     if (overlays.some((o) => o.track === undefined)) overlays = byTrack(assignTracks(overlays, (o) => o.len));
   });
   // Linked picture + sound (links.ts): after any edit, the side that changed leads and its partner follows.
-  const linkMem = new Map<string, { at: number; len: number; offset: number }>();
+  const linkMem = new Map<string, { at: number; len: number; offset: number; fx: string }>();
   $effect(() => {
     const r = reconcile(overlays, audios, (id) => durations.get(id) ?? 0, linkMem);
     if (r) ((overlays = r.overlays), (audios = r.audios));
   });
   $effect(() => {
     if (audios.some((a) => a.track === undefined)) audios = assignTracks(audios, (a) => audItemLen(a, durations.get(a.assetId) ?? 0));
+  });
+  // Audio items saved without a length play the rest of their file: give them one (edits work on lengths).
+  $effect(() => {
+    if (audios.some((a) => a.len === undefined && durations.has(a.assetId))) audios = audios.map((a) => (a.len === undefined && durations.has(a.assetId) ? { ...a, len: audItemLen(a, durations.get(a.assetId)!) } : a));
   });
   // assetId → image decoded once and downscaled for the preview. Drawing a full-size photo (and uploading it
   // to the GPU for effects) every frame is what made stills slow; a ~1080p bitmap costs about as much as a video frame.
@@ -94,17 +98,17 @@
 
   const durations = $derived(new Map(assets.map((a) => [a.id, a.duration])));
   const names = $derived(new Map(assets.map((a) => [a.id, a.name])));
-  const duration = $derived(seqDuration(clips, durations)); // whole sequence, before cuts
-  const hasMedia = $derived(clips.length > 0); // anything on the timeline (V1 is padded with a gap under layers and audio)
-  // Frame size: the first video or picture on V1, else on any layer.
-  const firstVideo = $derived([...clips.map((c) => c.assetId), ...overlays.map((o) => o.assetId)].map((id) => id && assets.find((a) => a.id === id)).find((a) => a && a.width) || undefined);
-  // Where the last layer or audio item ends (output time). V1 lasts at least this long: a gap fills the rest.
-  const layersEnd = $derived(Math.max(0, ...overlays.map((o) => o.at + o.len), ...audios.map((a) => a.at + audItemLen(a, durations.get(a.assetId) ?? 0))));
-  // Gaps on V1 (lib/gaps.ts): after any edit each gap is one black strip, and V1 is padded to the last layer.
+  const duration = $derived(timelineEnd({ overlays, audios }, (id) => durations.get(id) ?? 0)); // where the timeline ends
+  const hasMedia = $derived(overlays.length > 0 || audios.length > 0); // anything on the timeline
+  // Frame size: the first video or picture on the lowest track.
+  const firstVideo = $derived(byTrack(overlays).map((o) => o.assetId && assets.find((a) => a.id === o.assetId)).find((a) => a && a.width) || undefined);
+  // Every file has a place in source time, where captions are timed (lib/model.ts).
   $effect(() => {
-    const r = tidyGaps(clips, durations, segments, captions, layersEnd);
-    if (r) ((clips = r.clips), (segments = r.segments), (captions = r.captions));
+    if (assets.some((a) => a.base === undefined)) assets = assignBases(assets);
   });
+  const bases = $derived(new Map(assets.flatMap((a) => (a.base !== undefined ? [[a.id, a.base] as [string, number]] : []))));
+  // What plays each moment of each file: words show where their footage plays, and are "cut" where none does.
+  const pieces = $derived(piecesOf(shownOverlays, liveAudios, bases));
   const srcW = $derived(firstVideo?.width || 1280);
   const srcH = $derived(firstVideo?.height || 720);
   // Canvas shape for the whole project (Original, 9:16, 1:1, 4:5, 16:9); videos cover it around each strip's focus.
@@ -114,7 +118,7 @@
   const frameH = $derived(canvasSize.height);
 
   // ---- Editing state ----
-  let time = $state(0); // sequence time
+  let time = $state(0); // output time of the playhead
   let paused = $state(true);
   let fileDrag = $state(false); // files from the computer are being dragged over the editor
   let language = $state<'english' | 'spanish' | null>(null);
@@ -129,10 +133,6 @@
   let style = $state<Style>({ ...DEFAULT_STYLE });
   let fonts = $state<Font[]>([...BUNDLED]);
   let fontError = $state('');
-  let segments = $state<Segment[]>([]);
-  // Hidden <video> per clip file, plus reversed copies of reversed strips.
-  const videoIds = $derived([...new Set([...clips.flatMap((c) => (c.assetId ? [c.assetId] : [])), ...segments.flatMap((s) => (s.fx?.rev ? [s.fx.rev.assetId] : []))])]);
-  let selected = $state(-1);
   // Selected captions for per-caption styling. The last one clicked is the "primary": the style panel shows its look.
   let selectedCapIds = $state<string[]>([]);
   let selectedAudio = $state('');
@@ -145,7 +145,11 @@
   const selectedCap = $derived(selectedCapIndex >= 0 ? captions[selectedCapIndex] : null);
   const clearCapSelection = () => (selectedCapIds = []);
 
-  const player = new Player(() => ({ clips, audios: playAudios, segments, durations, clipVolume, overlays: playOverlays, speech }));
+  let cleanUrls = $state<Record<string, string>>({}); // assetId → noise-reduced sound of a video
+  const player = new Player(() => ({ overlays: playOverlays, audios: playAudios, durations, clipVolume, speech,
+    videoUrl: (id) => previewUrl(id), audioUrl: (id, linked) => (linked && cleanUrls[id]) || urls[id] }));
+  let mediaHost = $state<HTMLDivElement>();
+  $effect(() => { player.host = mediaHost ?? null; });
 
   // Undo/redo: snapshots of the editable project.
   let past = $state<Snap[]>([]);
@@ -206,25 +210,30 @@
   let myTemplates = $state<Template[]>([]);
   const selOverlay = $derived(overlays.find((o) => o.id === selectedOverlay) ?? null);
 
-  // ---- Transcription: per asset (cached), then laid out along the sequence ----
-  // Transcribe every clip, or just one (its captions are replaced; captions on other clips are kept).
-  let transcribeTarget = $state<string>('all'); // 'all' or a clip id
-  const targetClip = $derived(clips.find((c) => c.id === transcribeTarget) ?? null);
+  // ---- Transcription: per file (cached), then laid out where the timeline plays it ----
+  // Transcribe every video, or just one (its captions are replaced; captions on other footage are kept).
+  let transcribeTarget = $state<string>('all'); // 'all' or a video item id
+  const vidItems = $derived(byTrack(overlays).filter((o) => o.kind === 'video' && !o.fx?.hold && !o.fx?.rev));
+  const targetClip = $derived(vidItems.find((o) => o.id === transcribeTarget) ?? null);
 
   // Trim silences from the audio itself (no transcription): quiet stretches in every clip are cut.
   let silBusy = $state(false);
 
   // ---- Playback ----
-  const active = (c: Caption) => time >= startOf(c) && time < endOf(c);
-  const seek = (s: number) => (player.seek(Math.max(0, Math.min(s, duration))), (time = player.t), (outClock = player.o));
-  // Seek by output time (exact inside freeze frames, where source time stands still).
+  // The playhead in source time (the time captions are in), for the transcript.
+  const srcTime = $derived(outToSrc(pieces, time) ?? -1);
+  const active = (c: Caption) => srcTime >= startOf(c) && srcTime < endOf(c);
   function seekOut(o: number) {
-    seek(toSource(segments, o));
-    player.o = Math.max(0, Math.min(o, outDuration(segments)));
-    outClock = player.o;
+    player.seek(o);
+    time = outClock = player.o;
   }
+  // Seek to a source time (a word in the transcript): where the timeline plays it.
+  const seek = (s: number) => {
+    const o = srcToOut(pieces, s);
+    if (o !== null) seekOut(o);
+  };
   const toggle = () => (player.playing ? player.pause() : player.play(), (paused = !player.playing));
-  let outClock = $state(0); // output time from the player (moves during freeze frames, unlike `time`)
+  let outClock = $state(0); // output time from the player
   const outTime = $derived(outClock); // layers drawn this frame, bottom first (for hit tests)
   const trans = new Transitioner();
   let safe = $state<Platform | ''>('');
@@ -245,22 +254,21 @@
       error = 'err.badLut';
     }
   }
-  const selColor = $derived<Color>(selected >= 0 ? segments[selected]?.fx?.color ?? {} : {});
+  // The selected media item (video or picture): its effects show in the clip inspector.
+  const selMedia = $derived(selOverlay && selOverlay.kind !== 'text' ? selOverlay : null);
+  const selColor = $derived<Color>(selMedia?.fx?.color ?? {});
   // Slider drags: one undo step per drag (like layer edits).
   let colorEditing = false;
   function setColor(patch: Partial<Color>, replace = false) {
-    if (selected < 0 || !segments[selected]) return;
-    if (!colorEditing) ((colorEditing = true), commit());
-    const color = replace ? patch : { ...segments[selected].fx?.color, ...patch };
-    segments = segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, color } });
+    if (!selMedia) return;
+    setFx({ color: replace ? patch : { ...selMedia.fx?.color, ...patch } }, true);
   }
   // Reframing only matters when the canvas shape differs from the footage.
-  const reframes = $derived(Math.abs(frameW / frameH - srcW / srcH) > 0.01);
-  function setFocus(focus: { x: number; y: number } | undefined) {
-    if (selected < 0 || !segments[selected]) return;
-    if (!colorEditing) ((colorEditing = true), commit());
-    segments = segments.with(selected, { ...segments[selected], fx: { ...segments[selected].fx, focus } });
-  }
+  const reframes = $derived(!!selMedia && (() => {
+    const a = assets.find((x) => x.id === selMedia.assetId);
+    return !!a?.width && Math.abs(frameW / frameH - a.width / (a.height || 1)) > 0.01;
+  })());
+  const setFocus = (focus: { x: number; y: number } | undefined) => setFx({ focus }, true);
   // Auto-reframe: find the person in a few frames of the strip and centre on them (median, so one miss doesn't matter).
   let reframing = $state(false);
 
@@ -292,7 +300,7 @@
     sheet = same ? null : s;
   }
   let zoom = $state(1); // 1 = fit to the stage
-  const used = $derived(new Set([...clips.map((c) => c.assetId), ...audios.map((a) => a.assetId)]));
+  const used = $derived(new Set([...overlays.flatMap((o) => (o.assetId ? [o.assetId] : [])), ...audios.map((a) => a.assetId)]));
   const selAudio = $derived(audios.find((a) => a.id === selectedAudio));
   // Selecting music on the timeline brings up its settings in the Audio tab.
   $effect(() => {
@@ -302,9 +310,29 @@
   });
 
   let transcriptView = $state<TranscriptView>();
-  const cutRanges = (r: [number, number][]) => setSegs(r.reduce((s, [a, b]) => cutRange(s, a, b), segments));
-  const keepRanges = (r: [number, number][]) => setSegs(r.reduce((s, [a, b]) => keepRange(s, a, b), segments));
-  const visibleCaps = $derived(keptCaptions(captions, segments)); // kept words of the original captions
+  const visibleCaps = $derived(captionsOut(captions, pieces)); // the original captions where they play, without cut words
+  // The transcript reads in timeline order: each caption goes where its first played word plays; fully struck
+  // ones stay right after the caption before them in their file.
+  const transcriptCaps = $derived.by(() => {
+    let last = -1;
+    const keyed = captions.filter((c) => !c.free).map((c) => {
+      const o = c.words.map((w) => srcToOut(pieces, (w.start + w.end) / 2)).find((x) => x !== null) ?? null;
+      last = o ?? last + 1e-6;
+      return [last, c] as const;
+    });
+    return keyed.sort((a, b) => a[0] - b[0]).map((x) => x[1]);
+  });
+  const seekCap = (c: Caption) => (c.free ? seekOut(startOf(c)) : seek(startOf(c)));
+  // A caption dragged on the timeline (output time): footage-bound ones move by the same amount in source time.
+  function moveCap(id: string, s: number, e: number) {
+    captions = captions.map((c) => {
+      if (c.id !== id) return c;
+      const o = visibleCaps.find((x) => x.id === id);
+      if (c.free || !o) return setRange(c, s, e);
+      const k = (endOf(c) - startOf(c)) / Math.max(1e-3, endOf(o) - startOf(o)); // speed of the footage
+      return setRange(c, startOf(c) + (s - startOf(o)) * k, startOf(c) + (e - startOf(o)) * k);
+    });
+  }
   // ---- Translation: a second language per caption (Caption.tr), shown instead of the original when on ----
   let showTr = $state(false);
   let trDir = $state<Dir>('en-es');
@@ -313,15 +341,23 @@
   const hasTr = $derived(captions.some((c) => c.tr));
   // What the preview, SRT/VTT files and export show.
   // Zoom moments come from the original captions (translated ones don't carry emphasis).
-  const zooms = $derived(autoZoom ? zoomMoments(keptCaptions(captions, segments), autoZoom) : []);
+  // Moments are found in source time (so hand edits stay put through cuts) and drawn where they play.
+  const zoomsSrc = $derived(autoZoom ? zoomMoments(keptCaps(captions, pieces).filter((c) => !c.free), autoZoom) : []);
+  const zooms = $derived(zoomsSrc.flatMap((m) => {
+    const s = srcToOut(pieces, m.start);
+    return s === null ? [] : [{ ...m, start: s, end: s + (m.end - m.start) }];
+  }));
   const displayCaps = $derived(showTr ? translated(visibleCaps) : visibleCaps);
   // Where someone is talking, in output time: music marked "duck" dips under it.
-  const speech = $derived(speechRanges(captionsForOutput(visibleCaps, segments).flatMap((c) => c.words)));
+  const speech = $derived(speechRanges(visibleCaps.flatMap((c) => c.words)));
   // Clean-up preview on the timeline: what "Apply" would cut.
   const pendingCuts = $derived.by(() => {
     if (!cleanup.preview) return [];
-    const r = cleanupRanges(captions.flatMap((c) => c.words), duration, segments);
-    return [...r.fillers, ...r.silences];
+    const r = cleanupRanges(captions.filter((c) => !c.free).flatMap((c) => c.words), pieces);
+    return [...r.fillers, ...r.silences].flatMap(([a, b]) => {
+      const x = srcToOut(pieces, a), y = srcToOut(pieces, b - 1e-3);
+      return x === null || y === null ? [] : [[x, y] as [number, number]];
+    });
   });
 
   // Auto-select: follow the playhead. The caption under it becomes the selection (none in a gap),
@@ -330,12 +366,11 @@
   const pref = (k: string) => { try { return localStorage.getItem('sonant.' + k) !== '0'; } catch { return true; } };
   let snapOn = $state(pref('snap'));
   $effect(() => { try { localStorage.setItem('sonant.snap', snapOn ? '1' : '0'); } catch {} });
-  let marks = $state<[number | null, number | null]>([null, null]); // I/O range, sequence time
+  let marks = $state<[number | null, number | null]>([null, null]); // I/O range, output time
   let showKeys = $state(false);
   let autoSelect = $state((() => { try { return localStorage.getItem('sonant.autoSelect') !== '0'; } catch { return true; } })());
   $effect(() => { try { localStorage.setItem('sonant.autoSelect', autoSelect ? '1' : '0'); } catch {} });
   const capUnder = $derived(visibleCaps.find((c) => time >= startOf(c) && time < endOf(c))?.id ?? null);
-  const stripUnder = $derived(segments.length > 1 ? segments.findIndex((g) => time >= g.start && time < g.end) : -2);
   // Paused while a pointer is down, so a drag's live preview seek can't swap the selection mid-drag.
   let pressing = $state(false);
   $effect(() => {
@@ -351,13 +386,9 @@
     if (id) { if (selectedCapIds.length !== 1 || selectedCapIds[0] !== id) selectedCapIds = [id]; }
     else if (selectedCapIds.length) selectedCapIds = [];
   });
-  $effect(() => {
-    const i = stripUnder;
-    if (autoSelect && !pressing && i !== -2 && untrack(() => selected) !== i) selected = i;
-  });
 
   // Clear every selection so the inspector goes back to the caption styles.
-  const deselect = () => ((selected = -1), (selectedAudio = ''), (selectedOverlay = ''), (selectedCapIds = []));
+  const deselect = () => ((selectedAudio = ''), (selectedOverlay = ''), (selectedCapIds = []));
   const currentCap = $derived(visibleCaps.find((c) => time >= startOf(c) && time < endOf(c)) ?? selectedCap);
   const currentAnim = $derived(currentCap?.style?.animation ?? style.animation);
   const animName = $derived(t('anim.' + currentAnim));
@@ -369,11 +400,15 @@
   });
   const saveState = $derived(saving ? t('saving') : t('saved'));
 
-  const cutHere = () => (setSegs(splitAt(segments, time)), announce(t('a11y.split', { t: tc(outTime) })));
+  // S: split the selected item (and its linked sound/picture) at the playhead; with nothing selected under it,
+  // every unlocked track.
+  function cutHere() {
+    const sel = selectedOverlay || selectedAudio;
+    if (!(sel && splitItems([sel], outClock)) && !splitAll()) return;
+    announce(t('a11y.split', { t: tc(outTime) }));
+  }
   // Shift+S: split every unlocked track at the playhead.
   const cutAll = () => splitAll() && announce(t('a11y.split', { t: tc(outTime) }));
-  // Effects of the selected strip (captions behind the person, background swap).
-  const selFx = $derived(selected >= 0 && segments[selected] ? (segments[selected].fx ?? {}) : null);
   // Key colour eyedropper: keys are switched off in the preview, the next click samples the frame there.
   let pickKey = $state<string | null>(null);
   let showPerf = $state(false);
@@ -392,7 +427,6 @@
   const ed: Ed = {
     get PIC_MAX() { return PIC_MAX; },
     get addAudio() { return addAudio; },
-    get addClip() { return addClip; },
     get addOverlay() { return addOverlay; },
     get addText() { return addText; },
     get aimBusy() { return aimBusy; }, set aimBusy(v) { aimBusy = v; },
@@ -408,15 +442,18 @@
     get capInZone() { return capInZone; }, set capInZone(v) { capInZone = v; },
     get captions() { return captions; }, set captions(v) { captions = v; },
     get cleanBlobs() { return cleanBlobs; },
+    get cleanUrls() { return cleanUrls; },
     get cleanPct() { return cleanPct; }, set cleanPct(v) { cleanPct = v; },
     get clearCapSelection() { return clearCapSelection; },
     get clipVolume() { return clipVolume; }, set clipVolume(v) { clipVolume = v; },
-    get clips() { return clips; }, set clips(v) { clips = v; },
     get commit() { return commit; },
     get cutHere() { return cutHere; },
     get cutAll() { return cutAll; },
-    get insertClip() { return insertClip; },
     get cutRanges() { return cutRanges; },
+    get cutOutRange() { return cutOutRange; },
+    get dropAsset() { return dropAsset; },
+    get splitItems() { return splitItems; },
+    get pieces() { return pieces; },
     get deleteSelected() { return deleteSelected; },
     get denoise() { return denoise; }, set denoise(v) { denoise = v; },
     get displayCaps() { return displayCaps; },
@@ -434,8 +471,6 @@
     get future() { return future; }, set future(v) { future = v; },
     get grader() { return grader; },
     get hasMedia() { return hasMedia; },
-    get hasVideoClip() { return hasVideoClip; },
-    get layersEnd() { return layersEnd; },
     get highlights() { return highlights; }, set highlights(v) { highlights = v; },
     get histDialog() { return histDialog; },
     get hlBusy() { return hlBusy; }, set hlBusy(v) { hlBusy = v; },
@@ -482,13 +517,9 @@
     get saveToFile() { return saveToFile; },
     get savedFonts() { return savedFonts; }, set savedFonts(v) { savedFonts = v; },
     get saving() { return saving; }, set saving(v) { saving = v; },
-    get seek() { return seek; },
     get seekOut() { return seekOut; },
-    get segments() { return segments; }, set segments(v) { segments = v; },
     get selColor() { return selColor; },
-    get selFx() { return selFx; },
     get selOverlay() { return selOverlay; },
-    get selected() { return selected; }, set selected(v) { selected = v; },
     get selectedAudio() { return selectedAudio; }, set selectedAudio(v) { selectedAudio = v; },
     get selectedCap() { return selectedCap; },
     get selectedCapId() { return selectedCapId; },
@@ -499,7 +530,6 @@
     get setCaps() { return setCaps; },
     get setFx() { return setFx; },
     get setOverlay() { return setOverlay; },
-    get setSegs() { return setSegs; },
     get setTf() { return setTf; },
     get sheet() { return sheet; }, set sheet(v) { sheet = v; },
     get shortsMade() { return shortsMade; }, set shortsMade(v) { shortsMade = v; },
@@ -534,10 +564,10 @@
     get wordCache() { return wordCache; }, set wordCache(v) { wordCache = v; },
     get zooms() { return zooms; },
   };
-  const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, snap, restore, commit, undo, redo, announce, setCaps, setSegs, setClips, addClip, setClipLen, trimStrip, trimDone, moveStrip, addAudio, hasVideoClip, addToTimeline, removeAsset, media, update, download, addLocalFonts, addUploadedFont, addLine, setFx, deleteSelected, removeAudioItem, setAudio, dropOnTimeline, insertClip } = createEdit(ed);
+  const { selectCap, clearCapFields, updateCapStyle, applyAllCapStyle, resetCapStyle, commit, undo, redo, announce, setCaps, cutRanges, keepRanges, cutOutRange, setFx, fxDone, freezeHere, addAudio, addToTimeline, removeAsset, update, download, addLocalFonts, addUploadedFont, addLine, deleteSelected, removeAudioItem, setAudio, dropOnTimeline } = createEdit(ed);
   const { previewUrl, buildProxy, dropProxy, register, openHistory, restoreVersion, ago, saveToFile, importMedia, addVoiceover } = createMedia(ed);
   const { aimZooms, stabilize, reverseStrip, renderItem, setVoiceFx, detectSpeakers, findClips, setHlLen, makeAllShorts, previewClip, makeShort, run, cutAudioSilences, autoReframe, autoReframeAll, colorToAll, translateAll, detectBeatsFor, cutOnBeats } = createJobs(ed);
-  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, dropAsset, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey } = createLayers(ed);
+  const { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, dropAsset, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, splitItems } = createLayers(ed);
   // ---- Importing by drag and drop ----
   const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files');
   // Import into the Media panel only; nothing is put on the timeline until it's dragged there.
@@ -546,7 +576,7 @@
     if (added.length) ((leftTab = 'media'), announce(t('imported', { n: added.length })));
   }
   // Files dropped on a timeline track: imported, then placed one after another from the drop point.
-  async function dropFiles(list: FileList, zone: 'v' | 'main' | 'a', track: number, out: number) {
+  async function dropFiles(list: FileList, zone: 'v' | 'a', track: number, out: number) {
     let at = out;
     for (const a of await importMedia(list)) {
       dropAsset(a, zone, track, at);
@@ -609,7 +639,7 @@
         <Icon name="tune" />
         {t('inspector')}
       </button>
-      <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia || !segments.length}><Icon name="ios_share" size={16} /> {t('ex.title')}</button>
+      <button class="primary" onclick={() => exporter?.open()} disabled={!hasMedia}><Icon name="ios_share" size={16} /> {t('ex.title')}</button>
     </div>
   </header>
 
@@ -625,14 +655,14 @@
         <button class="icon sm" onclick={() => { if (sheet) sheet = null; else assetsOpen = false; }} aria-label={t('collapse')}><Icon name="chevron_left" /></button>
       </div>
       {#if leftTab === 'media'}
-        <MediaPanel {assets} {used} {urls} {thumbs} {proxyPct} {clips} {names} {durations} {kindOf} {fmt}
-          importMedia={importToBin} {addToTimeline} addOverlay={(a: Asset) => addOverlay(a, undefined, true)} {buildProxy} {dropProxy} {removeAsset} {setClips} {setClipLen} />
+        <MediaPanel {assets} {used} {urls} {thumbs} {proxyPct} {fmt}
+          importMedia={importToBin} {addToTimeline} addOverlay={(a: Asset) => addOverlay(a, undefined, true)} {buildProxy} {dropProxy} {removeAsset} />
       {:else if leftTab === 'audio'}
-        <AudioPanel {selAudio} {unlinkSound} outNow={() => outClock} {assets} {names} hasClips={clips.length > 0} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
+        <AudioPanel {selAudio} {unlinkSound} outNow={() => outClock} {assets} {names} hasClips={audios.some((a) => a.link)} bind:clipVolume bind:denoise {cleanPct} {vfxBusy} {beatBusy} {silBusy} {busy} {hasMedia}
           {setAudio} {cutOnBeats} {detectBeatsFor} {setVoiceFx} {renderItem} {commit} {removeAudioItem} {cutAudioSilences}
-          voCaps={captionsForOutput(displayCaps, segments)} {selectedSet} {language} {addVoiceover} />
+          voCaps={displayCaps} {selectedSet} {language} {addVoiceover} />
       {:else}
-        <AIToolsPanel {captions} {segments} {highlights} {hlOpts} bind:hlReframe {hlBusy} {shortsMade} {fmt} {findClips} {setHlLen} {previewClip} {makeShort} {makeAllShorts}
+        <AIToolsPanel {captions} {highlights} {hlOpts} bind:hlReframe {hlBusy} {shortsMade} {fmt} {findClips} {setHlLen} {previewClip} {makeShort} {makeAllShorts}
           {busy} {spkBusy} bind:spkCount bind:spkSplit {spkStatus} {spkPct} {spkMsg} {detectSpeakers}
           bind:autoZoom {aimBusy} zoomCount={zooms.length} {aimZooms} />
       {/if}
@@ -642,24 +672,14 @@
   <section class="text panel" class:shown={sheet === 'text'}>
     <div class="grab" aria-hidden="true"></div>
     <TextPanel bind:tab bind:language bind:transcribeTarget bind:transcriptView bind:speakers bind:trDir bind:showTr bind:style
-      {notice} {busy} {status} {pct} {error} {hasMedia} {captions} {clips} {names} {segments} {time} {duration}
-      {trBusy} {hasTr} {selectedSet} {run} {seek} {cutRanges} {keepRanges} {setCaps} {translateAll} {active} {selectCap} {update} {addLine}
+      {notice} {busy} {status} {pct} {error} {hasMedia} {captions} {transcriptCaps} videos={vidItems} {names} {pieces} time={srcTime}
+      {trBusy} {hasTr} {selectedSet} {run} {seek} {seekCap} {cutRanges} {keepRanges} {setCaps} {translateAll} {active} {selectCap} {update} {addLine}
       onclose={() => (sheet = null)} />
   </section>
 
   <section class="center">
-    <!-- Hidden media elements the player drives; the canvas shows the result. -->
-    {#each videoIds as id (id)}
-      <!-- svelte-ignore a11y_media_has_caption -->
-      <video src={previewUrl(id)} use:media={['v', id]} preload="auto" playsinline hidden></video>
-    {/each}
-    {#each overlays.filter((o) => o.kind === 'video') as o (o.id)}
-      <!-- svelte-ignore a11y_media_has_caption -->
-      <video src={previewUrl(o.assetId ?? '')} use:media={['o', o.id]} preload="auto" playsinline hidden></video>
-    {/each}
-    {#each audios as item (item.id)}
-      <audio src={urls[item.assetId]} use:media={['a', item.id]} preload="auto"></audio>
-    {/each}
+    <!-- Hidden media elements the player lends to items as they play; the canvas shows the result. -->
+    <div class="media-host" bind:this={mediaHost} hidden></div>
     <div
       class="stage"
       class:zoomed={zoom !== 1}
@@ -686,11 +706,11 @@
     </div>
     <div class="transport">
       <div class="row">
-        <button class="round" onclick={() => seek(time - 5)} disabled={!hasMedia} aria-label={t('back')}><Icon name="replay_5" size={22} /></button>
+        <button class="round" onclick={() => seekOut(time - 5)} disabled={!hasMedia} aria-label={t('back')}><Icon name="replay_5" size={22} /></button>
         <button class="round play" onclick={toggle} disabled={!hasMedia} aria-label={paused ? t('play') : t('pause')}><Icon name={paused ? 'play_arrow' : 'pause'} size={28} /></button>
-        <button class="round" onclick={() => seek(time + 5)} disabled={!hasMedia} aria-label={t('forward')}><Icon name="forward_5" size={22} /></button>
+        <button class="round" onclick={() => seekOut(time + 5)} disabled={!hasMedia} aria-label={t('forward')}><Icon name="forward_5" size={22} /></button>
         {#if capInZone}<span class="zonewarn" role="status">{t('capInZone', { app: t('safe.' + safe) })}</span>{/if}
-        <span class="mono tcode">{tc(outTime)} <span class="muted">/ {tc(outDuration(segments))}</span></span>
+        <span class="mono tcode">{tc(outTime)} <span class="muted">/ {tc(duration)}</span></span>
       </div>
       <div class="row zoomctl">
         <select class="ratio" bind:value={safe} aria-label={t('safeZones')} title={t('safeZonesTip')}>
@@ -715,16 +735,17 @@
   <aside class="style panel" class:shown={sheet === 'style'}>
     <div class="grab" aria-hidden="true"></div>
     <div class="sheet-bar"><h2>{t('inspector')}</h2><button class="icon sm" onclick={() => (sheet = null)} aria-label={t('ex.close')}><Icon name="close" /></button></div>
-    {#if selFx && !selOverlay}
-      <ClipInspector {selFx} {selected} {segments} {imageAssets} {revPct} {stabPct} pickingKey={pickKey === 'strip'}
-        {setFx} {reverseStrip} {stabilize} {startPick} {setStripKey}
-        {selColor} {luts} {setColor} oncolordone={() => (colorEditing = false)} {importLut} {colorToAll}
-        {reframes} {setFocus} {autoReframe} {autoReframeAll} {reframing} webgl={grader.ok} {deselect} />
+    {#if selMedia}
+      <ClipInspector item={selMedia} {imageAssets} {revPct} {stabPct} pickingKey={pickKey === selMedia.id}
+        {setFx} {fxDone} {reverseStrip} {stabilize} {startPick}
+        {selColor} {luts} {setColor} oncolordone={fxDone} {importLut} {colorToAll}
+        {reframes} {setFocus} {autoReframe} {autoReframeAll} {reframing} webgl={grader.ok} />
     {/if}
     {#if selOverlay}
       <LayerInspector o={selOverlay} {outTime} {fonts} {overlays} {pickKey} {doneEditing} {closeLayer} {setOverlay} {setMotion} {setTf}
         {jumpKey} {toggleKey} {punchIn} {clearKeys} {startPick} {removeOverlay} {restack} {layerT} {outNow}
-        linkedSound={selOverlay.link ? audios.find((a) => a.link === selOverlay.link) : undefined} {setAudio} {detachSound} {unlinkSound} />
+        linkedSound={selOverlay.link ? audios.find((a) => a.link === selOverlay.link) : undefined} {setAudio} {detachSound} {unlinkSound}
+        fitOf={(o) => { const a = assets.find((x) => x.id === o.assetId); return fitMedia(a?.width, a?.height, frameW, frameH); }} />
     {/if}
     {#if !selOverlay}
     <StylePanel
@@ -767,8 +788,8 @@
       <div class="row">
         <button class="sm" onclick={addText} title={t('addTextTip')}><Icon name="title" /> {t('addText')}</button>
         <button class="sm" onclick={addTitle} title={t('addTitleTip')}><Icon name="animation" /> {t('addTitle')}</button>
-        <button class="sm" onclick={() => setSegs(freezeAt(segments, time, 1))} disabled={!segments.length} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
-        <button class="sm" onclick={cutHere} disabled={!segments.length} title={t('splitTip')}><Icon name="content_cut" /> {t('splitAt')}</button>
+        <button class="sm" onclick={() => freezeHere(1)} disabled={!overlays.some((o) => o.kind === 'video')} title={t('freezeTip')}><Icon name="ac_unit" /> {t('freeze')}</button>
+        <button class="sm" onclick={cutHere} disabled={!hasMedia} title={t('splitTip')}><Icon name="content_cut" /> {t('splitAt')}</button>
         <button class="sm" onclick={cutAll} title={t('splitAllTip')}><Icon name="content_cut" /> {t('splitAll')}</button>
         <span class="tools" role="radiogroup" aria-label={t('tlTools')}>
           {#each TOOLS as k}
@@ -776,7 +797,7 @@
               title={t('tool.' + k)} aria-label={t('tool.' + k)}><Icon name={TOOL_ICON[k]} /></button>
           {/each}
         </span>
-        <button class="sm" onclick={deleteSelected} disabled={selected < 0 || segments.length < 2} title={t('delTip')}>{t('del')}</button>
+        <button class="sm" onclick={deleteSelected} disabled={!selectedOverlay && !selectedAudio} title={t('delTip')}>{t('del')}</button>
         <button class="sm icon" class:on={snapOn} aria-pressed={snapOn} title={t('snapTip')} aria-label={t('snap')}
           onclick={() => (snapOn = !snapOn)}><Icon name="magnet" /></button>
         <button class="sm icon" class:on={autoSelect} aria-pressed={autoSelect} title={t('autoSelectTip')} aria-label={t('autoSelect')}
@@ -788,20 +809,19 @@
         <button class="sm icon" onclick={() => (showKeys = true)} title={t('keysTitle') + ' (?)'} aria-label={t('keysTitle')}><Icon name="keyboard" /></button>
       </div>
     </div>
-    <Timeline {segments} {time} {clips} {durations} {names} {thumbs} {peaks} {duration} {captions} {audios}
-      bind:zoom={tlZoom} bind:selected bind:selectedAudio selectedCapIds={selectedSet} onselectcap={selectCap}
+    <Timeline {durations} {names} {thumbs} {peaks} captions={visibleCaps} {audios} duration={duration}
+      bind:zoom={tlZoom} bind:selectedAudio selectedCapIds={selectedSet} onselectcap={selectCap}
       animLabel={t('allCaptions', { name: animName })}
-      zooms={zooms} onzoom={(k, s) => autoZoom && (autoZoom.edits = { ...autoZoom.edits, [k]: s })}
-      out={outClock} onseek={(o) => seekOut(o)} onseeksrc={seek} snap={snapOn} range={marks} pending={pendingCuts} beats={beatMap}
+      {zooms} onzoom={(k, s) => autoZoom && (autoZoom.edits = { ...autoZoom.edits, [k]: s === null ? null : outToSrc(pieces, s) })}
+      out={outClock} onseek={(o) => seekOut(o)} snap={snapOn} range={marks} pending={pendingCuts} beats={beatMap}
       {overlays} bind:selectedOverlay {tracks}
       onretrack={(k, id, n) => retrack(k, id, n, false)} ontrack={setTrack} onaddtrack={addTrack} ondroptrack={dropTrack}
       onoverlay={(id, patch) => setOverlay(id, patch, false)}
-      oncommit={() => (trimDone(), toolDone(), commit())}
+      oncommit={() => (toolDone(), commit())}
       ondropasset={(id, zone, k, o) => { const a = assets.find((x) => x.id === id); if (a) dropAsset(a, zone, k, o); }}
       ondropfiles={dropFiles}
-      {tool} ontool={toolEdit} onrazor={(k, id, t0) => (k === 's' ? setSegs(splitAt(segments, toSource(segments, t0))) : razor(k, id, t0))}
-      ontrim={trimStrip} onmovestrip={moveStrip}
-      onmovecap={(id, s, e) => (captions = captions.map((c) => (c.id === id ? setRange(c, s, e) : c)))}
+      {tool} ontool={toolEdit} onrazor={(k, id, t0) => razor(k, id, t0)}
+      onmovecap={moveCap}
       onaudio={(id, patch) => setAudio(id, patch)} />
   </section>
 
@@ -842,7 +862,7 @@
       {#each versions as v (v.time)}
         <li>
           <span><b>{ago(v.time)}</b>{#if v.label} · <em>{v.label}</em>{/if}<br />
-            <span class="muted small">{t('versionInfo', { caps: v.doc.captions?.length ?? 0, strips: v.doc.segments?.length ?? 0, layers: v.doc.overlays?.length ?? 0, secs: Math.round((v.doc.segments ?? []).reduce((a, s) => a + s.end - s.start, 0)) })}</span></span>
+            <span class="muted small">{t('versionInfo', { caps: v.doc.captions?.length ?? 0, strips: v.doc.segments?.length ?? (v.doc.overlays ?? []).filter((o) => o.kind !== 'text').length, layers: v.doc.overlays?.length ?? 0, secs: Math.round(v.doc.segments ? v.doc.segments.reduce((a, s) => a + s.end - s.start, 0) : timelineEnd({ overlays: v.doc.overlays ?? [], audios: v.doc.audios ?? [] }, (id) => durations.get(id) ?? 0)) })}</span></span>
           <button class="sm" onclick={() => restoreVersion(v)}>{t('restore')}</button>
         </li>
       {/each}
@@ -864,8 +884,8 @@
       </div>
     </div>
   {/if}
-  <ExportDialog bind:this={exporter} {name} {segments} captions={displayCaps} onsubtitles={captions.length ? download : undefined} {style} {srcW} {srcH} {canvasAspect}
-    source={() => ({ files, assets: $state.snapshot(assets), clips: $state.snapshot(clips), audios: $state.snapshot(liveAudios), overlays: $state.snapshot(shownOverlays), speech: $state.snapshot(speech), luts, clipVolume, zoomShake: !!autoZoom?.shake, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
+  <ExportDialog bind:this={exporter} {name} {duration} captions={displayCaps} onsubtitles={captions.length ? download : undefined} {style} {srcW} {srcH} {canvasAspect}
+    source={() => ({ files, assets: $state.snapshot(assets), audios: $state.snapshot(liveAudios), overlays: $state.snapshot(shownOverlays), speech: $state.snapshot(speech), luts, clipVolume, zoomShake: !!autoZoom?.shake, clean: denoise ? new Map(cleanBlobs) : undefined, zooms: $state.snapshot(zooms), zoomScale: autoZoom?.scale })} />
 {/if}
 
 <style>

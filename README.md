@@ -12,9 +12,9 @@ Everything runs locally in the browser. No server, no account, and your media ne
   - Autosaved in the browser. See [Projects and saving](#projects-and-saving).
 - **Media:**
   - Import several videos, pictures and audio files at once by picking them or dropping them anywhere in the editor. Imports go to the Media panel only, like an NLE bin.
-  - Drag media onto any track: V1 (the main video), V2 and up (layers, full frame by default) or an A track. Files dropped straight onto a track are imported and placed there.
-  - Clips on V1 can have **gaps** between them: drop or drag a clip into empty time and it stays there (moving a clip leaves a gap behind). Delete a gap to close it up. V1 always lasts until the last layer or audio item ends.
-  - Audio goes onto **Music & VO** tracks, with its own volume and a volume for the clips' own sound.
+  - Drag media onto any track: video tracks V1, V2… or audio tracks A1, A2…. Every track works the same way and takes any kind of media: video, pictures and text on video tracks, sound on audio tracks. Files dropped straight onto a track are imported and placed there.
+  - Items sit anywhere in time, with **gaps** between them if you like, and move freely between tracks (drag up or down). A video's sound is its own linked item on an audio track.
+  - Each audio item has its own volume; a separate level sets the volume of every video's sound.
 - **Transcription:**
   - Whisper runs in the browser (WebGPU, falls back to WASM).
   - English, Spanish or auto-detect, with word-level timing.
@@ -50,22 +50,22 @@ Everything runs locally in the browser. No server, no account, and your media ne
   - Drag the caption box (or its round handle) to move it. Touch gets a larger grab area.
   - Arrow keys nudge it; Shift moves it further.
 - **Animated titles:** **Animated title** in the toolbar adds a text layer on top of the stack that animates in and out while travelling along a path, each letter bending to follow the curve. Paths: S curve, Wave, Arc, Loop-the-loop, Zigzag, or none. In & out styles: Pop, Drop & bounce, Spin, Swing, Stretch, Flip. In the layer inspector, set the in and out times, how far it travels and how deep the curve bends. The path is shown as a dashed guide in the preview; drag the layer to move the whole path. While a layer is selected, the Style panel shows only that layer's settings.
-- **Tracks:** a multi-track timeline. The main sequence is V1 with its sound on A1; layers go on V2, V3, … (higher tracks draw on top) and music and voiceover on A2, A3, …. Drag items sideways to move them in time and up or down to change track; items on one track never overlap. Each track has a hide (V) or mute (A) switch and a lock. **+V / +A** add an empty track; double-click an empty track's name to delete it. Bring forward / send backward on a layer moves it up or down a track, opening a new track if the spot is taken. Hidden and muted tracks are left out of the export too. **Split all** (Shift+S) cuts the main strip and every unlocked layer and audio item at the playhead; S still splits only the main strip.
-- **Layers:** video, images and text on V2 and up (full frame by default, or a small picture-in-picture from the Media panel), with move/scale/rotate handles, crop, flip, opacity and **keyframes** (position, size, rotation, opacity). Punch-in presets for layers and strips.
-- **Clip tools (per strip):** speed 0.25×–4× (pitch preserved), freeze frame, transitions (fade, dip to black/white, zoom, whip, slide), lift to leave a gap, color (brightness, contrast, saturation, temperature, presets, `.cube` LUTs) and background removal / captions behind the person.
-- **Canvas shape:** Original, 9:16, 1:1, 4:5 or 16:9, with a focus point per strip and auto-reframe that follows the person.
+- **Tracks:** a multi-track timeline where every track is the same kind of track. V1, V2, … hold video, pictures and text (higher tracks draw on top); A1, A2, … hold sound. Drag items sideways to move them in time and up or down to change track; items on one track never overlap. Each track has a hide (V) or mute (A) switch and a lock. **+V / +A** add an empty track; double-click an empty track's name to delete it. Bring forward / send backward moves an item up or down a track, opening a new track if the spot is taken. Hidden and muted tracks are left out of the export too. **S** splits the selected item (and its linked sound or picture) at the playhead, or every unlocked track when nothing is selected; **Split all** (Shift+S) always cuts every unlocked track.
+- **Items:** video and pictures **fill the frame** by default (cropped around a focus point, like a main video); switch that off, or use the Media panel's picture-in-picture button, to place, size and animate them freely with move/scale/rotate handles, crop, flip, opacity and **keyframes** (position, size, rotation, opacity). Text and animated titles work on any track. The lowest picture on screen is the "main video" of that moment: background swaps, text behind the person, auto-zoom and transitions apply to it.
+- **Clip tools (per video or picture):** speed 0.1×–16× and ramps (pitch preserved; its sound follows), freeze frame, transitions into it (fade, dip to black/white, zoom, whip, slide), color (brightness, contrast, saturation, temperature, presets, `.cube` LUTs) and background removal / captions behind the person.
+- **Canvas shape:** Original, 9:16, 1:1, 4:5 or 16:9, with a focus point per video and auto-reframe that follows the person.
 - **Fonts:** bundled free OFL fonts, plus your own fonts from your PC (Chrome/Edge) or uploaded files.
 - **Timeline:**
-  - Rows for layer tracks, video thumbnails, clip waveform, caption blocks, text animation, and audio tracks.
+  - Video tracks with thumbnails, caption blocks, text animation, and audio tracks with waveforms.
   - Time ruler and zoom (wheel scrubs, pinch or Ctrl+wheel zooms; on phones, swipe to scrub under a fixed centre playhead).
   - Split, delete, trim and undo/redo; snapping to edges, the playhead and music beats.
-  - **Clips with in/out points:** a clip on V1 can show any part of its file. Drag a strip's outer edge past the clip's end to bring back hidden footage (or drag it in to hide some); clips after it move along. The same file can be used several times.
-  - **Tools** (toolbar, or keys): **Select** (V) moves and trims. **Razor** (C) cuts the layer, audio item or V1 strip you click, at that point. **Ripple** (B) trims a layer or audio edge and moves everything after it on the track by the same amount, and Delete closes the gap. **Roll** (R) drags the cut between two touching items on a track: one grows as the other shrinks. **Slip** (Y) drags a video layer or audio item to change which part of its file plays, keeping its place and length. Locked tracks are left alone.
-  - **Linked picture and sound:** a video layer brings its sound as its own item on an audio track, linked to the picture (a link icon on both). Moving, trimming, slipping, rolling, cutting or deleting one does the same to the other, and selecting one outlines its partner. **Unlink** (layer or audio settings) lets you edit them apart; **Sound to audio track** links a layer that plays its own sound. Projects from earlier versions are converted when opened.
+  - **In and out points:** a video item can show any part of its file; drag its edges to show more or less of it. The same file can be used several times.
+  - **Tools** (toolbar, or keys): **Select** (V) moves and trims. **Razor** (C) cuts the item you click, at that point. **Ripple** (B) trims an edge and moves everything after it on the track by the same amount, and Delete closes the gap. **Roll** (R) drags the cut between two touching items on a track: one grows as the other shrinks. **Slip** (Y) drags a video or audio item to change which part of its file plays, keeping its place and length. Locked tracks are left alone.
+  - **Linked picture and sound:** a video brings its sound as its own item on an audio track, linked to the picture (a link icon on both). Moving, trimming, slipping, rolling, retiming, cutting or deleting one does the same to the other, and selecting one outlines its partner. **Unlink** (item or audio settings) lets you edit them apart. Projects from earlier versions are converted when opened.
   - **Layer transitions:** in the layer settings, **Transitions** sets how a layer comes in and goes out: fade, zoom, slide from/to any side, or wipe, each with its own duration. They show in the preview and the export. Cutting a layer keeps the in on the first half and the out on the second.
   - **Audio fades and volume points:** in the audio settings, **Fade in** / **Fade out**, and **Volume point** adds a point at the playhead. The item's volume shows as a yellow line on the timeline; drag a point up or down (0–150%) or along. Playback and export follow the line.
-  - **Drag media onto a track:** drag a card from the Media panel onto the timeline. A highlight shows the track and a marker the time. On a layer track (V2…) it becomes a layer there; above the top track it opens a new one. On V1 it's inserted into the sequence at the nearest clip boundary. On an audio track (A2…) audio files, and the sound of videos, land at that time; below the last track opens a new one. If the spot is taken, a new track opens there. Drops elsewhere use the default place.
-  - **Reorder strips:** select a strip on V1 and drag it to another place; a white marker shows where it lands. On touch screens, press and hold the selected strip until it picks up (a short buzz where supported), then drag; the timeline scrolls when your finger nears an edge. A plain swipe still scrolls the timeline. It becomes its own clip and drops in at the nearest clip boundary, and its words and captions move with it.
+  - **Drag media onto a track:** drag a card from the Media panel onto the timeline. A highlight shows the track and a marker the time. Video and pictures land on the video track under the pointer (a video's sound goes on the lowest free audio track); sound lands on the audio track under it. Above the top track, or below the last, a new track opens; if the spot is taken, a new track opens there. **+** on a card adds it at the playhead.
+  - **Text-based editing on any track:** captions follow the footage they were transcribed from, wherever it sits. Deleting words cuts that moment out of the video (and its sound) that plays it and closes the gap on its track; restoring them puts it back.
   - Keyboard and screen-reader friendly: focusable items with spoken labels.
   - Drag caption and audio blocks to move them, or drag their **edges** to retime captions and trim audio.
 - **Audio:** duck music under speech, find beats and cut the video on them.
@@ -87,13 +87,13 @@ Details and status: [`PRO_FEATURES_PLAN.md`](PRO_FEATURES_PLAN.md).
 - **Smart auto-zoom:** a quick punch-in on each emphasized word (and optionally at sentence starts), with an optional shake as it lands.
   - Zooms show as ◎ on the timeline: drag to move one, double-click to remove it.
   - **Aim at the person** zooms towards the speaker.
-- **Green screen:** chroma key on layers and on main-video strips, with tolerance, softness and spill removal, and an eyedropper that picks from the preview. On a strip, the keyed area shows the strip's Background.
+- **Green screen:** chroma key on any video or picture, with tolerance, softness and spill removal, and an eyedropper that picks from the preview. On an item that fills the frame, the keyed area shows the strip's Background.
 - **Layers:** blend modes (multiply, screen, overlay…) and masks (ellipse, rectangle, linear) with feather and invert. Masks can be animated with keyframes, or with the **Wipe reveal** and **Spotlight reveal** presets.
-- **Effects:** vignette, film grain, glow and RGB split, plus Film, Dreamy, Glitch and VHS looks. Camera shake per strip, and zoom blur on the zoom transition.
+- **Effects:** vignette, film grain, glow and RGB split, plus Film, Dreamy, Glitch and VHS looks. Camera shake per video, and zoom blur on the zoom transition.
 - **Templates:** progress bar, and emoji stickers (🔥, 😱 WOW, 👍 Like & subscribe, 👉).
-- **Stabilize** a shaky strip (moves only; zooms in slightly to hide the edges). **Reverse** a strip (picture and sound).
-- **AI noise reduction** (RNNoise) on the clips' sound, video layers, and each Music & VO item: Light, Medium or Strong.
-- **Voice changer** on Music & VO items: Deep, Higher, Chipmunk, Robot, Radio, Phone.
+- **Stabilize** a shaky video (moves only; zooms in slightly to hide the edges). **Reverse** a video (picture and sound).
+- **AI noise reduction** (RNNoise) on the sound of videos and on each audio item: Light, Medium or Strong.
+- **Voice changer** on audio items: Deep, Higher, Chipmunk, Robot, Radio, Phone.
 - **AI voiceover:**
   - Engines: Kokoro (natural English) and Piper (English and Spanish).
   - Type a script, or **dub** the captions: each line is placed at its caption's time and fitted to it. With translation on, this makes a dubbed version.
@@ -192,7 +192,11 @@ app/src/
     player.ts             multi-clip playback clock
     assets.ts             media import, probing, file-type detection
     captions.ts           caption model, grouping, editing, SRT/VTT
-    cuts.ts               kept segments, sequence↔output time mapping, word cuts
+    model.ts              the timeline model: items on tracks, source time for captions, ripple cut / restore
+    migrate.ts            upgrade projects saved before every track worked the same
+    compose.ts            one frame of the timeline (preview and export draw with it)
+    fill.ts               placing media that fills the frame
+    cuts.ts               speed, ramps and freeze-frame time maths
     transcript.ts         filler words, silences, search
     keywords.ts           auto-emphasis: picks the key word of each caption
     autozoom.ts           smart auto-zoom on emphasized words
@@ -204,7 +208,7 @@ app/src/
     diarize.ts            speaker detection: voice fingerprints (diarize.worker.ts) + clustering
     stabilize.ts          stabilization: motion estimation, path smoothing, corrections
     voicefx.ts            voice changer (pitch shift, robot, radio, phone)
-    reverse.ts            reversed copy of a strip (picture + sound)
+    reverse.ts            reversed copy of a video item (picture + sound)
     audiodecode.ts        streamed audio decoding (only the audio track, never the whole file)
     crash.ts              crash notes, error log and reports (CrashReport.svelte)
     models.ts             list / remove downloaded AI models
@@ -220,7 +224,7 @@ app/src/
     audio.ts              ducking and loudness (BS.1770)
     beats.ts              beat tracking
     stretch.ts            pitch-preserving time-stretch (WSOLA)
-    transitions.ts        strip transitions
+    transitions.ts        transitions into an item on the bottom track
     grade.ts              color grading and LUTs (WebGL2)
     reframe.ts            canvas shape fitting and focus point
     segment.ts            person segmentation (MediaPipe)
@@ -245,14 +249,14 @@ icon/                     (repo root) Sonant mark, lockups and usage guide
 | J / L | Back 1s (Shift: 5s) / play |
 | ← / → (timeline) | Step a frame; Shift steps a second |
 | Home / End | Go to start / end |
-| S | Split at playhead |
+| S | Split the selected item at the playhead (every track when nothing is selected) |
 | I / O, X | Mark in / out, cut the marked range |
-| Shift+Delete | Lift a strip (leave a gap) |
+| Shift+Delete | Ripple delete: remove the selected item and close the gap |
 | N | Toggle snapping (hold Alt to drag freely) |
 | T | Add a text layer |
 | A | Toggle auto-select at playhead |
 | ? | Shortcut cheat-sheet |
-| Delete | Cut or restore selected words (Transcript tab), remove the selected audio item, or delete the selected timeline segment |
+| Delete | Delete the selected item (leaving a gap), or cut / restore the selected words (Transcript tab) |
 | ← / → | Move the word selection in the transcript (Shift extends it) |
 | Arrows (preview focused) | Nudge the caption; Shift for bigger steps |
 | Esc | Clear the caption selection |

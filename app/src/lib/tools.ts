@@ -9,8 +9,9 @@ export const TOOLS = ['select', 'razor', 'ripple', 'roll', 'slip'] as const;
 export type Tool = (typeof TOOLS)[number];
 export const TOOL_KEYS: Record<string, Tool> = { v: 'select', c: 'razor', b: 'ripple', r: 'roll', y: 'slip' };
 
-/** An item as the tools see it. max: file length for media (offset + len can't pass it), Infinity otherwise. */
-export type Span = { id: string; track: number; at: number; len: number; offset?: number; max: number };
+/** An item as the tools see it. max: file length for media (offset + len·k can't pass it), Infinity otherwise.
+ * k: file seconds per output second (its speed; 1 when not set). */
+export type Span = { id: string; track: number; at: number; len: number; offset?: number; max: number; k?: number };
 export type Patch = { at?: number; len?: number; offset?: number };
 
 const MIN = 0.2;
@@ -26,15 +27,15 @@ export function rippleTrim(spans: Span[], id: string, side: 'start' | 'end', d: 
   const out = new Map<string, Patch>();
   const s = spans.find((x) => x.id === id);
   if (!s) return out;
-  const off = s.offset ?? 0;
+  const off = s.offset ?? 0, k = s.k ?? 1;
   let delta: number; // change in length
   if (side === 'end') {
-    delta = Math.max(MIN - s.len, Math.min((media(s) ? s.max - off : Infinity) - s.len, d));
+    delta = Math.max(MIN - s.len, Math.min((media(s) ? (s.max - off) / k : Infinity) - s.len, d));
     out.set(id, { len: s.len + delta });
   } else {
-    const dd = Math.max(media(s) ? -off : -Infinity, Math.min(s.len - MIN, d)); // >0 trims the head off
+    const dd = Math.max(media(s) ? -off / k : -Infinity, Math.min(s.len - MIN, d)); // >0 trims the head off
     delta = -dd;
-    out.set(id, media(s) ? { len: s.len - dd, offset: off + dd } : { len: s.len - dd });
+    out.set(id, media(s) ? { len: s.len - dd, offset: off + dd * k } : { len: s.len - dd });
   }
   if (Math.abs(delta) < EPS) return new Map();
   const end = s.at + s.len;
@@ -70,10 +71,11 @@ export function rollEdit(spans: Span[], id: string, side: 'start' | 'end', d: nu
   if (!s || !n) return null;
   const [l, r] = side === 'end' ? [s, n] : [n, s];
   // Left can't shrink under MIN or run past its file; right can't shrink under MIN or start before its file.
-  const lo = Math.max(MIN - l.len, media(r) ? -(r.offset ?? 0) : -Infinity);
-  const hi = Math.min(r.len - MIN, media(l) ? l.max - (l.offset ?? 0) - l.len : Infinity);
+  const lk = l.k ?? 1, rk = r.k ?? 1;
+  const lo = Math.max(MIN - l.len, media(r) ? -(r.offset ?? 0) / rk : -Infinity);
+  const hi = Math.min(r.len - MIN, media(l) ? (l.max - (l.offset ?? 0)) / lk - l.len : Infinity);
   const dd = Math.max(lo, Math.min(hi, d));
-  const rOff = media(r) ? (r.offset ?? 0) + dd : undefined;
+  const rOff = media(r) ? (r.offset ?? 0) + dd * rk : undefined;
   return new Map<string, Patch>([
     [l.id, { len: l.len + dd }],
     [r.id, { at: r.at + dd, len: r.len - dd, ...(rOff !== undefined && { offset: rOff }) }],
@@ -83,6 +85,6 @@ export function rollEdit(spans: Span[], id: string, side: 'start' | 'end', d: nu
 /** Slip: change which part of the file plays (offset), keeping the item's place and length. Media only. */
 export function slip(s: Span, d: number): Patch | null {
   if (!media(s)) return null;
-  const off = Math.max(0, Math.min(s.max - s.len, (s.offset ?? 0) + d));
+  const off = Math.max(0, Math.min(s.max - s.len * (s.k ?? 1), (s.offset ?? 0) + d * (s.k ?? 1)));
   return { offset: off };
 }

@@ -3,9 +3,8 @@ import { applyTrans } from './layertrans.ts';
 import { processed, keyOpts, compositeOp, type Blend, type ChromaKey, type Mask } from './layerfx.ts';
 import { drawCaption, drawText, fontString, resolveStyle, PRESETS, type Style } from './render.ts';
 
-// A layer drawn over the main video: picture-in-picture video, an image, or a text/sticker.
-// Placed in OUTPUT time (like music), so word cuts on the main video don't move it.
-// Array order is stacking order: later items draw on top.
+// An item on a video track: video, an image, or a text/sticker. Placed in output time; see model.ts.
+// Higher tracks draw on top (array order within a track).
 export type Transform = {
   x: number; y: number; // centre, 0..1 of the frame
   scale: number; // media: width as a fraction of frame width; text: font size multiplier
@@ -37,7 +36,9 @@ export type Overlay = {
   trIn?: import('./layertrans.ts').LayerTrans; // transition in (fade, zoom, slide, wipe) over its first d seconds
   trOut?: import('./layertrans.ts').LayerTrans; // and out over its last d seconds
   link?: string; // video: shared with its sound's audio item (see links.ts)
-  track?: number; // 0 = V2 (just above the main video); higher tracks draw on top. See tracks.ts
+  fill?: boolean; // media: cover the whole frame (cropped around fx.focus) instead of using tf's position and size
+  fx?: import('./cuts.ts').Fx; // media: speed, freeze, colour, punch-in, background… (see model.ts)
+  track?: number; // 0 = V1; higher tracks draw on top. See tracks.ts
 };
 // A bar that fills across the frame over the layer's time. h: thickness, fraction of frame height.
 export type ProgressBar = { color: string; track: string; h: number; top?: boolean };

@@ -39,11 +39,11 @@
         'Templates save a caption look plus text layers to reuse in other projects.',
       ] },
       { id: 'timeline', title: 'Timeline and clips', items: [
-        'Imported media goes to the Media panel. Drag it onto any track: V1 (the main video), V2 and up (layers) or an audio track. Drop files anywhere in the editor to import them.',
-        'Clips on V1 can have gaps between them: drop or drag a clip into empty time and it stays there. Select a gap and press Delete to close it.',
-        'Split at the playhead (S), trim by dragging edges, and delete strips. Snapping (N) lines things up; hold Alt to drag freely.',
-        'Per strip: speed, freeze frame, transitions, color and LUTs, punch-in zoom and focus point for reframing.',
-        'Layers: video, images, text and animated titles on V2 and up, full frame by default, with keyframes for position, size, rotation and opacity.',
+        'Imported media goes to the Media panel. Drag it onto any track: video tracks V1, V2… or audio tracks A1, A2…. Every track works the same way. Drop files anywhere in the editor to import them.',
+        'Items sit anywhere, with gaps if you like, and move between tracks: drag them sideways or up and down. A video\'s sound is a linked item on an audio track.',
+        'Split at the playhead (S), trim by dragging edges, Delete leaves a gap and Shift+Delete closes it. Snapping (N) lines things up; hold Alt to drag freely.',
+        'Per video or picture: speed, freeze frame, transitions, color and LUTs, punch-in zoom and focus point for reframing.',
+        'Video and pictures fill the frame by default; switch that off to place and animate them freely, with keyframes for position, size, rotation and opacity. Text and titles go on any track.',
         'Scroll the wheel to scrub, pinch or Ctrl+wheel to zoom. On a phone, swipe the timeline to scrub.',
       ] },
       { id: 'audio', title: 'Music and voiceover', items: [
@@ -66,7 +66,7 @@
     keys: [
       ['Space / K', 'Play / pause'], ['J / L', 'Back 1s (Shift: 5s) / play'], ['← / →', 'Step a frame (Shift: a second)'],
       ['Home / End', 'Go to start / end'], ['S', 'Split at playhead'], ['I / O, X', 'Mark in / out, cut the range'],
-      ['Delete', 'Cut words or delete the selection'], ['Shift+Delete', 'Lift a strip (leave a gap)'], ['N', 'Toggle snapping'],
+      ['Delete', 'Cut words or delete the selection'], ['Shift+Delete', 'Delete and close the gap'], ['N', 'Toggle snapping'],
       ['T', 'Add a text layer'], ['Esc', 'Clear selection'], ['Ctrl/⌘+S', 'Save project file'],
       ['Ctrl/⌘+Z / Y', 'Undo / redo'], ['?', 'Shortcut cheat-sheet'],
     ],
@@ -105,11 +105,11 @@
         'Las plantillas guardan un estilo de subtítulos y capas de texto para usarlos en otros proyectos.',
       ] },
       { id: 'timeline', title: 'Línea de tiempo y clips', items: [
-        'Los medios importados van al panel Medios. Arrástralos a cualquier pista: V1 (el video principal), V2 en adelante (capas) o una pista de audio. Suelta archivos en cualquier parte del editor para importarlos.',
-        'Los clips de V1 pueden tener huecos entre ellos: suelta o arrastra un clip a un espacio vacío y se queda ahí. Selecciona un hueco y pulsa Supr para cerrarlo.',
-        'Divide en el cabezal (S), recorta arrastrando los bordes y borra tramos. El ajuste (N) alinea elementos; mantén Alt para arrastrar libremente.',
-        'Por tramo: velocidad, congelar imagen, transiciones, color y LUT, zoom de acercamiento y punto de enfoque para reencuadrar.',
-        'Capas: video, imágenes, texto y títulos animados en V2 y superiores, a pantalla completa por defecto, con fotogramas clave de posición, tamaño, rotación y opacidad.',
+        'Los medios importados van al panel Medios. Arrástralos a cualquier pista: pistas de video V1, V2… o de audio A1, A2…. Todas las pistas funcionan igual. Suelta archivos en cualquier parte del editor para importarlos.',
+        'Los elementos van donde quieras, con huecos si quieres, y se mueven entre pistas: arrástralos a los lados o arriba y abajo. El sonido de un video es un elemento enlazado en una pista de audio.',
+        'Divide en el cabezal (S), recorta arrastrando los bordes; Supr deja un hueco y Mayús+Supr lo cierra. El ajuste (N) alinea elementos; mantén Alt para arrastrar libremente.',
+        'Por video o imagen: velocidad, congelar imagen, transiciones, color y LUT, zoom de acercamiento y punto de enfoque para reencuadrar.',
+        'Los videos e imágenes llenan el cuadro por defecto; desactívalo para colocarlos y animarlos libremente, con fotogramas clave de posición, tamaño, rotación y opacidad. El texto y los títulos van en cualquier pista.',
         'Usa la rueda para desplazarte, pellizca o Ctrl+rueda para hacer zoom. En el teléfono, desliza la línea de tiempo.',
       ] },
       { id: 'audio', title: 'Música y voz en off', items: [
@@ -132,7 +132,7 @@
     keys: [
       ['Espacio / K', 'Reproducir / pausar'], ['J / L', 'Atrás 1 s (Mayús: 5 s) / reproducir'], ['← / →', 'Avanzar un cuadro (Mayús: un segundo)'],
       ['Inicio / Fin', 'Ir al inicio / final'], ['S', 'Dividir en el cabezal'], ['I / O, X', 'Marcar entrada / salida, cortar el rango'],
-      ['Suprimir', 'Cortar palabras o borrar la selección'], ['Mayús+Suprimir', 'Levantar un tramo (dejar un hueco)'], ['N', 'Activar ajuste'],
+      ['Suprimir', 'Cortar palabras o borrar la selección'], ['Mayús+Suprimir', 'Eliminar y cerrar el hueco'], ['N', 'Activar ajuste'],
       ['T', 'Agregar capa de texto'], ['Esc', 'Quitar selección'], ['Ctrl/⌘+S', 'Guardar archivo de proyecto'],
       ['Ctrl/⌘+Z / Y', 'Deshacer / rehacer'], ['?', 'Lista de atajos'],
     ],

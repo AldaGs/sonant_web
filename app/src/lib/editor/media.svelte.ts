@@ -4,7 +4,8 @@ import { linkLegacy } from '../links';
 import { onMount } from 'svelte';
 import { migrateStyle } from '../render';
 import { registerFont, type SavedFont } from '../fonts';
-import { toOutput, outDuration } from '../cuts';
+import { migrateDoc, DOC_VERSION } from '../migrate';
+import { assignBases } from '../model';
 import { type Asset, type AudioItem } from '../project';
 import { type Lut } from '../grade';
 import { wantsProxy, makeProxy, loadProxy, saveProxy, deleteProxy } from '../proxy';
@@ -23,19 +24,18 @@ export function createMedia(ed: Ed) {
   const cleanLevel = new Map<string, number>(); // progress while cleaning
   let cleanRun = 0;
   $effect(() => {
-    // Main clips, plus video layers whose sound is on.
-    const level = ed.denoise, ids = [...new Set([...ed.clips.map((c) => c.assetId), ...ed.overlays.filter((o) => o.kind === 'video' && o.volume).map((o) => o.assetId!)])].filter((id) => ed.assets.find((a) => a.id === id)?.kind === 'video');
+    // The sound of videos (audio items linked to a picture).
+    const level = ed.denoise, ids = [...new Set(ed.audios.filter((a) => a.link).map((a) => a.assetId))].filter((id) => ed.assets.find((a) => a.id === id)?.kind === 'video');
     const run = ++cleanRun;
     const drop = (id: string) => {
-      const el = ed.player.clean.get(id);
-      if (el) (el.pause(), URL.revokeObjectURL(el.src), ed.player.clean.delete(id));
+      if (ed.cleanUrls[id]) (URL.revokeObjectURL(ed.cleanUrls[id]), delete ed.cleanUrls[id]);
       ed.cleanBlobs.delete(id);
       cleanLevel.delete(id);
     };
-    for (const id of [...ed.player.clean.keys()]) if (!level || !ids.includes(id) || cleanLevel.get(id) !== level) drop(id);
+    for (const id of Object.keys(ed.cleanUrls)) if (!level || !ids.includes(id) || cleanLevel.get(id) !== level) drop(id);
     if (!level) return void (ed.cleanPct = null);
     (async () => {
-      const todo = ids.filter((id) => ed.files.get(id) && !ed.player.clean.has(id)); // already cleaned at this level: keep
+      const todo = ids.filter((id) => ed.files.get(id) && !ed.cleanUrls[id]); // already cleaned at this level: keep
       for (const [k, id] of todo.entries()) {
         if (run !== cleanRun) return;
         let blob = await store.get<Blob>(cleanKey(id, level));
@@ -48,9 +48,7 @@ export function createMedia(ed: Ed) {
         drop(id);
         ed.cleanBlobs.set(id, blob);
         cleanLevel.set(id, level);
-        const el = new Audio(URL.createObjectURL(blob));
-        el.preload = 'auto';
-        ed.player.clean.set(id, el);
+        ed.cleanUrls[id] = URL.createObjectURL(blob);
       }
       if (run === cleanRun) ed.cleanPct = null;
     })();
@@ -107,7 +105,7 @@ export function createMedia(ed: Ed) {
   onMount(async () => {
     begin('open', {}, ed.projectId); // cleared once the editor has been up for a few seconds
     document.documentElement.lang = ui.lang;
-    const [doc, fts] = await Promise.all([loadDoc(ed.projectId), store.get<SavedFont[]>('fonts')]);
+    let [doc, fts] = await Promise.all([loadDoc(ed.projectId), store.get<SavedFont[]>('fonts')]);
     for (const f of fts ?? []) {
       try {
         ed.fonts = [...ed.fonts, await registerFont(f)];
@@ -115,6 +113,7 @@ export function createMedia(ed: Ed) {
       } catch {}
     }
     if (doc) {
+      doc = migrateDoc(doc); // older projects: V1 clips and strips become items (see migrate.ts)
       let missing = false;
       for (const a of doc.assets ?? []) {
         const f = await loadFile(a.id);
@@ -122,7 +121,6 @@ export function createMedia(ed: Ed) {
         else missing = true;
       }
       ed.assets = doc.assets ?? [];
-      ed.clips = doc.clips ?? [];
       ed.audios = doc.audios ?? [];
       ed.overlays = doc.overlays ?? [];
       relink();
@@ -131,7 +129,6 @@ export function createMedia(ed: Ed) {
       restoreDoc(doc);
       if (missing) ed.notice = 'err.missingMedia';
     }
-    if (ed.clips.length && !ed.segments.length) ed.segments = [{ start: 0, end: ed.duration }];
     ready = true;
     setTimeout(end, 4000); // opened and drawing: no longer "crashed while opening"
   });
@@ -145,7 +142,6 @@ export function createMedia(ed: Ed) {
     ed.name = doc.name ?? '';
     ed.speakers = doc.speakers ?? [];
     ed.captions = doc.captions ?? [];
-    ed.segments = doc.segments ?? [];
     ed.style = migrateStyle(doc.style ?? {});
     ed.language = doc.language ?? null;
     ed.showTr = doc.showTr ?? false;
@@ -160,17 +156,18 @@ export function createMedia(ed: Ed) {
 
   // Autosave ~0.4s after any change. The home page card gets the name, length and (every ~10s) a thumbnail.
   let lastThumb = 0;
-  // Card image for the home page: a frame from the first clip (its timeline thumbnails are real decoded frames).
+  // Card image for the home page: a frame from the first video (its timeline thumbnails are real decoded frames).
+  const firstVideo = () => [...ed.overlays].sort((a, b) => a.at - b.at || (a.track ?? 0) - (b.track ?? 0)).find((o) => o.kind === 'video' && o.assetId)?.assetId;
   function thumbnail(): string | undefined {
-    const th = ed.clips.length ? ed.thumbs[ed.clips[0].assetId] : undefined;
+    const id = firstVideo(), th = id ? ed.thumbs[id] : undefined;
     return th?.length ? th[Math.floor(th.length / 3)].url : undefined;
   }
 
 
 
   async function saveNow() {
-    const doc: ProjectDoc = { ...$state.snapshot({ name: ed.name, captions: ed.captions, segments: ed.segments, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks }), luts: ed.luts.map((l) => ({ id: l.id, name: l.name })), aspect: ed.canvasAspect, words: ed.wordCache };
-    const meta: Partial<ProjectMeta> = { duration: outDuration(ed.segments), clips: ed.clips.length };
+    const doc: ProjectDoc = { ...$state.snapshot({ v: DOC_VERSION, name: ed.name, captions: ed.captions, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks }), luts: ed.luts.map((l) => ({ id: l.id, name: l.name })), aspect: ed.canvasAspect, words: ed.wordCache };
+    const meta: Partial<ProjectMeta> = { duration: ed.duration, clips: ed.overlays.filter((o) => o.kind !== 'text').length };
     if (Date.now() - lastThumb > 10000) {
       const th = thumbnail();
       if (th) ((meta.thumb = th), (lastThumb = Date.now()));
@@ -179,9 +176,9 @@ export function createMedia(ed: Ed) {
     addVersion(ed.projectId, doc).catch(() => {}); // a snapshot every ~2 minutes of editing
   }
   $effect(() => {
-    $state.snapshot({ name: ed.name, captions: ed.captions, segments: ed.segments, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks });
+    $state.snapshot({ v: DOC_VERSION, name: ed.name, captions: ed.captions, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks });
     void ed.luts.length, ed.canvasAspect;
-    void (ed.clips.length && ed.thumbs[ed.clips[0].assetId]?.length); // first-clip thumbnails ready → refresh the card
+    void ed.thumbs[firstVideo() ?? '']?.length; // first video's thumbnails ready → refresh the card
     if (!ready) return;
     ed.saving = true;
     const id = setTimeout(() => saveNow().catch(() => {}).finally(() => (ed.saving = false)), 400);
@@ -193,11 +190,10 @@ export function createMedia(ed: Ed) {
   }
   async function restoreVersion(v: Version) {
     // Keep the current state as a version first, so restoring can itself be undone from here.
-    await addVersion(ed.projectId, { ...$state.snapshot({ name: ed.name, captions: ed.captions, segments: ed.segments, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, clips: ed.clips, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks }), aspect: ed.canvasAspect } as ProjectDoc, { force: true, label: t('beforeRestore') });
+    await addVersion(ed.projectId, { ...$state.snapshot({ v: DOC_VERSION, name: ed.name, captions: ed.captions, style: ed.style, language: ed.language, speakers: ed.speakers, assets: ed.assets, audios: ed.audios, clipVolume: ed.clipVolume, overlays: ed.overlays, showTr: ed.showTr, autoZoom: ed.autoZoom, denoise: ed.denoise, tracks: ed.tracks }), aspect: ed.canvasAspect } as ProjectDoc, { force: true, label: t('beforeRestore') });
     ed.commit();
-    const d = v.doc;
+    const d = migrateDoc({ ...v.doc, assets: ed.assets.filter((a) => (v.doc.assets ?? []).some((x) => x.id === a.id)) });
     const have = new Set(ed.assets.map((a) => a.id)); // media deleted since then can't come back
-    ed.clips = (d.clips ?? []).filter((c) => have.has(c.assetId));
     ed.audios = (d.audios ?? []).filter((a) => have.has(a.assetId));
     ed.overlays = (d.overlays ?? []).filter((o) => !o.assetId || have.has(o.assetId));
     relink();
@@ -233,7 +229,7 @@ export function createMedia(ed: Ed) {
         continue;
       }
       if (!r.saved) ed.notice = 'err.saveVideo';
-      ed.assets = [...ed.assets, r.asset];
+      ed.assets = assignBases([...ed.assets, r.asset]); // its place in source time (captions are timed there)
       register(r.asset, r.f);
       if (!ed.name) ed.name = r.f.name.replace(/\.[^.]+$/, '');
       if (wantsProxy(r.asset)) buildProxy(r.asset); // big or long footage: fast preview copy in the background
@@ -245,7 +241,7 @@ export function createMedia(ed: Ed) {
 
   // Generated voiceover: each file becomes an audio asset on the Music & VO track (one undo step).
   async function addVoiceover(items: { file: File; at: number }[]) {
-    const now = toOutput(ed.segments, ed.time) ?? 0;
+    const now = ed.outNow();
     const added: AudioItem[] = [];
     for (const { file, at } of items) {
       const r = await importFile(file).catch(() => null);

@@ -4,12 +4,22 @@
 import type { Overlay } from './overlay.ts';
 import { itemLen, type AudioItem } from './project.ts';
 import { freeTrack } from './tracks.ts';
+import { sharedFx, SHARED_FX } from './model.ts';
+import type { Fx } from './cuts.ts';
 
-type Timing = { at: number; len: number; offset: number };
+// fx: the effects a picture and its sound share (speed, ramp, freeze, reverse), as JSON.
+type Timing = { at: number; len: number; offset: number; fx: string };
 const EPS = 1e-4;
-const same = (a: Timing, b: Timing) => Math.abs(a.at - b.at) < EPS && Math.abs(a.len - b.len) < EPS && Math.abs(a.offset - b.offset) < EPS;
-const ovTiming = (o: Overlay): Timing => ({ at: o.at, len: o.len, offset: o.offset ?? 0 });
-const audTiming = (a: AudioItem, dur: number): Timing => ({ at: a.at, len: itemLen(a, dur), offset: a.offset ?? 0 });
+const same = (a: Timing, b: Timing) => Math.abs(a.at - b.at) < EPS && Math.abs(a.len - b.len) < EPS && Math.abs(a.offset - b.offset) < EPS && a.fx === b.fx;
+const fxKey = (fx?: Fx) => JSON.stringify(sharedFx(fx) ?? {});
+const ovTiming = (o: Overlay): Timing => ({ at: o.at, len: o.len, offset: o.offset ?? 0, fx: fxKey(o.fx) });
+const audTiming = (a: AudioItem, dur: number): Timing => ({ at: a.at, len: itemLen(a, dur), offset: a.offset ?? 0, fx: fxKey(a.fx) });
+// The other side's fx with the shared ones copied over (its own effects, e.g. colour on the picture, stay).
+const withShared = (own: Fx | undefined, from: Fx | undefined): Fx | undefined => {
+  const rest = Object.fromEntries(Object.entries(own ?? {}).filter(([k]) => !(SHARED_FX as readonly string[]).includes(k)));
+  const out = { ...rest, ...sharedFx(from) };
+  return Object.keys(out).length ? out : undefined;
+};
 
 /** The link id of the right-hand half when a linked item is cut at t (the same on both sides, so halves pair up). */
 export const splitLink = (link: string, t: number) => `${link}@${t.toFixed(3)}`;
@@ -18,7 +28,8 @@ export const splitLink = (link: string, t: number) => `${link}@${t.toFixed(3)}`;
 export function linkedAudio(o: Overlay, audios: AudioItem[], durOf: (assetId: string) => number, volume = 1): AudioItem {
   const len = (a: AudioItem) => itemLen(a, durOf(a.assetId));
   const track = freeTrack(audios.filter((a) => a.track !== undefined), len, o.at, o.len);
-  return { id: crypto.randomUUID(), assetId: o.assetId!, at: o.at, offset: o.offset ?? 0, len: o.len, volume, link: o.link, track };
+  const fx = sharedFx(o.fx);
+  return { id: crypto.randomUUID(), assetId: o.assetId!, at: o.at, offset: o.offset ?? 0, len: o.len, volume, link: o.link, track, ...(fx && { fx }) };
 }
 
 /**
@@ -57,13 +68,13 @@ export function reconcile(overlays: Overlay[], audios: AudioItem[], durOf: (asse
     }
     const ot = ovTiming(o), at = audTiming(a, durOf(a.assetId)), m = mem.get(link);
     if (same(ot, at)) continue;
-    if (!m || !same(ot, m)) auPatch.set(a.id, { at: ot.at, len: ot.len, offset: ot.offset }); // the layer was edited
-    else ovPatch.set(o.id, { at: at.at, len: at.len, offset: at.offset }); // the audio was edited
+    if (!m || !same(ot, m)) auPatch.set(a.id, { at: ot.at, len: ot.len, offset: ot.offset, fx: withShared(a.fx, o.fx) }); // the picture was edited
+    else ovPatch.set(o.id, { at: at.at, len: at.len, offset: at.offset, fx: withShared(o.fx, a.fx) }); // the sound was edited
   }
   for (const [link, a] of auBy) if (!ovBy.has(link) && mem.has(link)) drop.add(a.id);
   // Remember the agreed timings for next time (and forget pairs that are gone).
   mem.clear();
-  for (const [link, o] of ovBy) if (auBy.has(link) && !drop.has(o.id)) mem.set(link, { ...ovTiming(o), ...ovPatch.get(o.id) } as Timing);
+  for (const [link, o] of ovBy) if (auBy.has(link) && !drop.has(o.id)) mem.set(link, ovTiming({ ...o, ...ovPatch.get(o.id) }));
   if (!ovPatch.size && !auPatch.size && !drop.size) return null;
   return {
     overlays: overlays.flatMap((o) => (drop.has(o.id) ? [] : [ovPatch.has(o.id) ? { ...o, ...ovPatch.get(o.id) } : o])),

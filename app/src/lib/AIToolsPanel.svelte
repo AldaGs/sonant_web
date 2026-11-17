@@ -2,16 +2,15 @@
   // AI tools tab: transcript-driven automation — highlight shorts, speaker detection and auto-zoom.
   import Icon from './Icon.svelte';
   import { t } from './i18n.svelte';
-  import { toOutput, type Segment } from './cuts';
   import { DEFAULT_AUTOZOOM, type AutoZoom } from './autozoom';
   import type { Highlight } from './highlights';
   import type { Caption } from './captions';
 
-  let { captions, segments, highlights, hlOpts, hlReframe = $bindable(), hlBusy, shortsMade, fmt,
+  let { captions, highlights, hlOpts, hlReframe = $bindable(), hlBusy, shortsMade, fmt,
     findClips, setHlLen, previewClip, makeShort, makeAllShorts,
     busy, spkBusy, spkCount = $bindable(), spkSplit = $bindable(), spkStatus, spkPct, spkMsg, detectSpeakers,
     autoZoom = $bindable(), aimBusy, zoomCount, aimZooms }: {
-    captions: Caption[]; segments: Segment[]; highlights: Highlight[] | null; hlOpts: { min: number; max: number };
+    captions: Caption[]; highlights: Highlight[] | null; hlOpts: { min: number; max: number };
     hlReframe: boolean; hlBusy: string; shortsMade: Record<number, string>; fmt: (s: number) => string;
     findClips: () => void; setHlLen: (min: number, max: number) => void; previewClip: (h: Highlight) => void;
     makeShort: (h: Highlight, n: number) => void; makeAllShorts: () => void;
@@ -46,7 +45,7 @@
   <ol class="hls">
     {#each highlights ?? [] as h, i (h.start)}
       <li>
-        <div class="mono small">{fmt(toOutput(segments, h.start) ?? h.start)} · {Math.round(h.end - h.start)}s
+        <div class="mono small">{fmt(h.start)} · {Math.round(h.end - h.start)}s
           {#each h.reasons as r}<span class="chip">{t('hl.' + r)}</span>{/each}</div>
         <div class="hlt">“{h.title}”</div>
         <div class="row">

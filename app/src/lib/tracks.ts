@@ -1,7 +1,9 @@
-// Numbered tracks, like a classic NLE. The main sequence is V1 (video) and A1 (its own sound).
-// Layers (picture-in-picture video, images, text) sit on V2, V3, … — `track` 0 is V2, and higher tracks draw on top.
-// Music and voiceover sit on A2, A3, … — `track` 0 is A2.
+// Numbered tracks, like a classic NLE. Every track works the same way (see model.ts).
+// Video tracks V1, V2, … hold video, pictures and text — `track` 0 is V1, and higher tracks draw on top.
+// Audio tracks A1, A2, … hold sound (a video's own sound, music, voiceover) — `track` 0 is A1.
 // Items on one track never overlap in time. Tracks can be hidden/muted and locked.
+import { splitMedia } from './model.ts';
+import { itemLen } from './project.ts';
 
 export type TrackFlags = { hidden?: boolean; muted?: boolean; locked?: boolean };
 export type Tracks = { v: TrackFlags[]; a: TrackFlags[] };
@@ -101,19 +103,19 @@ function splitKeys<K extends Keyed>(ks: K[] | undefined, d: number, right: boole
 
 /** Cut a layer in two at output time t. Returns null when t isn't inside it (with some room on both sides). */
 export function splitOverlay<O extends import('./overlay').Overlay>(o: O, t: number, newId: string): [O, O] | null {
-  const d = t - o.at;
-  if (d < MIN_PART || o.len - d < MIN_PART) return null;
-  const left = { ...o, len: d, kf: splitKeys(o.kf, d, false), maskKf: splitKeys(o.maskKf, d, false), trOut: undefined,
-    ...(o.motion && { motion: { ...o.motion, out: 0 } }) };
-  const right = { ...o, id: newId, at: t, trIn: undefined, ...(o.link && { link: `${o.link}@${t.toFixed(3)}` }), len: o.len - d, kf: splitKeys(o.kf, d, true), maskKf: splitKeys(o.maskKf, d, true),
-    ...(o.kind === 'video' && { offset: (o.offset ?? 0) + d }), ...(o.motion && { motion: { ...o.motion, in: 0 } }) };
+  const r = splitMedia(o, t, newId, MIN_PART);
+  if (!r) return null;
+  const d = t - o.at, [l, rt] = r;
+  const left = { ...l, kf: splitKeys(o.kf, d, false), maskKf: splitKeys(o.maskKf, d, false), trOut: undefined, ...(o.motion && { motion: { ...o.motion, out: 0 } }) };
+  const right = { ...rt, trIn: undefined, kf: splitKeys(o.kf, d, true), maskKf: splitKeys(o.maskKf, d, true), ...(o.kind !== 'video' && { offset: o.offset }),
+    ...(o.motion && { motion: { ...o.motion, in: 0 } }), ...(o.fx?.trans && { fx: { ...rt.fx, trans: undefined } }) };
   return [left, right];
 }
 
 /** Cut an audio item in two at output time t (assetDur: its file's length). */
 export function splitAudio<A extends import('./project').AudioItem>(a: A, t: number, assetDur: number, newId: string): [A, A] | null {
-  const off = a.offset ?? 0, len = Math.max(0, Math.min(a.len ?? Infinity, assetDur - off)), d = t - a.at;
-  if (d < MIN_PART || len - d < MIN_PART) return null;
-  const vl = a.volKf && splitKeys(a.volKf, d, false), vr = a.volKf && splitKeys(a.volKf, d, true);
-  return [{ ...a, len: d, fadeOut: undefined, volKf: vl }, { ...a, id: newId, at: t, offset: off + d, len: len - d, fadeIn: undefined, volKf: vr, ...(a.link && { link: `${a.link}@${t.toFixed(3)}` }) }];
+  const r = splitMedia({ ...a, len: itemLen(a, assetDur), offset: a.offset ?? 0 }, t, newId, MIN_PART);
+  if (!r) return null;
+  const d = t - a.at, vl = a.volKf && splitKeys(a.volKf, d, false), vr = a.volKf && splitKeys(a.volKf, d, true);
+  return [{ ...r[0], fadeOut: undefined, volKf: vl }, { ...r[1], fadeIn: undefined, volKf: vr }];
 }

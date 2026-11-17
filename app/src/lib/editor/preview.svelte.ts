@@ -3,77 +3,38 @@ import { isLockedV } from '../tracks';
 import { untrack } from 'svelte';
 import { startOf, endOf, type Caption } from '../captions';
 import { drawCaption, fontString, resolveStyle, inBox, type Box } from '../render';
-import { zoomPlace, segAt, toOutput, type Fx } from '../cuts';
-import { drawFrame } from '../segment';
-import { clipAt, move } from '../project';
-import { TRANS_DUR } from '../transitions';
-import { coverPlace } from '../reframe';
+import { compose, type ComposeEnv } from '../compose';
+import { byTrack } from '../tracks';
 import { drawSafeZones, overlapsZone, type Platform } from '../safezones';
 import { DEFAULT_KEY, keyBypass } from '../layerfx';
-import { stabPlace } from '../stabilize';
-import { autoZoomPlace, shakePlace, zoomShake } from '../autozoom';
 import { drawOverlay, overlaysAt, hitPlaced, corner, sPoint, hasPath, tfAt, type Overlay, type Placed, type Transform } from '../overlay';
 import { t } from '../i18n.svelte';
 import type { Ed } from './ed';
 
 export function createPreview(ed: Ed) {
-  // Draw loop: advance the player, draw the current clip's frame (cover-fit) + active caption.
+  // Draw loop: advance the player, then draw every visible track from V1 up, then the caption.
   $effect(() => {
     if (!ed.canvas) return;
     const ctx = ed.canvas.getContext('2d')!;
     const cv = ed.canvas;
     let id = 0;
-    // Last good video frame (downscaled): shown while the element is seeking instead of black.
-    const hold = document.createElement('canvas');
-    const hctx = hold.getContext('2d')!;
-    let held = false;
     const tick = () => {
       const w = ed.frameW, h = ed.frameH;
       if (cv.width !== w || cv.height !== h) ((cv.width = w), (cv.height = h));
-      const tNow = ed.player.tick();
-      ed.time = tNow;
-      ed.outClock = ed.player.o;
+      const o = ed.player.tick();
+      ed.time = o;
+      ed.outClock = o;
       ed.paused = !ed.player.playing;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
-      const p = ed.player.frame();
-      let f: CanvasImageSource | null = p && p.videoWidth ? p : null;
-      let fw = p?.videoWidth ?? 0, fh = p?.videoHeight ?? 0;
-      const still = !p ? stillAt() : null; // an image clip on the main track
-      if (still) ((f = still.src), (fw = still.w), (fh = still.h));
-      else if (p && f && !p.seeking) {
-        const s = Math.min(1, 720 / Math.max(fw, fh));
-        const hw = Math.round(fw * s), hh = Math.round(fh * s);
-        if (hold.width !== hw || hold.height !== hh) ((hold.width = hw), (hold.height = hh));
-        hctx.drawImage(p, 0, 0, hw, hh);
-        held = true;
-      } else if (held && ed.player.clipsAt()) {
-        f = hold; fw = hold.width; fh = hold.height;
-      }
-      const k = f ? Math.max(w / fw, h / fh) : 1;
-      const dw = f ? fw * k : w, dh = f ? fh * k : h;
-      const cap = ed.displayCaps.find((c) => tNow >= startOf(c) && tNow < endOf(c));
-      capOnScreen = cap ?? null;
-      const strip = segAt(ed.segments, tNow), fx = strip?.fx;
-      if (fx?.lift) f = null; // a lifted strip is a gap: black
-      else if (f && fx?.color) f = ed.grader.apply(f, fw, fh, fx.color, ed.lutMap.get(fx.color.lut ?? ''), tNow);
+      const cap = ed.displayCaps.find((c) => o >= startOf(c) && o < endOf(c));
+      capOnScreen = cap ? ed.captions.find((c) => c.id === cap.id) ?? cap : null;
       capBox = null;
-      let below: Placed[] = [];
-      const anyBehind = overlaysAt(ed.shownOverlays, ed.player.o).some((o) => o.behind);
-      drawFrame(ctx, f, f ? fw : w, f ? fh : h, f ? shakePlace(autoZoomPlace(zoomPlace(stabPlace(coverPlace(w, h, fw, fh, fx?.focus), w, h, fx?.stab, tNow), w, h, fx, tNow - (strip?.start ?? 0)), w, h, ed.zooms, ed.autoZoom?.scale ?? 1, tNow), w, h, Math.max(fx?.shake ?? 0, ed.autoZoom?.shake ? zoomShake(ed.zooms, tNow) : 0), tNow) : [0, 0, w, h], fx, !!cap,
-        () => {
-          placed = [...below, ...drawLayers(ctx, tNow, false)];
-          capBox = cap ? drawCaption(ctx, cap, tNow, resolveStyle(ed.style, cap.style)) : null;
-        },
-        anyBehind ? () => (below = drawLayers(ctx, tNow, true)).length > 0 : undefined, bgImageOf(fx));
-      // Transition into this strip (over the finished frame: video, layers, captions).
-      const si = strip ? ed.segments.indexOf(strip) : -1;
-      if (si >= 0) {
-        const segStartOut = toOutput(ed.segments, strip!.start) ?? 0;
-        ed.trans.apply(ctx, strip!.fx?.trans, si, ed.player.o - segStartOut, strip!.fx?.transDur ?? TRANS_DUR);
-      }
+      const r = compose(ctx, byTrack(overlaysAt(ed.shownOverlays, o)), o, cap ?? null, env);
+      placed = r.placed;
+      capBox = r.capBox;
       const sel = placed.find((p) => p.id === ed.selectedOverlay);
-      const selO = sel && ed.overlays.find((o) => o.id === sel.id);
+      const selO = sel && ed.overlays.find((x) => x.id === sel.id);
       if (selO && hasPath(selO.motion)) drawSPath(ctx, selO, cv.width / (cv.getBoundingClientRect().width || cv.width));
       if (sel) drawLayerBox(ctx, sel, cv.width / (cv.getBoundingClientRect().width || cv.width));
       // Drag box: preview only (export never draws it). Shown while paused, hovered or dragged.
@@ -92,37 +53,23 @@ export function createPreview(ed: Ed) {
     document.fonts.load(fontString(ed.style, 40)).catch(() => {});
   });
 
-  // ---- Overlay layers on the preview ----
+  // ---- Items on the preview ----
   let placed: Placed[] = [];
-  // behind: draw only the layers marked "behind person" (true) or only the others (false).
-  // The picture for an "image" background, once loaded.
-  function bgImageOf(fx?: Fx) {
-    return (fx?.bg === 'image' && fx.bgImage && ed.pics.get(fx.bgImage)) || null;
-  }
-  // The image of the image clip under the playhead, once it has loaded.
-  function stillAt() {
-    const at = clipAt(ed.clips, ed.durations, ed.time);
-    return (at && ed.pics.get(ed.clips[at.index].assetId)) || null;
-  }
-  function drawLayers(ctx: CanvasRenderingContext2D, t: number, behind: boolean): Placed[] {
-    if (toOutput(ed.segments, t) === null) return [];
-    const out = ed.player.o;
-    const res: Placed[] = [];
-    for (const o of overlaysAt(ed.shownOverlays, out)) {
-      if (!!o.behind !== behind) continue;
-      let src: CanvasImageSource | null = null, sw = 0, sh = 0;
-      if (o.kind === 'video') {
-        const v = ed.player.overlayFrame(o.id);
-        if (v) ((src = v), (sw = v.videoWidth), (sh = v.videoHeight));
-      } else if (o.kind === 'image') {
-        const pic = ed.pics.get(o.assetId ?? '');
-        if (pic) ((src = pic.src), (sw = pic.w), (sh = pic.h));
-      }
-      const p = drawOverlay(ctx, o, out, src, sw, sh);
-      if (p) res.push(p);
-    }
-    return res;
-  }
+  const env: ComposeEnv = {
+    mediaOf(x) {
+      if (x.kind === 'video') return ed.player.frame(x.id);
+      const pic = x.kind === 'image' ? ed.pics.get(x.assetId ?? '') : undefined;
+      return pic ? { src: pic.src, w: pic.w, h: pic.h } : null;
+    },
+    grade: (src, w, h, c, t) => ed.grader.apply(src, w, h, c, ed.lutMap.get(c.lut ?? ''), t),
+    bgImageOf: (fx) => (fx?.bg === 'image' && fx.bgImage && ed.pics.get(fx.bgImage)) || null,
+    get zooms() { return ed.zooms; },
+    get zoomScale() { return ed.autoZoom?.scale ?? 1; },
+    get zoomShake() { return !!ed.autoZoom?.shake; },
+    get trans() { return ed.trans; },
+    get all() { return ed.overlays; },
+    get style() { return ed.style; },
+  };
   // Preview guide for a title's S path (export never draws it).
   function drawSPath(ctx: CanvasRenderingContext2D, o: Overlay, k: number) {
     const W = ctx.canvas.width, H = ctx.canvas.height, base = tfAt(o, ed.player.o), m = o.motion!;
@@ -335,12 +282,11 @@ export function createPreview(ed: Ed) {
     const capId = ownPosition(capOnScreen) ? capOnScreen!.id : null;
     const pos = capId ? resolveStyle(ed.style, capOnScreen!.style) : ed.style;
     moveCaption(capId, pos.x + dir[0], pos.y + dir[1]);
-  } // layer id, 'strip', or null
-  let pickStrip = -1;
+  }
+  // Key colour picker: pickKey is the item whose green screen colour is being picked.
   function startPick(target: string) {
     if (ed.pickKey === target) return endPick();
     ed.pickKey = target;
-    pickStrip = ed.selected;
     keyBypass.on = true;
   }
   function endPick() {
@@ -354,13 +300,10 @@ export function createPreview(ed: Ed) {
     const sum = [0, 0, 0];
     for (let i = 0; i < d.length; i += 4) for (let j = 0; j < 3; j++) sum[j] += d[i + j];
     const hex = '#' + sum.map((v) => Math.round(v / (d.length / 4)).toString(16).padStart(2, '0')).join('');
-    if (ed.pickKey === 'strip') {
-      const s = ed.segments[pickStrip];
-      if (s) (ed.commit(), (ed.segments = ed.segments.with(pickStrip, { ...s, fx: { ...s.fx, key: { ...(s.fx?.key ?? DEFAULT_KEY), color: hex } } })));
-    } else {
-      const o = ed.overlays.find((v) => v.id === ed.pickKey);
-      if (o) (ed.setOverlay(o.id, { key: { ...(o.key ?? DEFAULT_KEY), color: hex } }), ed.doneEditing());
-    }
+    const o = ed.overlays.find((v) => v.id === ed.pickKey);
+    // Items that fill the frame key through their effects (the background shows through); others through the layer key.
+    if (o?.fill) (ed.setOverlay(o.id, { fx: { ...o.fx, key: { ...(o.fx?.key ?? DEFAULT_KEY), color: hex } } }), ed.doneEditing());
+    else if (o) (ed.setOverlay(o.id, { key: { ...(o.key ?? DEFAULT_KEY), color: hex } }), ed.doneEditing());
     endPick();
   }
 

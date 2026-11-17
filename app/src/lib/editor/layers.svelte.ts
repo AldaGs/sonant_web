@@ -1,13 +1,12 @@
-// Layers over the video (text, titles, images, videos): adding, editing, keyframes, stacking, templates.
+// Items on the tracks (video, pictures, text, titles, sound): adding, editing, keyframes, stacking, splitting, templates.
 import { type Style } from '../render';
-import { trim, outDuration, splitAt, toSource } from '../cuts';
 import { itemLen, STILL_LEN, type Asset, type AudioItem } from '../project';
 import { linkedAudio, unlink as unlinkPair } from '../links';
 import { rippleTrim, rippleDelete, rollEdit, slip, type Span, type Patch } from '../tools';
-import { moveToTrack, removeTrack, setFlag, trackOf, isLockedV, isLockedA, splitOverlay, splitAudio, byTrack, type TrackFlags } from '../tracks';
+import { moveToTrack, removeTrack, setFlag, trackOf, isLockedV, isLockedA, splitOverlay, splitAudio, byTrack, freeTrack, type TrackFlags } from '../tracks';
 import { type ChromaKey } from '../layerfx';
 import { placeLayers, fromProject, type Template } from '../templates';
-import { newText, newTitle, DEFAULT_MOTION, newMedia, fitMedia, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Transform, type Motion } from '../overlay';
+import { newText, newTitle, DEFAULT_MOTION, newMedia, tfAt, setKey, keyAt, dropKey, punchKeys, ANIMATED, type Overlay, type Transform, type Motion } from '../overlay';
 import * as store from '../store';
 import { t } from '../i18n.svelte';
 import { end } from '../crash';
@@ -19,11 +18,11 @@ export function createLayers(ed: Ed) {
     ed.overlays = [...ed.overlays, o];
     ed.selectedOverlay = o.id;
   }
-  // A video or image as a layer at the playhead: full frame like on V1 (pip: a small picture-in-picture instead).
+  // A video or image at the playhead: filling the frame (pip: a small picture-in-picture instead).
   // Videos keep their whole length, pictures last STILL_LEN; the timeline grows to fit.
   function addOverlay(a: Asset, at = ed.outNow(), pip = false) {
     const len = a.kind === 'video' ? a.duration : STILL_LEN;
-    const o = newMedia(a.kind === 'video' ? 'video' : 'image', a.id, at, len, pip ? undefined : fitMedia(a.width, a.height, ed.frameW, ed.frameH));
+    const o = { ...newMedia(a.kind === 'video' ? 'video' : 'image', a.id, Math.max(0, at), len, pip ? undefined : 1), ...(!pip && { fill: true }) };
     if (a.kind !== 'video') return pushOverlay(o);
     // Video layers bring their sound as a linked audio item on an A track (see links.ts).
     o.link = crypto.randomUUID();
@@ -47,7 +46,7 @@ export function createLayers(ed: Ed) {
   const addText = () => pushOverlay(newText(ed.outNow(), t('newText')));
   // Animated title: a text layer on top of the stack that animates in and out along an S curve.
   const addTitle = () => {
-    const at = ed.outNow(), end = outDuration(ed.segments);
+    const at = ed.outNow(), end = ed.duration;
     pushOverlay(newTitle(at, t('newTitle'), end > at ? Math.min(4, Math.max(1, end - at)) : 4));
   };
   const setMotion = (o: Overlay, m: Partial<Motion> | null) =>
@@ -58,14 +57,14 @@ export function createLayers(ed: Ed) {
   function applyTemplate(tp: Template) {
     ed.commit();
     if (!tp.keepStyle) ed.style = { ...structuredClone($state.snapshot(tp.style)), x: ed.style.x, y: tp.style.y };
-    const added = placeLayers(tp, ed.outNow(), outDuration(ed.segments));
+    const added = placeLayers(tp, ed.outNow(), ed.duration);
     ed.overlays = [...ed.overlays, ...added];
     if (added[0]) ed.selectedOverlay = added[0].id;
   }
   function saveTemplate() {
     const n = prompt(t('templateName'), ed.name ? `${ed.name} style` : t('myTemplate'));
     if (!n?.trim()) return;
-    saveTemplates([...ed.myTemplates, fromProject(n.trim(), $state.snapshot(ed.style), $state.snapshot(ed.overlays), outDuration(ed.segments))]);
+    saveTemplates([...ed.myTemplates, fromProject(n.trim(), $state.snapshot(ed.style), $state.snapshot(ed.overlays), ed.duration)]);
   }
   const deleteTemplate = (tp: Template) => confirm(t('confirmDelTemplate', { name: tp.name })) && saveTemplates(ed.myTemplates.filter((x) => x.id !== tp.id));
   // Live edits (sliders, drags) take one undo step: snapshot on the first change, until the next 'change' event.
@@ -132,32 +131,38 @@ export function createLayers(ed: Ed) {
       ((ed.audios = r.items), (ed.tracks = { ...ed.tracks, a: r.flags }));
     }
   }
-  // Razor on every track: split the main strip and every unlocked layer and audio item under the playhead,
-  // as one undo step. Returns how many items were cut.
+  // Razor on every track: split every unlocked item under the playhead, as one undo step. Returns how many were cut.
   function splitAll(): number {
-    const t = ed.outNow(), src = toSource(ed.segments, t);
-    const segs = src === null ? ed.segments : splitAt(ed.segments, src);
-    let n = segs.length - ed.segments.length;
+    const t = ed.outNow();
+    const ids = [...ed.overlays.filter((o) => !isLockedV(ed.tracks, o)), ...ed.audios.filter((a) => !isLockedA(ed.tracks, a))].map((x) => x.id);
+    return splitItems(ids, t);
+  }
+  // Split these items (and their linked partners) at output time t. Returns how many were cut.
+  function splitItems(ids: string[], t: number, snapshot = true): number {
+    const want = new Set(ids);
+    const links = new Set([...ed.overlays, ...ed.audios].flatMap((x) => (want.has(x.id) && x.link ? [x.link] : [])));
+    const hit = (x: { id: string; link?: string }) => want.has(x.id) || (!!x.link && links.has(x.link));
+    let n = 0;
     const ovs = ed.overlays.flatMap((o) => {
-      const r = isLockedV(ed.tracks, o) ? null : splitOverlay(o, t, crypto.randomUUID());
+      const r = hit(o) ? splitOverlay(o, t, crypto.randomUUID()) : null;
       return r ? (n++, r) : [o];
     });
     const auds = ed.audios.flatMap((a) => {
-      const r = isLockedA(ed.tracks, a) ? null : splitAudio(a, t, ed.durations.get(a.assetId) ?? 0, crypto.randomUUID());
+      const r = hit(a) ? splitAudio(a, t, ed.durations.get(a.assetId) ?? 0, crypto.randomUUID()) : null;
       return r ? (n++, r) : [a];
     });
     if (!n) return 0;
-    ed.commit();
-    if (segs !== ed.segments) ed.segments = segs;
+    if (snapshot) ed.commit();
     ((ed.overlays = byTrack(ovs)), (ed.audios = auds));
     return n;
   }
   // ---- Timeline tools (ripple / roll / slip / razor) on layers ('v') and audio items ('a') ----
-  const ovSpan = (o: Overlay): Span => ({ id: o.id, track: trackOf(o), at: o.at, len: o.len,
-    offset: o.kind === 'video' ? o.offset ?? 0 : undefined, max: o.kind === 'video' ? ed.durations.get(o.assetId ?? '') ?? Infinity : Infinity });
+  const rate = (fx?: { speed?: number; speedEnd?: number; hold?: number }) => (fx?.hold ? 0 : ((fx?.speed ?? 1) + (fx?.speedEnd ?? fx?.speed ?? 1)) / 2);
+  const ovSpan = (o: Overlay): Span => ({ id: o.id, track: trackOf(o), at: o.at, len: o.len, k: rate(o.fx),
+    offset: o.kind === 'video' ? o.offset ?? 0 : undefined, max: o.kind === 'video' && !o.fx?.hold ? ed.durations.get(o.assetId ?? '') ?? Infinity : Infinity });
   const audSpan = (a: AudioItem): Span => {
     const max = ed.durations.get(a.assetId) ?? 0;
-    return { id: a.id, track: trackOf(a), at: a.at, len: itemLen(a, max), offset: a.offset ?? 0, max };
+    return { id: a.id, track: trackOf(a), at: a.at, len: itemLen(a, max), offset: a.offset ?? 0, max, k: rate(a.fx) };
   };
   // Live drags are measured from the state when the drag began (reset by toolDone at the next drag start).
   let toolFrom: { overlays: Overlay[]; audios: AudioItem[] } | null = null;
@@ -176,27 +181,11 @@ export function createLayers(ed: Ed) {
     if (kind === 'v') ed.overlays = toolFrom.overlays.map((o) => (m.has(o.id) ? { ...o, ...m.get(o.id) } : o));
     else ed.audios = toolFrom.audios.map((a) => (m.has(a.id) ? { ...a, ...m.get(a.id) } : a));
   }
-  // Razor: cut one layer / audio item at output time t.
+  // Razor: cut one item (and its linked partner) at output time t.
   function razor(kind: 'v' | 'a', id: string, t: number) {
-    if (kind === 'v') {
-      const o = ed.overlays.find((x) => x.id === id), r = o && !isLockedV(ed.tracks, o) && splitOverlay(o, t, crypto.randomUUID());
-      if (!r) return false;
-      ed.commit();
-      ed.overlays = byTrack(ed.overlays.flatMap((x) => (x.id === id ? r : [x])));
-    } else {
-      const a = ed.audios.find((x) => x.id === id), r = a && !isLockedA(ed.tracks, a) && splitAudio(a, t, ed.durations.get(a.assetId) ?? 0, crypto.randomUUID());
-      if (!r) return false;
-      ed.commit();
-      ed.audios = ed.audios.flatMap((x) => (x.id === id ? r : [x]));
-    }
-    // A linked partner is cut at the same place, so both halves stay paired.
-    const link = (kind === 'v' ? ed.overlays : ed.audios).find((x) => x.id === id)?.link;
-    if (link) {
-      const po = kind === 'a' && ed.overlays.find((x) => x.link === link), pa = kind === 'v' && ed.audios.find((x) => x.link === link);
-      if (po) ed.overlays = byTrack(ed.overlays.flatMap((x) => (x === po ? splitOverlay(po, t, crypto.randomUUID()) ?? [x] : [x])));
-      if (pa) ed.audios = ed.audios.flatMap((x) => (x === pa ? splitAudio(pa, t, ed.durations.get(pa.assetId) ?? 0, crypto.randomUUID()) ?? [x] : [x]));
-    }
-    return true;
+    const x = kind === 'v' ? ed.overlays.find((o) => o.id === id) : ed.audios.find((a) => a.id === id);
+    if (!x || (kind === 'v' ? isLockedV(ed.tracks, x) : isLockedA(ed.tracks, x))) return false;
+    return splitItems([id], t) > 0;
   }
   // Ripple delete the selected layer or audio item: later items on its track close the gap.
   function rippleDeleteSel(): boolean {
@@ -217,20 +206,21 @@ export function createLayers(ed: Ed) {
     }
     return false;
   }
-  // Media dropped on a track at output time `out` (from the media panel). zone: 'v' = a layer track,
-  // 'main' = the V1 sequence, 'a' = an audio track. If the spot on that track is taken, a new track opens there.
-  function dropAsset(a: Asset, zone: 'v' | 'main' | 'a', track: number, out: number) {
-    if (zone === 'main' && a.kind !== 'audio') return void ed.insertClip(a.id, out);
-    if (zone === 'a' || a.kind === 'audio') {
-      // Audio files, or the sound of a video dropped on an audio track.
-      if (a.kind === 'image') return void addOverlay(a, out);
+  // Media dropped on a track at output time `out`: video and pictures on a video track ('v'), sound on an audio
+  // track ('a'; a video dropped there brings only its sound). exact: it lands on that very track, and if the spot is
+  // taken a new track opens there; otherwise it goes on the lowest track from there up with room for it.
+  function dropAsset(a: Asset, zone: 'v' | 'a', track: number, out: number, exact = true) {
+    out = Math.max(0, out);
+    if (zone === 'a' && a.kind !== 'image' || a.kind === 'audio') {
       ed.addAudio(a.id, out);
-      const id = ed.selectedAudio;
-      if (zone === 'a') retrack('a', id, track, false);
+      const id = ed.selectedAudio, x = ed.audios.find((y) => y.id === id)!;
+      const len = (y: AudioItem) => itemLen(y, ed.durations.get(y.assetId) ?? 0);
+      retrack('a', id, exact && zone === 'a' ? track : freeTrack(ed.audios, len, x.at, len(x), zone === 'a' ? track : 0, id), false);
       return;
     }
     addOverlay(a, out);
-    retrack('v', ed.selectedOverlay, track, false);
+    const id = ed.selectedOverlay, o = ed.overlays.find((y) => y.id === id)!;
+    retrack('v', id, exact ? track : freeTrack(ed.overlays, (y) => y.len, o.at, o.len, track, id), false);
   }
   // Track header switches: hide (V) / mute (A) and lock.
   const setTrack = (kind: 'v' | 'a', track: number, patch: TrackFlags) => (ed.tracks = { ...ed.tracks, [kind]: setFlag(ed.tracks[kind], track, patch) });
@@ -249,14 +239,5 @@ export function createLayers(ed: Ed) {
     ed.tracks = { ...ed.tracks, [kind]: r.flags };
     return true;
   }
-  // Strip chroma key: live while dragging a slider, one undo step per gesture.
-  let stripKeyEditing = false;
-  function setStripKey(k: ChromaKey | undefined, final: boolean) {
-    if (ed.selected < 0) return;
-    if (!stripKeyEditing) ((stripKeyEditing = true), ed.commit());
-    ed.segments = ed.segments.with(ed.selected, { ...ed.segments[ed.selected], fx: { ...ed.segments[ed.selected].fx, key: k } });
-    if (final) stripKeyEditing = false;
-  }
-
-  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, dropAsset, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, setStripKey };
+  return { addOverlay, addText, addTitle, setMotion, applyTemplate, saveTemplate, deleteTemplate, setOverlay, setTf, layerT, toggleKey, jumpKey, punchIn, clearKeys, doneEditing, closeLayer, removeOverlay, restack, retrack, dropAsset, splitAll, detachSound, unlinkSound, toolEdit, toolDone, razor, rippleDeleteSel, setTrack, addTrack, dropTrack, splitItems };
 }

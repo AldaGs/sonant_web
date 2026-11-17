@@ -5,21 +5,21 @@
   import { t } from './i18n.svelte';
   import { captionText, setText, setRange, split, mergeNext, startOf, endOf, setSpeaker, type Caption } from './captions';
   import { autoEmphasis, clearEmphasis, hasEmphasis } from './keywords';
-  import type { Segment } from './cuts';
-  import type { Clip } from './project';
+  import type { Piece } from './model';
+  import type { Overlay } from './overlay';
   import type { Style } from './render';
   import type { Dir } from './translate';
 
   let { tab = $bindable(), language = $bindable(), transcribeTarget = $bindable(), transcriptView = $bindable(), speakers = $bindable(),
     trDir = $bindable(), showTr = $bindable(), style = $bindable(),
-    notice, busy, status, pct, error, hasMedia, captions, clips, names, segments, time, duration,
-    trBusy, hasTr, selectedSet, run, seek, cutRanges, keepRanges, setCaps, translateAll, active, selectCap, update, addLine, onclose }: {
+    notice, busy, status, pct, error, hasMedia, captions, transcriptCaps, videos, names, pieces, time,
+    trBusy, hasTr, selectedSet, run, seek, seekCap, cutRanges, keepRanges, setCaps, translateAll, active, selectCap, update, addLine, onclose }: {
     tab: 'transcript' | 'captions'; language: 'english' | 'spanish' | null; transcribeTarget: string;
     transcriptView: TranscriptView | undefined; speakers: string[]; trDir: Dir; showTr: boolean; style: Style;
     notice: string; busy: boolean; status: string; pct: number; error: string; hasMedia: boolean;
-    captions: Caption[]; clips: Clip[]; names: Map<string, string>; segments: Segment[]; time: number; duration: number;
+    captions: Caption[]; transcriptCaps: Caption[]; videos: Overlay[]; names: Map<string, string>; pieces: Piece[]; time: number;
     trBusy: boolean; hasTr: boolean; selectedSet: Set<string>;
-    run: () => void; seek: (s: number) => void; cutRanges: (r: [number, number][]) => void; keepRanges: (r: [number, number][]) => void;
+    run: () => void; seek: (s: number) => void; seekCap: (c: Caption) => void; cutRanges: (r: [number, number][]) => void; keepRanges: (r: [number, number][]) => void;
     setCaps: (c: Caption[]) => void; translateAll: () => void; active: (c: Caption) => boolean;
     selectCap: (id: string, e?: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => void;
     update: (i: number, c: Caption) => void; addLine: () => void; onclose: () => void;
@@ -41,10 +41,10 @@
     </select>
     <button onclick={run} disabled={!hasMedia || busy}>{captions.length ? t('retranscribe') : t('transcribe')}</button>
   </div>
-  {#if clips.length > 1}
+  {#if videos.length > 1}
     <select class="target" bind:value={transcribeTarget} disabled={busy} aria-label={t('transcribeWhich')}>
       <option value="all">{t('allClips')}</option>
-      {#each clips as c, i (c.id)}<option value={c.id}>{i + 1}. {names.get(c.assetId)}</option>{/each}
+      {#each videos as c, i (c.id)}<option value={c.id}>{i + 1}. {names.get(c.assetId ?? '')}</option>{/each}
     </select>
   {/if}
   {#if busy}
@@ -56,7 +56,7 @@
   {#if tab === 'transcript'}
     {#if !captions.length && !busy}<p class="muted small">{t('transcriptEmpty')}</p>{/if}
     {#if captions.length}
-      <TranscriptView bind:this={transcriptView} {captions} {segments} {time} {duration}
+      <TranscriptView bind:this={transcriptView} captions={transcriptCaps} {pieces} {time}
         {speakers} onseek={seek} oncut={cutRanges} onkeep={keepRanges}
         onspeaker={(ids, k) => { if (k === speakers.length) speakers = [...speakers, '']; setCaps(setSpeaker(captions, new Set(ids), k)); }}
         onrename={(k, n) => (speakers = speakers.with(k, n))}
@@ -96,7 +96,7 @@
               onchange={(e) => update(i, setRange(c, startOf(c), +e.currentTarget.value))} />
           </div>
           <div class="cap-main">
-            <textarea rows="2" aria-label={t('capText')} value={captionText(c)} onfocus={() => { if (!selectedSet.has(c.id)) selectCap(c.id); seek(startOf(c)); }}
+            <textarea rows="2" aria-label={t('capText')} value={captionText(c)} onfocus={() => { if (!selectedSet.has(c.id)) selectCap(c.id); seekCap(c); }}
               onchange={(e) => update(i, setText(c, e.currentTarget.value))}></textarea>
             {#if c.tr !== undefined}
               <textarea class="tr" rows="1" aria-label={t('trText')} value={c.tr} placeholder={t('trText')}
@@ -107,7 +107,7 @@
             {/if}
           </div>
           <span class="tools">
-            <button class="sm icon" title={t('playHere')} aria-label={t('playHere')} onclick={() => seek(startOf(c))}><Icon name="play_arrow" /></button>
+            <button class="sm icon" title={t('playHere')} aria-label={t('playHere')} onclick={() => seekCap(c)}><Icon name="play_arrow" /></button>
             <button class="sm icon" title={t('splitCap')} aria-label={t('splitCap')} disabled={c.words.length < 2} onclick={() => setCaps(split(captions, i))}><Icon name="content_cut" /></button>
             <button class="sm icon" title={t('mergeNext')} aria-label={t('mergeNext')} disabled={i === captions.length - 1} onclick={() => setCaps(mergeNext(captions, i))}><Icon name="merge" /></button>
             <button class="sm icon" title={t('del')} aria-label={t('del')} onclick={() => setCaps(captions.toSpliced(i, 1))}><Icon name="close" /></button>
