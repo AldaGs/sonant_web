@@ -531,8 +531,8 @@
     gap: 6px;
   }
   .scope-header.active {
-    background: rgb(200 245 96 / 0.08);
-    border: 1px solid rgb(200 245 96 / 0.3);
+    background: rgb(255 255 255 / 0.08);
+    border: 1px solid rgb(255 255 255 / 0.3);
     padding: 10px 12px;
     border-radius: 8px;
   }
@@ -622,7 +622,7 @@
   .anim { height: auto; justify-content: space-between; padding: 10px 12px; border-color: var(--border-soft); font-weight: 500; text-align: left; }
   .anim-label { font-weight: 600; }
   .anim .muted { font-size: 12px; font-weight: 400; }
-  .anim.on { border-color: var(--accent); background: rgb(200 245 96 / .06); }
+  .anim.on { border-color: var(--accent); background: rgb(255 255 255 / .06); }
   .field { display: grid; gap: 4px; margin: 10px 0; font-size: 12px; color: var(--muted); }
   .row { display: flex; gap: 8px; }
   .sm-label { height: 30px; font-size: 12px; border-radius: 8px; padding: 0 10px; }

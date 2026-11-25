@@ -138,12 +138,12 @@ export function createPreview(ed: Ed) {
 
   function drawDragBox(ctx: CanvasRenderingContext2D, b: Box, k: number) {
     ctx.save();
-    ctx.strokeStyle = '#c8f560';
+    ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 2 * k;
     ctx.setLineDash([6 * k, 4 * k]);
     ctx.strokeRect(b.x, b.y, b.w, b.h);
     ctx.setLineDash([]);
-    ctx.fillStyle = '#c8f560';
+    ctx.fillStyle = '#ffffff';
     const s = 8 * k;
     for (const [x, y] of [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]]) ctx.fillRect(x - s / 2, y - s / 2, s, s);
     // Round grab handle with a four-way arrow, easy to hit with a thumb.

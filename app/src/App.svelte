@@ -907,7 +907,7 @@
   .pname:hover:not(:disabled) { border-color: var(--border); }
   .pill { background: var(--raised); color: var(--muted); font-size: 12px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
   .actions { display: flex; gap: 8px; align-items: center; }
-  .actions button.on { border-color: var(--accent); background: rgb(200 245 96 / .06); }
+  .actions button.on { border-color: var(--accent); background: rgb(255 255 255 / .06); }
   .lang { height: 36px; padding: 0 8px; }
   .panel { background: var(--panel); min-height: 0; display: flex; flex-direction: column; }
   .assets { grid-area: assets; border-right: 1px solid var(--border-soft); padding: 16px; gap: 12px; overflow: auto; }
@@ -940,7 +940,7 @@
   .style { grid-area: style; border-left: 1px solid var(--border-soft); overflow: auto; }
   .timeline-area { grid-area: tl; border-top: 1px solid var(--border-soft); padding: 12px 20px 16px; display: grid; gap: 10px; }
   .thead { display: flex; justify-content: space-between; align-items: center; }
-  .thead button.on { border-color: var(--accent); color: var(--accent); background: rgb(200 245 96 / .08); }
+  .thead button.on { border-color: var(--accent); color: var(--accent); background: rgb(255 255 255 / .08); }
 
   @media (max-width: 1100px) {
     .app {

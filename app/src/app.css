@@ -16,7 +16,7 @@
   --border-soft: #262626;
   --text: #eaeaea;
   --muted: #a6a6a6;
-  --accent: #c8f560;
+  --accent: #ffffff;
   --on-accent: #0f0f0f;
   --speaker-1: #6ab8ff;
   --speaker-2: #ffa94d;
@@ -86,11 +86,11 @@ h2, h3 { font-family: var(--display); font-weight: 700; font-size: 15px; margin:
 .trbox select { height: 32px; font-size: 12px; }
 .layer { display: grid; gap: 10px; padding: 12px; margin: 0 0 12px; border: 1px solid #6ab8ff55; border-radius: 10px; background: var(--card); }
 .layer .lhead { display: flex; justify-content: space-between; align-items: center; }
-.layer h3 { margin: 0; font-size: 13px; color: #6ab8ff; }
+.layer h3 { margin: 0; font-size: 13px; color: var(--text); }
 .layer textarea { width: 100%; resize: vertical; }
 .layer .lrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
 .layer .keyrow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.layer .key.on { color: #ffd84d; border-color: #ffd84d; }
+.layer .key.on { color: var(--accent); border-color: var(--accent); }
 .layer .keyhint { margin: -4px 0 0; }
 .layer .lfx summary { cursor: pointer; font-size: 0.85em; margin: 4px 0; }
 .layer .lfx { display: grid; gap: 6px; }
@@ -124,8 +124,8 @@ input[type='range']:active, input[type='range'].dragging { --tk: 14px; }
 input[type='range']:active::-webkit-slider-thumb, input[type='range'].dragging::-webkit-slider-thumb { transform: scale(0); opacity: 0; }
 input[type='range']:active::-moz-range-thumb, input[type='range'].dragging::-moz-range-thumb { transform: scale(0); opacity: 0; }
 input[type='range']:focus { outline: none; }
-input[type='range']:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgb(200 245 96 / .35); }
-input[type='range']:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px rgb(200 245 96 / .35); }
+input[type='range']:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgb(255 255 255 / .35); }
+input[type='range']:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px rgb(255 255 255 / .35); }
 
 /* Hide scrollbars everywhere; content still scrolls. */
 * { scrollbar-width: none; }

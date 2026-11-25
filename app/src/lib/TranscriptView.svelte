@@ -258,8 +258,8 @@
   .w:hover { background: var(--tab-on); }
   .w.cur { color: var(--accent); }
   .w.em { text-decoration: underline 2px var(--accent); text-underline-offset: 3px; font-weight: 600; }
-  .w.hit { background: rgb(200 245 96 / .18); }
-  .w.sel { background: rgb(200 245 96 / .35); color: var(--text); }
+  .w.hit { background: rgb(255 255 255 / .18); }
+  .w.sel { background: rgb(255 255 255 / .35); color: var(--text); }
   .w.cut { color: #6b6b6b; text-decoration: line-through; }
   .w.will { background: rgb(255 107 107 / .22); text-decoration: line-through #ff6b6b; }
   .pause { font-size: 11px; color: #ff8f8f; background: rgb(255 107 107 / .14); border-radius: 4px; padding: 0 4px; white-space: nowrap; }

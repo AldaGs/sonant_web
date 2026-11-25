@@ -134,9 +134,9 @@
   .caps li { position: relative; display: grid; grid-template-columns: 72px 1fr; gap: 8px; padding: 10px 12px;
     background: var(--card); border: 1px solid var(--border-soft); border-radius: 10px; cursor: pointer; }
   .caps li.on { border-color: var(--accent); }
-  .caps li.sel-cap { border-color: var(--accent); background: rgb(200 245 96 / .08); box-shadow: 0 0 0 1px var(--accent); }
+  .caps li.sel-cap { border-color: var(--accent); background: rgb(255 255 255 / .08); box-shadow: 0 0 0 1px var(--accent); }
   .cap-main { display: grid; gap: 4px; min-width: 0; }
-  .cap-anim-tag { font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: rgb(200 245 96 / .18); color: var(--accent); display: inline-flex; align-items: center; width: fit-content; }
+  .cap-anim-tag { font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: rgb(255 255 255 / .18); color: var(--accent); display: inline-flex; align-items: center; width: fit-content; }
   .times { display: grid; gap: 2px; align-content: start; }
   .times input { width: 100%; font-family: var(--mono); font-size: 12px; color: var(--muted); background: none; border: 1px solid transparent; padding: 1px 2px; }
   .times input:hover, .times input:focus { border-color: var(--border); color: var(--text); }

@@ -724,18 +724,18 @@
   .env { position: absolute; inset: 2px 0; width: 100%; height: calc(100% - 4px); overflow: visible; pointer-events: none; }
   .env polyline { fill: none; stroke: #ffd84d; stroke-width: 1.5; opacity: .85; }
   .vk { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #ffd84d; border: 1px solid #111; cursor: move; touch-action: none; z-index: 2; }
-  .dropzone { position: absolute; left: 0; right: 0; border-radius: 6px; background: rgb(200 245 96 / .12); outline: 1px dashed var(--accent); pointer-events: none; z-index: 4; }
+  .dropzone { position: absolute; left: 0; right: 0; border-radius: 6px; background: rgb(255 255 255 / .12); outline: 1px dashed var(--accent); pointer-events: none; z-index: 4; }
   .dropmark { position: absolute; top: -3px; bottom: -3px; width: 2px; transform: translateX(-1px); background: var(--accent); }
   .thumbs { position: absolute; inset: 0; display: flex; overflow: hidden; pointer-events: none; }
   .thumbs img { height: 100%; width: 0; flex: 1; object-fit: cover; opacity: .75; }
   .cap { position: absolute; top: 0; height: 22px; min-width: 6px; padding: 0 6px; justify-content: flex-start; overflow: hidden;
-    white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(200 245 96 / .35);
-    background: rgb(200 245 96 / .12); color: var(--accent); cursor: grab; touch-action: none; }
+    white-space: nowrap; text-overflow: ellipsis; font-size: 11px; border-radius: 6px; border: 1px solid rgb(255 255 255 / .35);
+    background: rgb(255 255 255 / .12); color: var(--accent); cursor: grab; touch-action: none; }
   .cap:active { cursor: grabbing; }
-  .cap.sel { border-color: var(--accent); background: rgb(200 245 96 / .35); font-weight: 700; z-index: 2; box-shadow: 0 0 0 1px var(--accent); }
+  .cap.sel { border-color: var(--accent); background: rgb(255 255 255 / .35); font-weight: 700; z-index: 2; box-shadow: 0 0 0 1px var(--accent); }
   .animbar { position: absolute; top: 0; height: 22px; display: flex; align-items: center; padding: 0 6px; font-size: 11px;
     background: var(--tab-on); border-radius: 6px; white-space: nowrap; overflow: hidden; border: 1px solid transparent; cursor: pointer; }
-  .animbar.sel { border-color: var(--accent); background: rgb(200 245 96 / .2); color: var(--accent); font-weight: 700; z-index: 2; }
+  .animbar.sel { border-color: var(--accent); background: rgb(255 255 255 / .2); color: var(--accent); font-weight: 700; z-index: 2; }
   .cname { position: relative; display: inline-flex; align-items: center; gap: 2px; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   .ov.media .cname { position: absolute; left: 6px; bottom: 2px; color: #fff; text-shadow: 0 1px 2px #000; max-width: calc(100% - 12px); }
   .aname { position: relative; display: inline-flex; align-items: center; gap: 2px; pointer-events: none; white-space: nowrap; overflow: hidden; }
@@ -759,10 +759,10 @@
   /* Edge handles: drag to retime/trim. Wide enough for touch, invisible until hovered. */
   .edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; touch-action: none; z-index: 1; }
   .edge.l { left: 0; border-radius: 6px 0 0 6px; } .edge.r { right: 0; border-radius: 0 6px 6px 0; }
-  .cap:hover .edge, .cap.sel .edge { background: rgb(200 245 96 / .55); }
+  .cap:hover .edge, .cap.sel .edge { background: rgb(255 255 255 / .55); }
   .aud:hover .edge, .aud.sel .edge { background: rgb(106 184 255 / .55); }
   .zchip { position: absolute; top: -9px; z-index: 3; transform: translateX(-50%); width: 18px; height: 18px; padding: 0; border-radius: 50%;
-    font-size: 12px; line-height: 16px; background: var(--accent, #c8f560); color: #111; border: 1px solid #0006; cursor: ew-resize; }
+    font-size: 12px; line-height: 16px; background: var(--accent); color: #111; border: 1px solid #0006; cursor: ew-resize; }
   .pend { position: absolute; top: 20px; bottom: 0; pointer-events: none; z-index: 1;
     background: repeating-linear-gradient(45deg, rgb(255 107 107 / .35) 0 4px, rgb(255 107 107 / .12) 4px 8px); border-left: 1px solid #ff6b6b; border-right: 1px solid #ff6b6b; }
   .guide { position: absolute; top: 0; bottom: 0; width: 1px; background: #ffd84d; pointer-events: none; z-index: 4; box-shadow: 0 0 4px #ffd84d; }
